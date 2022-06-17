@@ -13,6 +13,11 @@ namespace gn
         ~InstanceVK()
         {
         }
+
+        void destroy() override final
+        {
+
+        }
     };
 }
 

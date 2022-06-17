@@ -2,19 +2,16 @@
 #define GN_H_
 
 #include <vector>
+#include <bitset>
+#include <functional>
 #include <cstdint>
 #include <cassert>
 
-#ifdef NDEBUG
-#define GN_DBG_ASSERT(x)
-#else
-#define GN_DBG_ASSERT(x) assert(x)
-#endif
-
-#define GN_CHECK(x) GN_DBG_ASSERT(x)
+#include "gn_detail.h"
 
 namespace gn
 {
+    class AdapterQuery;
     class Instance;
     class Adapter;
     class Device;
@@ -26,19 +23,37 @@ namespace gn
         OutOfMemory,
     };
 
-    enum class AdapterType
-    {
-        Discrete,
-        Integrated,
-        Software
-    };
-
     enum class Backend
     {
         Auto,
         D3D11,
         D3D12,
         Vulkan
+    };
+
+    enum class AdapterType
+    {
+        Discrete,
+        Integrated,
+        Software,
+
+        Count
+    };
+
+    enum class VendorID
+    {
+        
+    };
+
+    enum class Feature
+    {
+        FullDrawIndexRange32Bit,
+        TextureCubeArray,
+        GeometryShader,
+        TessellationShader,
+        NativeMultiDrawIndirect,
+
+        Count
     };
 
     struct InstanceDesc
@@ -125,6 +140,80 @@ namespace gn
         };
     };
 
+    class AdapterQuery
+    {
+    public:
+        using CallbackFn = std::function<void(Adapter*)>;
+        using CustomConditionFn = std::function<bool(Adapter*)>;
+
+        AdapterQuery(const std::vector<Adapter*>& adapters) :
+            m_adapters(adapters)
+        {
+        }
+
+        AdapterQuery& with_type(AdapterType type)
+        {
+            size_t bit_idx = static_cast<size_t>(type);
+            m_types.set(bit_idx, true);
+            return *this;
+        }
+
+        AdapterQuery& with_vendor_id(VendorID vendor_id)
+        {
+            return *this;
+        }
+
+        AdapterQuery& has_feature(Feature feature)
+        {
+            size_t bit_idx = static_cast<size_t>(feature);
+            m_features.set(bit_idx, true);
+            return *this;
+        }
+
+        template<typename... Args, std::enable_if_t<std::conjunction_v<std::is_same<Feature, Args>...>, bool> = true>
+        AdapterQuery& has_features(Feature feature, Args... features)
+        {
+            has_feature(feature);
+            (has_feature(features), ...);
+            return *this;
+        }
+
+        AdapterQuery& has_geometry_stage()
+        {
+            return has_feature(Feature::GeometryShader);
+        }
+
+        AdapterQuery& has_tessellation_stage()
+        {
+            return has_feature(Feature::TessellationShader);
+        }
+
+        AdapterQuery& custom_condition(CustomConditionFn condition)
+        {
+            m_custom_condition_fn = condition;
+            return *this;
+        }
+
+        void get(CallbackFn callback) const;
+
+        std::vector<Adapter*> get() const
+        {
+            std::vector<Adapter*> result;
+
+            get([&result](Adapter* adapter) {
+                    result.push_back(adapter);
+                });
+
+            return std::move(result);
+        }
+
+    private:
+        const std::vector<Adapter*>& m_adapters;
+        std::bitset<static_cast<size_t>(AdapterType::Count)> m_types;
+        std::bitset<static_cast<size_t>(Feature::Count)> m_features;
+        CustomConditionFn m_custom_condition_fn;
+    };
+
     class Instance
     {
     public:
@@ -132,7 +221,9 @@ namespace gn
         {
             InstanceDesc desc{};
 
-            Builder& backend(Backend backend)
+            Builder() { }
+
+            Builder& set_backend(Backend backend)
             {
                 desc.backend = backend;
                 return *this;
@@ -196,6 +287,11 @@ namespace gn
             }
         }
 
+        AdapterQuery query_adapters() const noexcept
+        {
+            return AdapterQuery(m_adapters);
+        }
+
         const Backend backend() const noexcept
         {
             return m_desc.backend;
@@ -203,10 +299,7 @@ namespace gn
 
         virtual void destroy() = 0;
 
-        static Expect<Instance*> create(const InstanceDesc& desc)
-        {
-            return { Error::Unimplemented };
-        }
+        static Expect<Instance*> create(const InstanceDesc& desc);
 
     protected:
         InstanceDesc m_desc;
@@ -229,6 +322,7 @@ namespace gn
 }
 
 #ifdef GN_IMPLEMENTATION
+#include <gn/gn_impl.h>
 #include <gn/gn_impl_vulkan.h>
 #endif
 
