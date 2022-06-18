@@ -188,13 +188,13 @@ namespace gn
             return has_feature(Feature::TessellationShader);
         }
 
-        AdapterQuery& custom_condition(CustomConditionFn condition)
+        AdapterQuery& custom_condition(CustomConditionFn&& condition)
         {
             m_custom_condition_fn = condition;
             return *this;
         }
 
-        void get(CallbackFn callback) const;
+        void get(CallbackFn&& callback) const;
 
         std::vector<Adapter*> get() const
         {

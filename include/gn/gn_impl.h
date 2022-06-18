@@ -3,7 +3,7 @@
 
 namespace gn
 {
-    void AdapterQuery::get(CallbackFn callback) const
+    void AdapterQuery::get(CallbackFn&& callback) const
     {
         for (auto adapter : m_adapters) {
             callback(adapter);
