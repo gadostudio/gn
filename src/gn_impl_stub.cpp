@@ -1,2 +1,2 @@
-#define GN_IMPLEMENTATION
-#include <gn/gn.h>
+#include <gn/gn_impl.h>
+#include <gn/gn_impl_vulkan.h>

@@ -15,6 +15,10 @@ if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
     include(FetchContent)
 endif()
 
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /permissive-")
+endif()
+
 add_library(gn INTERFACE)
 set_property(TARGET gn PROPERTY CXX_STANDARD 17)
 target_include_directories(gn
@@ -22,8 +26,6 @@ target_include_directories(gn
               $<INSTALL_INTERFACE:include>)
 
 if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
-    set(GN_STATIC_DEPS "gn")
-
     if(GN_ENABLE_VULKAN)
         # Get Vulkan-Headers from github if available
         if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
@@ -46,7 +48,10 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
 
     add_library(gn-static STATIC src/gn_impl_stub.cpp)
     set_property(TARGET gn-static PROPERTY CXX_STANDARD 17)
-    target_link_libraries(gn-static PUBLIC ${GN_STATIC_DEPS})
+    target_link_libraries(gn-static PRIVATE ${GN_STATIC_DEPS})
+    target_include_directories(gn-static
+        PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+               $<INSTALL_INTERFACE:include>)
 
     if(GN_BUILD_EXAMPLES)
         # TODO: make examples
