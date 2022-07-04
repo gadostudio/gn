@@ -1,774 +1,388 @@
 #ifndef GN_H_
 #define GN_H_
 
-#include <vector>
-#include <bitset>
+#ifdef __cplusplus
 #include <functional>
+#endif
 
-#include "gn_detail.h"
+#define GN_OUT
+#define GN_MAX_CHARS 256
+#define GN_ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 
-namespace gn
+#ifdef __cplusplus
+extern "C"
 {
-    class AdapterQuery;
-    class Instance;
-    class Adapter;
-    class Device;
-    class Buffer;
-    class Texture;
-    class ResourceTable;
-    class CommandBuffer;
-    class CommandBundle;
-
-    enum class Error
-    {
-        Unknown,
-        Unimplemented,
-        BackendNotAvailable,
-        InitializationFailed,
-        OutOfMemory,
-    };
-
-    enum class Backend
-    {
-        Auto,
-        D3D11,
-        D3D12,
-        Vulkan
-    };
-
-    enum class AdapterType
-    {
-        Unknown,
-        Discrete,
-        Integrated,
-        Software,
-
-        Count
-    };
-
-    enum class VendorID
-    {
-        Unknown,
-        Count
-    };
-
-    enum class Limit
-    {
-        Count
-    };
-
-    enum class Feature
-    {
-        FullDrawIndexRange32Bit,
-        TextureCubeArray,
-        GeometryShader,
-        TessellationShader,
-        NativeMultiDrawIndirect,
-        DrawIndirectFirstInstance,
-
-        Count
-    };
-
-    enum class PipelineBindPoint
-    {
-        Graphics,
-        Compute,
-
-        Count
-    };
-
-    struct InstanceDesc
-    {
-        Backend backend;
-        bool    enable_debugging;
-        bool    enable_validation;
-        bool    enable_backend_validation;
-    };
-
-    struct AdapterProperties
-    {
-        char        device_name[GN_MAX_CHARS];
-        uint32_t    vendor_id;
-        AdapterType adapter_type;
-    };
-
-    struct Rect2D
-    {
-        uint32_t x;
-        uint32_t y;
-        uint32_t width;
-        uint32_t height;
-    };
-
-    struct Viewport
-    {
-        float x;
-        float y;
-        float width;
-        float height;
-        float min_depth;
-        float max_depth;
-    };
-
-    template<typename T, std::enable_if_t<!std::is_same_v<T, Error>, bool> = true>
-    class Expect
-    {
-    public:
-        using Self = Expect<T>;
-
-        Expect() noexcept :
-            m_state(State::Empty),
-            m_error(Error::Unknown)
-        {
-        }
-
-        Expect(T&& value) noexcept :
-            m_state(State::HasValue),
-            m_value(std::move(value))
-        {
-        }
-
-        template<typename... Args>
-        Expect(bool, Args&&... args) :
-            m_state(State::HasValue),
-            m_value(std::forward<Args>(args)...)
-        {
-        }
-
-        Expect(Error error) noexcept :
-            m_state(State::HasError),
-            m_error(error)
-        {
-            assert(true);
-        }
-
-        ~Expect()
-        {
-            if (has_value() && destructible) {
-                m_value.~T();
-            }
-        }
-
-        template<std::enable_if_t<std::is_copy_assignable_v<T>, bool> = true>
-        Self& operator=(const Expect<T>& other)
-        {
-            switch (other.m_state) {
-                case State::HasValue:
-                    m_value = other.m_value;
-                    break;
-                case State::HasError:
-                    m_error = other.m_error;
-                    break;
-                default:
-                    break;
-            }
-
-            m_state = other.m_state;
-
-            return *this;
-        }
-
-        const T* operator->() const noexcept { return &m_value; }
-
-        T* operator->() noexcept { return &m_value; }
-
-        const T& operator*() const& noexcept { return m_value; }
-
-        T& operator*() & noexcept { return m_value; }
-
-        const T&& operator*() const&& noexcept { return std::move(m_value); }
-
-        T&& operator*() && noexcept { return std::move(m_value); }
-
-        explicit operator bool() const noexcept { return has_value(); }
-
-        template<typename... Args>
-        void emplace(Args&&... args)
-        {
-            if (has_value() && destructible) {
-                m_value.~T();
-            }
-
-            if constexpr (std::is_trivially_constructible_v<T>) {
-                new(&m_value) T{ std::forward<Args>(args)... };
-            }
-            else {
-                new(&m_value) T(std::forward<Args>(args)...);
-            }
-
-            m_state = State::HasValue;
-        }
-
-        void emplace_error(Error error)
-        {
-            if (has_value() && destructible) {
-                m_value.~T();
-            }
-
-            m_error = error;
-            m_state = State::HasError;
-        }
-
-        bool has_value() const noexcept { return m_state == State::HasValue; }
-        
-        T& value() & noexcept
-        {
-            GN_CHECK(has_value() && "Expected value");
-            return m_value;
-        }
-        
-        const T& value() const& noexcept
-        {
-            GN_CHECK(has_value() && "Expected value");
-            return m_value;
-        }
-
-        T&& value() && noexcept
-        {
-            GN_CHECK(has_value() && "Expected value");
-            return std::move(m_value);
-        }
-        
-        const T&& value() const&& noexcept
-        {
-            GN_CHECK(has_value() && "Expected value");
-            return std::move(m_value);
-        }
-
-        Error error() const noexcept { return m_state != State::HasError ? Error::Unknown : m_error; }
-
-    private:
-        static constexpr bool destructible =
-            std::is_destructible_v<T> || std::is_trivially_destructible_v<T>;
-
-        enum class State
-        {
-            Empty,
-            HasValue,
-            HasError
-        };
-
-        State m_state;
-        
-        union
-        {
-            T m_value;
-            Error m_error;
-        };
-    };
-
-    class AdapterQuery
-    {
-    public:
-        using CallbackFn = std::function<void(Adapter*)>;
-        using CustomConditionFn = std::function<bool(Adapter*)>;
-
-        AdapterQuery(const std::vector<Adapter*>& adapters) :
-            m_adapters(adapters)
-        {
-        }
-
-        AdapterQuery& with_type(AdapterType type)
-        {
-            size_t bit_idx = static_cast<size_t>(type);
-            m_types.set(bit_idx, true);
-            return *this;
-        }
-
-        AdapterQuery& with_vendor_id(VendorID vendor_id)
-        {
-            return *this;
-        }
-
-        AdapterQuery& has_feature(Feature feature)
-        {
-            size_t bit_idx = static_cast<size_t>(feature);
-            m_features.set(bit_idx, true);
-            return *this;
-        }
-
-        template<typename... Args, std::enable_if_t<std::conjunction_v<std::is_same<Feature, Args>...>, bool> = true>
-        AdapterQuery& has_features(Feature feature, Args... features)
-        {
-            has_feature(feature);
-            (has_feature(features), ...);
-            return *this;
-        }
-
-        AdapterQuery& has_geometry_stage()
-        {
-            return has_feature(Feature::GeometryShader);
-        }
-
-        AdapterQuery& has_tessellation_stage()
-        {
-            return has_feature(Feature::TessellationShader);
-        }
-
-        AdapterQuery& custom_condition(CustomConditionFn&& condition)
-        {
-            m_custom_condition_fn = condition;
-            return *this;
-        }
-
-        void get(CallbackFn&& callback) const;
-
-        std::vector<Adapter*> get() const
-        {
-            std::vector<Adapter*> result;
-            get([&result](Adapter* adapter) { result.push_back(adapter); });
-            return result;
-        }
-
-    private:
-        const std::vector<Adapter*>& m_adapters;
-        std::bitset<detail::enum_count<AdapterType>> m_types;
-        std::bitset<detail::enum_count<Feature>> m_features;
-        CustomConditionFn m_custom_condition_fn;
-    };
-
-    class Instance
-    {
-    public:
-        struct Builder
-        {
-            InstanceDesc desc{};
-
-            Builder() { }
-
-            Builder& set_backend(Backend backend)
-            {
-                desc.backend = backend;
-                return *this;
-            }
-
-            Builder& enable_debugging(bool should_enable = true)
-            {
-                desc.enable_debugging = should_enable;
-                return *this;
-            }
-
-            Builder& enable_validation(bool should_enable = true)
-            {
-                desc.enable_validation = should_enable;
-                return *this;
-            }
-
-            Builder& enable_backend_validation(bool should_enable = true)
-            {
-                desc.enable_backend_validation = should_enable;
-                return *this;
-            }
-
-            Expect<Instance*> create()
-            {
-                return Instance::create(desc);
-            }
-        };
-
-        Instance(const InstanceDesc& desc) :
-            m_desc(desc)
-        {
-        }
-
-        virtual ~Instance() { }
-
-        Adapter* default_adapter() const noexcept
-        {
-            return m_adapters[0];
-        }
-
-        uint32_t num_adapters() const noexcept
-        {
-            return (uint32_t)m_adapters.size();
-        }
-
-        const std::vector<Adapter*>& get_adapters() const
-        {
-            return m_adapters;
-        }
-
-        void get_adapters(uint32_t num_adapters, Adapter** adapters)
-        {
-            if (num_adapters > 0) {
-                num_adapters = num_adapters > (uint32_t)m_adapters.size() ?
-                    (uint32_t)m_adapters.size() : num_adapters;
-
-                for (uint32_t i = 0; i < num_adapters; i++) {
-                    adapters[i] = m_adapters[i];
-                }
-            }
-        }
-
-        AdapterQuery query_adapters() const noexcept
-        {
-            return AdapterQuery(m_adapters);
-        }
-
-        const Backend backend() const noexcept
-        {
-            return m_desc.backend;
-        }
-
-        virtual void destroy() = 0;
-
-        static Expect<Instance*> create(const InstanceDesc& desc);
-
-    protected:
-        InstanceDesc m_desc;
-        std::vector<Adapter*> m_adapters;
-    };
-
-    class Adapter
-    {
-    public:
-        template<typename T>
-        auto get_limit(Limit limit) const -> T
-        {
-            if (limit >= Limit::Count) {
-                return 0;
-            }
-
-            const auto& value = m_limits[static_cast<size_t>(limit)];
-            T ret_val = 0;
-            
-            if (std::holds_alternative<uint32_t>(value)) {
-                ret_val = static_cast<T>(std::get<uint32_t>(value));
-            }
-            else if (std::holds_alternative<float>(value)) {
-                ret_val = static_cast<T>(std::get<float>(value));
-            }
-
-            return ret_val;
-        }
-
-        bool is_feature_present(Feature feature) const
-        {
-            if (feature >= Feature::Count) {
-                return false;
-            }
-
-            return m_features[static_cast<size_t>(feature)];
-        }
-
-        bool is_format_present()
-        {
-            return false;
-        }
-
-    protected:
-        AdapterProperties m_properties{};
-        std::bitset<detail::enum_count<Feature>> m_features;
-        detail::LimitMap<detail::enum_count<Limit>> m_limits;
-    };
-
-    class Device
-    {
-    public:
-        virtual void create_buffer() = 0;
-        virtual void create_texture() = 0;
-        virtual void create_resource_table_layout() = 0;
-        virtual void create_resource_table_pool() = 0;
-        virtual void create_pipeline_layout() = 0;
-        virtual void create_graphics_pipeline() = 0;
-        virtual void create_compute_pipeline() = 0;
-        virtual void create_command_pool() = 0;
-        virtual void create_command_buffers() = 0;
-        virtual void create_command_bundles() = 0;
-
-        virtual void destroy() = 0;
-    };
-
-    class Buffer
-    {
-    public:
-        virtual void destroy() = 0;
-    };
-
-    class ComputeCommandEncoder
-    {
-    public:
-        ComputeCommandEncoder() {}
-
-        void dispatch(uint32_t thread_group_x, uint32_t thread_group_y, uint32_t thread_group_z)
-        {
-
-        }
-
-        void dispatch_indirect(Buffer* indirect_buffer, uint64_t offset = 0)
-        {
-
-        }
-
-        void finish();
-    };
-
-    class CopyCommandEncoder
-    {
-    public:
-        CopyCommandEncoder() {}
-    };
-
-    class CommandBuffer
-    {
-    public:
-        CommandBuffer();
-
-        Error begin_rendering()
-        {
-            m_is_rendering = true;
-            return Error::Unimplemented;
-        }
-
-        void set_graphics_pipeline() noexcept;
-
-        void set_graphics_resource_table(uint32_t slot) noexcept;
-
-        void set_graphics_resource_tables(uint32_t first_slot, uint32_t num_resource_tables) noexcept;
-
-        template<typename T>
-        void set_graphics_shader_constant(uint32_t element_offset, T constant) noexcept
-        {
-
-        }
-
-        template<typename T, size_t Size>
-        void set_graphics_shader_constants(uint32_t element_offset, const T(&values)[Size]) noexcept
-        {
-            set_shader_constants_raw(element_offset * sizeof(T), sizeof(values), values);
-        }
-
-        void set_graphics_shader_constants_raw(uint32_t byte_offset, uint32_t size, const void* values) noexcept
-        {
-        }
-
-        void set_index_buffer(Buffer* index_buffer, uint64_t offset = 0) noexcept
-        {
-
-        }
-
-        void set_vertex_buffer(uint32_t slot, Buffer* index_buffer, uint64_t offset = 0) noexcept
-        {
-
-        }
-
-        void set_vertex_buffers(uint32_t first_slot,
-                                uint32_t num_buffers,
-                                const Buffer** vertex_buffer,
-                                const uint64_t* offsets = nullptr) noexcept
-        {
-
-        }
-
-        inline void set_viewport(uint32_t slot,
-                                 float x,
-                                 float y,
-                                 float width,
-                                 float height,
-                                 float min_depth,
-                                 float max_depth) noexcept
-        {
-            GN_DBG_ASSERT(slot < 16 && "Slot out of range");
-
-            Viewport& viewport = m_graphics_state_block.viewports[slot];
-            viewport.x = x;
-            viewport.y = y;
-            viewport.width = width;
-            viewport.height = height;
-            viewport.min_depth = min_depth;
-            viewport.max_depth = max_depth;
-
-            m_graphics_state_block.viewports_update_flags |= 1 << slot;
-        }
-
-        inline void set_viewport(uint32_t slot, const Viewport& viewport)
-        {
-            GN_DBG_ASSERT(slot < 16 && "Slot out of range");
-            m_graphics_state_block.viewports[slot] = viewport;
-            m_graphics_state_block.viewports_update_flags |= 1 << slot;
-        }
-
-        template<uint32_t NumViewports>
-        inline void set_viewports(uint32_t first_slot, const Viewport(&viewports)[NumViewports]) noexcept
-        {
-            set_viewports(first_slot, NumViewports, viewports);
-        }
-
-        void set_viewports(uint32_t first_slot,
-                           uint32_t num_viewports,
-                           const Viewport* viewports) noexcept
-        {
-            GN_DBG_ASSERT(first_slot < 16 && "Slot out of range");
-            GN_DBG_ASSERT(num_viewports + first_slot < 16 && "Slot out of range");
-
-            for (uint32_t i = 0; i < num_viewports; i++) {
-                m_graphics_state_block.viewports[i + first_slot] = viewports[i];
-            }
-
-            // Notify viewport updates
-            m_graphics_state_block.viewports_update_flags |=
-                ((1 << (num_viewports + first_slot)) - 1) & ~((1 << first_slot) - 1);
-        }
-
-        inline void set_scissor(uint32_t slot,
-                                uint32_t x,
-                                uint32_t y,
-                                uint32_t width,
-                                uint32_t height) noexcept
-        {
-            GN_DBG_ASSERT(slot < 16 && "Slot out of range");
-
-            Rect2D& scissor = m_graphics_state_block.scissors[slot];
-            scissor.x = x;
-            scissor.y = y;
-            scissor.width = width;
-            scissor.height = height;
-
-            m_graphics_state_block.scissors_update_flags |= 1 << slot;
-        }
-
-        inline void set_scissor(uint32_t slot, const Rect2D& scissor) noexcept
-        {
-            GN_DBG_ASSERT(slot < 16 && "Slot out of range");
-            m_graphics_state_block.scissors[slot] = scissor;
-            m_graphics_state_block.scissors_update_flags |= 1 << slot;
-        }
-
-        template<uint32_t NumScissors>
-        inline void set_scissors(uint32_t first_slot, const Rect2D (&scissors)[NumScissors]) noexcept
-        {
-            set_viewports(first_slot, NumScissors, scissors);
-        }
-
-        void set_scissors(uint32_t first_slot, uint32_t num_scissors, const Rect2D* scissors) noexcept
-        {
-            GN_DBG_ASSERT(first_slot < 16 && "Slot out of range");
-            GN_DBG_ASSERT(num_scissors + first_slot < 16 && "Slot out of range");
-
-            for (uint32_t i = 0; i < num_scissors; i++) {
-                m_graphics_state_block.scissors[i + first_slot] = scissors[i];
-            }
-
-            // Notify viewport updates
-            m_graphics_state_block.scissors_update_flags |=
-                ((1 << (num_scissors + first_slot)) - 1) & ~((1 << first_slot) - 1);
-        }
-
-        inline void set_blend_constants(const float blend_constants[4]) noexcept
-        {
-            m_graphics_state_block.blend_constants[0] = blend_constants[0];
-            m_graphics_state_block.blend_constants[1] = blend_constants[1];
-            m_graphics_state_block.blend_constants[2] = blend_constants[2];
-            m_graphics_state_block.blend_constants[3] = blend_constants[3];
-            m_graphics_state_block.blend_constants_update = true;
-        }
-
-        inline void set_blend_constants(float r, float g, float b, float a) noexcept
-        {
-            m_graphics_state_block.blend_constants[0] = r;
-            m_graphics_state_block.blend_constants[1] = g;
-            m_graphics_state_block.blend_constants[2] = b;
-            m_graphics_state_block.blend_constants[3] = a;
-            m_graphics_state_block.blend_constants_update = true;
-        }
-
-        inline void set_stencil_ref(uint32_t ref) noexcept
-        {
-            m_graphics_state_block.stencil_ref = ref;
-            m_graphics_state_block.stencil_ref_update = true;
-        }
-
-        inline void draw(uint32_t num_vertices, uint32_t first_vertex) noexcept
-        {
-            draw_instanced(num_vertices, 1, first_vertex, 0);
-        }
-
-        void draw_instanced(uint32_t num_vertices,
-                            uint32_t num_instances,
-                            uint32_t first_vertex,
-                            uint32_t first_instances) noexcept
-        {
-            if (!m_is_rendering) {
-                return;
-            }
-            // TODO: Apply state changes and draw
-        }
-
-        inline void draw_indexed(uint32_t num_indices,
-                                 uint32_t first_index,
-                                 int32_t base_vertex) noexcept
-        {
-            draw_indexed_instanced(num_indices, 1, first_index, base_vertex, 0);
-        }
-
-        inline void draw_indexed_instanced(uint32_t num_indices,
-                                           uint32_t num_instances,
-                                           uint32_t first_index,
-                                           int32_t base_vertex,
-                                           uint32_t first_instances) noexcept
-        {
-            if (!m_is_rendering) {
-                return;
-            }
-
-            // TODO: Apply state changes and draw
-
-        }
-
-        inline void draw_instanced_indirect(uint32_t draw_count,
-                                            uint32_t stride,
-                                            Buffer* indirect_buffer,
-                                            uint64_t offset = 0) noexcept
-        {
-            // TODO: Apply state changes and draw
-
-        }
-
-        inline void draw_indexed_instanced_indirect(uint32_t draw_count,
-                                                    uint32_t stride,
-                                                    Buffer* indirect_buffer,
-                                                    uint64_t offset = 0) noexcept
-        {
-            // TODO: Apply state changes and draw
-
-        }
-
-        void execute_bundles(uint32_t num_bundles);
-
-        void finish_rendering()
-        {
-            m_is_rendering = false;
-        }
-
-    private:
-        struct GraphicsStateBlock
-        {
-            // Viewport state block
-            Viewport    viewports[16];
-            uint32_t    viewports_update_flags;
-            Rect2D      scissors[16];
-            uint32_t    scissors_update_flags;
-        
-            // Fragment output stage state block
-            float       blend_constants[4];
-            bool        blend_constants_update;
-            uint32_t    stencil_ref;
-            bool        stencil_ref_update;
-        };
-        
-        CommandBuffer*      m_parent_cmd_buffer;
-        GraphicsStateBlock  m_graphics_state_block{};
-        bool                m_graphics_state_changed;
-        bool                m_is_rendering;
-    };
-
-    class CommandBundle
-    {
-    public:
-        CommandBundle() {}
-
-
-    };
+#endif
+
+typedef struct GnInstance_t* GnInstance;
+typedef struct GnAdapter_t* GnAdapter;
+typedef struct GnDevice_t* GnDevice;
+typedef struct GnBuffer_t* GnBuffer;
+typedef struct GnTexture_t* GnTexture;
+typedef struct GnResourceTableLayout_t* GnResourceTableLayout;
+typedef struct GnPipelineLayout_t* GnPipelineLayout;
+typedef struct GnPipeline_t* GnPipeline;
+typedef struct GnResourceTablePool_t* GnResourceTablePool;
+typedef struct GnResourceTable_t* GnResourceTable;
+typedef struct GnCommandPool_t* GnCommandPool;
+typedef struct GnCommandList_t* GnCommandList;
+
+typedef uint64_t GnDeviceSize;
+
+typedef enum
+{
+    GnFalse,
+    GnTrue,
+} GnBool;
+
+typedef enum
+{
+    GnSuccess,
+    GnError_Unknown,
+    GnError_Unimplemented,
+    GnError_InitializationFailed,
+    GnError_BackendNotAvailable,
+    GnError_NoAdapterAvailable,
+    GnError_IncompatibleAdapter,
+    GnError_OutOfHostMemory,
+} GnResult;
+
+typedef enum
+{
+    GnBackend_Auto,
+    GnBackend_D3D11,
+    GnBackend_D3D12,
+    GnBackend_Vulkan,
+    GnBackend_Count,
+} GnBackend;
+
+typedef enum
+{
+    GnQueueType_Direct,
+    GnQueueType_Compute,
+    GnQueueType_Copy,
+    GnQueueType_Count,
+} GnQueueType;
+
+typedef enum
+{
+    GnAllocationScope_Command = 0,
+    GnAllocationScope_Object = 1,
+    GnAllocationScope_Device = 2,
+    GnAllocationScope_Instance = 3,
+    GnAllocationScope_Count,
+} GnAllocationScope;
+
+typedef void* (*GnMallocFn)(void* userdata, size_t size, size_t alignment, GnAllocationScope scope);
+typedef void* (*GnReallocFn)(void* userdata, void* original, size_t size, size_t alignment, GnAllocationScope scope);
+typedef void (*GnFreeFn)(void* userdata, void* memory);
+typedef void (*GnGetAdapterCallbackFn)(GnAdapter adapter, void* userdata);
+
+typedef struct
+{
+    void*       userdata;
+    GnMallocFn  malloc_fn;
+    GnReallocFn realloc_fn;
+    GnFreeFn    free_fn;
+} GnAllocationCallbacks;
+
+typedef struct
+{
+    GnBackend   backend;
+    bool        enable_debugging;
+    bool        enable_validation;
+    bool        enable_backend_validation;
+} GnInstanceDesc;
+
+GnResult GnCreateInstance(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance);
+void GnDestroyInstance(GnInstance instance);
+GnAdapter GnGetDefaultAdapter(GnInstance instance);
+uint32_t GnGetAdapterCount(GnInstance instance);
+GnResult GnGetAdapters(GnInstance instance, uint32_t num_adapters, GN_OUT GnAdapter* adapters);
+GnResult GnGetAdaptersWithCallback(GnInstance instance, uint32_t num_adapters, void* userdata, GnGetAdapterCallbackFn callback_fn);
+GnBackend GnGetBackend(GnInstance instance);
+
+typedef enum
+{
+    GnAdapterType_Unknown,
+    GnAdapterType_Discrete,
+    GnAdapterType_Integrated,
+    GnAdapterType_Software,
+    GnAdapterType_Count,
+} GnAdapterType;
+
+typedef enum
+{
+    GnFeature_FullDrawIndexRange32Bit,
+    GnFeature_TextureCubeArray,
+    GnFeature_NativeMultiDrawIndirect,
+    GnFeature_DrawIndirectFirstInstance,
+    GnFeature_Count,
+} GnFeature;
+
+typedef enum
+{
+    GnFormat_Unknown
+} GnFormat;
+
+typedef struct
+{
+    char            name[GN_MAX_CHARS];
+    uint32_t        vendor_id;
+    GnAdapterType   type;
+} GnAdapterProperties;
+
+typedef struct
+{
+    uint32_t max_texture_size_1d;
+    uint32_t max_texture_size_2d;
+    uint32_t max_texture_size_3d;
+    uint32_t max_texture_size_cube;
+    uint32_t max_texture_array_layers;
+    uint32_t max_uniform_buffer_range;
+    uint32_t max_storage_buffer_range;
+    uint32_t max_shader_constant_size;
+    uint32_t max_bound_pipeline_layout_slots;
+    uint32_t max_per_stage_sampler_resources;
+    uint32_t max_per_stage_uniform_buffer_resources;
+    uint32_t max_per_stage_storage_buffer_resources;
+    uint32_t max_per_stage_sampled_texture_resources;
+    uint32_t max_per_stage_storage_texture_resources;
+    uint32_t max_per_stage_resources;
+    uint32_t max_resource_table_samplers;
+    uint32_t max_resource_table_uniform_buffers;
+    uint32_t max_resource_table_storage_buffers;
+    uint32_t max_resource_table_sampled_textures;
+    uint32_t max_resource_table_storage_textures;
+} GnAdapterLimits;
+
+GnBool GnIsAdapterCompatible(GnAdapter adapter);
+void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties);
+void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits);
+GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature);
+
+typedef struct
+{
+    uint32_t num_enabled_features;
+    const GnFeature* enabled_features;
+    uint32_t num_queues;
+} GnDeviceDesc;
+
+GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device);
+void GnDestroyDevice(GnDevice device);
+
+typedef enum
+{
+    GnBufferUsage_CopySrc   = 1 << 0,
+    GnBufferUsage_CopyDst   = 1 << 1,
+    GnBufferUsage_Uniform   = 1 << 2,
+    GnBufferUsage_Index     = 1 << 3,
+    GnBufferUsage_Vertex    = 1 << 4,
+    GnBufferUsage_Storage   = 1 << 5,
+    GnBufferUsage_Indirect  = 1 << 6,
+} GnBufferUsage;
+typedef uint32_t GnBufferUsageFlags;
+
+typedef struct
+{
+    GnDeviceSize        size;
+    GnBufferUsageFlags  usage;
+} GnBufferDesc;
+
+GnResult GnCreateBuffer(GnDevice device, const GnBufferDesc* desc, GN_OUT GnBuffer* buffer);
+void GnGetBufferDesc(GnBuffer buffer, GN_OUT GnBufferDesc* texture_desc);
+void GnDestroyBuffer(GnBuffer buffer);
+
+typedef enum
+{
+    GnTextureUsage_CopySrc                  = 1 << 0,
+    GnTextureUsage_CopyDst                  = 1 << 1,
+    GnTextureUsage_Sampled                  = 1 << 2,
+    GnTextureUsage_ColorAttachment          = 1 << 3,
+    GnTextureUsage_DepthStencilAttachment   = 1 << 4,
+    GnTextureUsage_Storage                  = 1 << 5,
+} GnTextureUsage;
+typedef uint32_t GnTextureUsageFlags;
+
+typedef enum
+{
+    GnTextureType_1D,
+    GnTextureType_2D,
+    GnTextureType_3D,
+} GnTextureType;
+
+typedef struct
+{
+    GnTextureUsageFlags usage;
+    GnTextureType       type;
+    GnFormat            format;
+    uint32_t            width;
+    uint32_t            height;
+    uint32_t            depth;
+    uint32_t            mip_levels;
+    uint32_t            array_size;
+    uint32_t            num_samples;
+} GnTextureDesc;
+
+GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GN_OUT GnTexture* texture);
+void GnDestroyTexture(GnTexture texture);
+void GnGetTextureDesc(GnTexture texture, GN_OUT GnTextureDesc* texture_desc);
+
+typedef enum
+{
+    GnCommandPoolUsage_Transient                = 1 << 0,
+    GnCommandPoolUsage_AllowResetCommandLists   = 1 << 1
+} GnCommandPoolUsage;
+typedef uint32_t GnCommandPoolUsageFlags;
+
+typedef enum
+{
+    GnCommandListUsage_Primary              = 0,
+    GnCommandListUsage_BundleDraw           = 1 << 0,
+    GnCommandListUsage_BundleDrawIndexed    = 1 << 1,
+    GnCommandListUsage_BundleDispatch       = 1 << 2,
+} GnCommandListUsage;
+typedef uint32_t GnCommandListUsageFlags;
+
+typedef struct
+{
+    uint32_t                queue_group_index;
+    GnCommandPoolUsageFlags usage;
+    uint32_t                max_allocated_cmd_list;
+} GnCommandPoolDesc;
+
+typedef struct
+{
+    GnCommandPool               command_pool;
+    GnCommandListUsageFlags     usage;
+    uint32_t                    num_cmd_lists;
+} GnCommandListDesc;
+
+GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GN_OUT GnCommandPool* command_pool);
+void GnDestroyCommandPool(GnCommandPool command_pool);
+void GnTrimCommandPool(GnCommandPool command_pool);
+GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GN_OUT GnCommandList* command_lists);
+void GnDestroyCommandList(GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
+GnResult GnBeginCommandList(GnCommandList command_list);
+GnResult GnEndCommandList(GnCommandList command_list);
+
+typedef enum
+{
+    GnResourceAccess_IndirectCommandRead            = 1 << 0,
+    GnResourceAccess_IndexRead                      = 1 << 1,
+    GnResourceAccess_VertexAttributeRead            = 1 << 2,
+    GnResourceAccess_UniformRead                    = 1 << 3,
+    GnResourceAccess_InputAttachmentRead            = 1 << 4,
+    GnResourceAccess_ShaderRead                     = 1 << 5,
+    GnResourceAccess_ShaderWrite                    = 1 << 6,
+    GnResourceAccess_ColorAttachmentRead            = 1 << 7,
+    GnResourceAccess_ColorAttachmentWrite           = 1 << 8,
+    GnResourceAccess_DepthStencilAttachmentRead     = 1 << 9,
+    GnResourceAccess_DepthStencilAttachmentWrite    = 1 << 10,
+    GnResourceAccess_CopyRead                       = 1 << 11,
+    GnResourceAccess_CopyWrite                      = 1 << 12,
+    GnResourceAccess_HostRead                       = 1 << 13,
+    GnResourceAccess_HostWrite                      = 1 << 14,
+    GnResourceAccess_AllRead                        = 1 << 15,
+    GnResourceAccess_AllWrite                       = 1 << 16,
+} GnResourceAccess;
+
+typedef enum
+{
+    GnTextureLayout_Undefined               = 0,
+    GnTextureLayout_General                 = 1,
+    GnTextureLayout_ColorAttachment         = 2,
+    GnTextureLayout_DepthStencilAttachment  = 3,
+    GnTextureLayout_DepthStencilReadOnly    = 4,
+    GnTextureLayout_ShaderReadOnly          = 5,
+    GnTextureLayout_Storage                 = 6,
+    GnTextureLayout_CopySrc                 = 7,
+    GnTextureLayout_CopyDst                 = 8,
+    GnTextureLayout_ClearDst                = 9,
+    GnTextureLayout_Present                 = 10,
+} GnTextureLayout;
+
+void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pipeline);
+void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
+void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table);
+void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, GnDeviceSize offset);
+void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, GnDeviceSize offset);
+void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t first_slot, uint32_t size, const void* data, uint32_t offset);
+void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset);
+void GnCmdSetVertexBuffer(GnCommandList command_list, uint32_t slot, GnBuffer vertex_buffer, GnDeviceSize offset);
+void GnCmdSetVertexBuffers(GnCommandList command_list, uint32_t first_slot, uint32_t num_vertex_buffers, const GnBuffer* vertex_buffer, const GnDeviceSize* offsets);
+void GnCmdSetViewport(GnCommandList command_list, uint32_t slot, float x, float y, float width, float height, float min_depth, float max_depth);
+void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot);
+void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t num_viewports);
+void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot);
+void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors);
+void GnCmdSetBlendConstants(GnCommandList command_list, float r, float g, float b, float a);
+void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref);
+void GnCmdBeginRenderPass(GnCommandList command_list);
+void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex);
+void GnCmdDrawInstanced(GnCommandList command_list, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance);
+void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands);
+void GnCmdDrawIndexed(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, int32_t vertex_offset);
+void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance);
+void GnCmdDrawIndexedIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands);
+void GnCmdEndRenderPass(GnCommandList command_list);
+void GnCmdSetComputePipeline(GnCommandList command_list, GnPipeline graphics_pipeline);
+void GnCmdSetComputePipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
+void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table);
+void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, GnDeviceSize offset);
+void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, GnDeviceSize offset);
+void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t first_slot, uint32_t size, const void* data, uint32_t offset);
+void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z);
+void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset);
+void GnCmdCopyBuffer(GnCommandList command_list, GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size);
+void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture);
+void GnCmdCopyBufferToTexture(GnCommandList command_list, GnBuffer src_buffer, GnTexture dst_texture);
+void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture, GnBuffer dst_buffer);
+void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture);
+void GnCmdBarrier(GnCommandList command_list);
+void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles);
+
+// [HELPERS]
+
+typedef struct
+{
+    // These variables must not be used by the application directly!
+    GnInstance  _instance;
+    uint32_t    _current_adapter;
+} GnAdapterQuery;
+
+typedef GnBool (*GnAdapterQueryLimitConstraintsFn)(const GnAdapterLimits* limits);
+
+void GnInitAdapterQuery(GnInstance instance, GN_OUT GnAdapterQuery* adapter_query);
+void GnQueryAdapterWithType(GnAdapterQuery* query, GnAdapterType type);
+void GnQueryAdapterWithVendorID(GnAdapterQuery* query, uint32_t vendor_id);
+void GnQueryAdapterWithFeature(GnAdapterQuery* query, GnFeature feature);
+void GnQueryAdapterWithFeatures(GnAdapterQuery* query, uint32_t num_features, GnFeature features);
+void GnQueryAdapterWithLimitConstraints(GnAdapterQuery* query, GnAdapterQueryLimitConstraintsFn limit_constraints_fn);
+void GnFetchAdapters(const GnAdapterQuery* query, void* userdata, GnGetAdapterCallbackFn callback_fn);
+GnBool GnFetchNextAdapter(GnAdapterQuery* query, GN_OUT GnAdapter* adapter);
+GnAdapter GnFirstAdapter(const GnAdapterQuery* query);
+
+#ifdef __cplusplus
 }
+#endif
+
+#ifdef __cplusplus
+static GnResult GnGetAdaptersWithCallback(GnInstance instance,
+                                          uint32_t num_adapters,
+                                          std::function<void(GnAdapter)> callback_fn)
+{
+    auto wrapper_fn = [](GnAdapter adapter, void* userdata) {
+        const std::function<void(GnAdapter)>& fn =
+            *static_cast<std::function<void(GnAdapter)>*>(userdata);
+
+        fn(adapter);
+    };
+
+    GnGetAdaptersWithCallback(instance, num_adapters, static_cast<void*>(&callback_fn), wrapper_fn);
+    return GnSuccess;
+}
+#endif
 
 #endif // GN_H_

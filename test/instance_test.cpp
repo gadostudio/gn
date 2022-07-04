@@ -1,31 +1,38 @@
 #include "catch.hpp"
 #include <gn/gn.h>
-
-template<gn::Backend BackendType>
-struct InstanceTest
-{
-    gn::Backend backend_type = BackendType;
-};
+#include <vector>
 
 TEST_CASE("Create instance", "[instance]")
 {
-    gn::InstanceDesc desc;
-    desc.backend = gn::Backend::Vulkan;
-    desc.enable_debugging = true;
-    desc.enable_validation = true;
-    desc.enable_backend_validation = true;
+    GnInstanceDesc instance_desc{};
+    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.enable_debugging = true;
+    instance_desc.enable_validation = true;
+    instance_desc.enable_backend_validation = true;
 
-    auto instance = gn::Instance::create(desc);
+    GnInstance instance;
+    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
 
-    REQUIRE(instance.has_value());
-
-    (*instance)->destroy();
+    GnDestroyInstance(instance);
 }
 
 TEST_CASE("Adapter query", "[instance]")
 {
-    std::vector<gn::Adapter*> adapter;
-    gn::AdapterQuery query(adapter);
+    GnInstanceDesc instance_desc{};
+    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.enable_debugging = true;
+    instance_desc.enable_validation = true;
+    instance_desc.enable_backend_validation = true;
 
-    query.has_features(gn::Feature::FullDrawIndexRange32Bit, gn::Feature::NativeMultiDrawIndirect);
+    GnInstance instance;
+    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+
+    std::vector<GnAdapter> adapters;
+    adapters.resize(GnGetAdapterCount(instance));
+    REQUIRE(GnGetAdapters(instance, GnGetAdapterCount(instance), adapters.data()) == GnSuccess);
+
+    adapters.clear();
+    REQUIRE(GnGetAdaptersWithCallback(instance, 0, [&adapters](GnAdapter adapter) { adapters.push_back(adapter); }) == GnSuccess);
+
+    GnDestroyInstance(instance);
 }
