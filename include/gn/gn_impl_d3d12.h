@@ -80,6 +80,7 @@ struct GnAdapterD3D12 : public GnAdapter_t
         GnWstrToStr(properties.name, adapter_desc.Description, sizeof(adapter_desc.Description));
         properties.vendor_id = adapter_desc.VendorId;
 
+        // Check adapter type
         if (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
             properties.type = GnAdapterType_Software;
         else {
@@ -169,7 +170,6 @@ struct GnInstanceD3D12 : public GnInstance_t
 {
     IDXGIFactory1* factory = nullptr;
     GnAdapterD3D12* d3d12_adapters = nullptr;
-    uint32_t num_dxgi_adapters = 0;
 
     GnInstanceD3D12() noexcept
     {
@@ -180,7 +180,7 @@ struct GnInstanceD3D12 : public GnInstance_t
     {
         if (d3d12_adapters != nullptr) {
             for (uint32_t i = 0; i < num_adapters; i++) {
-                d3d12_adapters->~GnAdapterD3D12();
+                d3d12_adapters[i].~GnAdapterD3D12();
             }
             alloc_callbacks.free_fn(alloc_callbacks.userdata, d3d12_adapters);
         }
@@ -215,10 +215,10 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
     IDXGIAdapter1* current_adapter = nullptr;
     uint32_t adapter_idx = 0;
     while (factory->EnumAdapters1(adapter_idx, &current_adapter) != DXGI_ERROR_NOT_FOUND) adapter_idx++;
-    new_instance->num_dxgi_adapters = adapter_idx;
 
     // This may waste some memory, but we also need to filter out incompatible adapters. Optimize?
-    new_instance->d3d12_adapters = (GnAdapterD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterD3D12) * new_instance->num_dxgi_adapters, alignof(GnAdapterD3D12), GnAllocationScope_Instance);
+    uint32_t num_dxgi_adapters = adapter_idx;
+    new_instance->d3d12_adapters = (GnAdapterD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterD3D12) * num_dxgi_adapters, alignof(GnAdapterD3D12), GnAllocationScope_Instance);
     adapter_idx = 0;
 
     if (new_instance->d3d12_adapters == nullptr) {
@@ -250,6 +250,7 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
     }
 
     new_instance->num_adapters = i;
+    new_instance->adapters = new_instance->d3d12_adapters;
     *instance = new_instance;
 
     return GnSuccess;
