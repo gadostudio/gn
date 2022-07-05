@@ -5,6 +5,7 @@
 #include <gn/gn_impl.h>
 #include <dxgi.h>
 #include <d3d12.h>
+#include <cwchar>
 
 typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY_1)(REFIID riid, _COM_Outptr_ void** ppFactory);
 
@@ -75,83 +76,92 @@ struct GnAdapterD3D12 : public GnAdapter_t
         adapter(adapter)
     {
         DXGI_ADAPTER_DESC1 adapter_desc;
-
         adapter->GetDesc1(&adapter_desc);
-        std::memcpy(&properties.name, adapter_desc.Description, sizeof(adapter_desc.Description));
+        GnWstrToStr(properties.name, adapter_desc.Description, sizeof(adapter_desc.Description));
         properties.vendor_id = adapter_desc.VendorId;
-
-        if (device == nullptr) {
-            properties.type = GnAdapterType_Unknown;
-            is_compatible = GnFalse;
-            return;
-        }
 
         if (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
             properties.type = GnAdapterType_Software;
         else {
-            D3D12_FEATURE_DATA_ARCHITECTURE architecture;
+            D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+            architecture.NodeIndex = 0;
             device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture));
             properties.type = architecture.UMA ? GnAdapterType_Integrated : GnAdapterType_Discrete;
-
-            D3D12_FEATURE_DATA_D3D12_OPTIONS options;
-            device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-
-            D3D12_FEATURE_DATA_FEATURE_LEVELS feature_levels;
-            device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &feature_levels, sizeof(options));
-
-            limits.max_texture_size_1d = D3D12_REQ_TEXTURE1D_U_DIMENSION;
-            limits.max_texture_size_2d = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
-            limits.max_texture_size_3d = D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;
-            limits.max_texture_size_cube = D3D12_REQ_TEXTURECUBE_DIMENSION;
-            limits.max_texture_array_layers = D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION; // D3D12_REQ_TEXTURE1D_ARRAY_AXIS_DIMENSION & D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION is the same
-            limits.max_uniform_buffer_range = D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * D3D12_COMMONSHADER_CONSTANT_BUFFER_COMPONENTS * 4; // 655
-            limits.max_storage_buffer_range = 0xFFFFFFFF;
-            limits.max_shader_constant_size = 128;
-            limits.max_bound_pipeline_layout_slots = 32;
-
-            uint32_t max_per_stage_samplers = 0;
-            uint32_t max_per_stage_cbv = 0;
-            uint32_t max_per_stage_srv = 0;
-            uint32_t max_per_stage_uav = 0;
-
-            // See: https://docs.microsoft.com/en-us/windows/win32/direct3d12/hardware-support
-            switch (options.ResourceBindingTier) {
-                case D3D12_RESOURCE_BINDING_TIER_1:
-                    max_per_stage_samplers = 16;
-                    max_per_stage_cbv = 14;
-                    max_per_stage_srv = 128;
-                    max_per_stage_uav = (feature_levels.MaxSupportedFeatureLevel > D3D_FEATURE_LEVEL_11_0) ? 64 : 8;
-                    break;
-                case D3D12_RESOURCE_BINDING_TIER_2:
-                    max_per_stage_samplers = 2048;
-                    max_per_stage_cbv = 14;
-                    max_per_stage_srv = 1000000;
-                    max_per_stage_uav = 64;
-                    break;
-                case D3D12_RESOURCE_BINDING_TIER_3:
-                    max_per_stage_samplers = 2048;
-                    max_per_stage_cbv = 1048576;
-                    max_per_stage_srv = 1048576;
-                    max_per_stage_uav = 1048576;
-                    break;
-                default:
-                    GN_DBG_ASSERT(false && "Unreachable");
-            }
-
-            limits.max_per_stage_sampler_resources = max_per_stage_samplers;
-            limits.max_per_stage_uniform_buffer_resources = max_per_stage_cbv;
-            limits.max_per_stage_storage_buffer_resources = max_per_stage_uav;
-            limits.max_per_stage_read_only_storage_buffer_resources = max_per_stage_srv;
-            limits.max_per_stage_sampled_texture_resources = max_per_stage_srv;
-            limits.max_per_stage_storage_texture_resources = max_per_stage_uav;
-            limits.max_resource_table_samplers = max_per_stage_samplers;
-            limits.max_resource_table_uniform_buffers = max_per_stage_cbv;
-            limits.max_resource_table_storage_buffers = max_per_stage_uav;
-            limits.max_resource_table_read_only_storage_buffer_resources = max_per_stage_srv;
-            limits.max_resource_table_sampled_textures = max_per_stage_srv;
-            limits.max_resource_table_storage_textures = max_per_stage_uav;
-            limits.max_per_stage_resources = max_per_stage_samplers + max_per_stage_cbv + max_per_stage_srv + max_per_stage_uav;
         }
+
+        D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+        device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+
+        static const D3D_FEATURE_LEVEL feature_levels[] = {
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_12_0,
+            D3D_FEATURE_LEVEL_12_1,
+            D3D_FEATURE_LEVEL_12_2,
+        };
+
+        D3D12_FEATURE_DATA_FEATURE_LEVELS supported_feature_levels{};
+        supported_feature_levels.NumFeatureLevels = GN_ARRAY_SIZE(feature_levels);
+        supported_feature_levels.pFeatureLevelsRequested = feature_levels;
+        device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &supported_feature_levels, sizeof(supported_feature_levels));
+
+        limits.max_texture_size_1d = D3D12_REQ_TEXTURE1D_U_DIMENSION;
+        limits.max_texture_size_2d = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+        limits.max_texture_size_3d = D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;
+        limits.max_texture_size_cube = D3D12_REQ_TEXTURECUBE_DIMENSION;
+        limits.max_texture_array_layers = D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION; // D3D12_REQ_TEXTURE1D_ARRAY_AXIS_DIMENSION & D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION is the same
+        limits.max_uniform_buffer_range = D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * D3D12_COMMONSHADER_CONSTANT_BUFFER_COMPONENTS * 4; // 655
+        limits.max_storage_buffer_range = 0xFFFFFFFF;
+        limits.max_shader_constant_size = 128;
+        limits.max_bound_pipeline_layout_slots = 32;
+
+        uint32_t max_per_stage_samplers = 0;
+        uint32_t max_per_stage_cbv = 0;
+        uint32_t max_per_stage_srv = 0;
+        uint32_t max_per_stage_uav = 0;
+
+        // See: https://docs.microsoft.com/en-us/windows/win32/direct3d12/hardware-support
+        switch (options.ResourceBindingTier) {
+            case D3D12_RESOURCE_BINDING_TIER_1:
+                max_per_stage_samplers = 16;
+                max_per_stage_cbv = 14;
+                max_per_stage_srv = 128;
+                max_per_stage_uav = (supported_feature_levels.MaxSupportedFeatureLevel > D3D_FEATURE_LEVEL_11_0) ? 64 : 8;
+                break;
+            case D3D12_RESOURCE_BINDING_TIER_2:
+                max_per_stage_samplers = 2048;
+                max_per_stage_cbv = 14;
+                max_per_stage_srv = 1000000;
+                max_per_stage_uav = 64;
+                break;
+            case D3D12_RESOURCE_BINDING_TIER_3:
+                max_per_stage_samplers = 2048;
+                max_per_stage_cbv = 1048576;
+                max_per_stage_srv = 1048576;
+                max_per_stage_uav = 1048576;
+                break;
+            default:
+                GN_DBG_ASSERT(false && "Unreachable");
+        }
+
+        limits.max_per_stage_sampler_resources = max_per_stage_samplers;
+        limits.max_per_stage_uniform_buffer_resources = max_per_stage_cbv;
+        limits.max_per_stage_storage_buffer_resources = max_per_stage_uav;
+        limits.max_per_stage_read_only_storage_buffer_resources = max_per_stage_srv;
+        limits.max_per_stage_sampled_texture_resources = max_per_stage_srv;
+        limits.max_per_stage_storage_texture_resources = max_per_stage_uav;
+        limits.max_resource_table_samplers = max_per_stage_samplers;
+        limits.max_resource_table_uniform_buffers = max_per_stage_cbv;
+        limits.max_resource_table_storage_buffers = max_per_stage_uav;
+        limits.max_resource_table_read_only_storage_buffer_resources = max_per_stage_srv;
+        limits.max_resource_table_sampled_textures = max_per_stage_srv;
+        limits.max_resource_table_storage_textures = max_per_stage_uav;
+        limits.max_per_stage_resources = max_per_stage_samplers + max_per_stage_cbv + max_per_stage_srv + max_per_stage_uav;
+    }
+
+    ~GnAdapterD3D12()
+    {
+        adapter->Release();
     }
 };
 
@@ -159,10 +169,23 @@ struct GnInstanceD3D12 : public GnInstance_t
 {
     IDXGIFactory1* factory = nullptr;
     GnAdapterD3D12* d3d12_adapters = nullptr;
+    uint32_t num_dxgi_adapters = 0;
 
     GnInstanceD3D12() noexcept
     {
         backend = GnBackend_D3D12;
+    }
+
+    ~GnInstanceD3D12()
+    {
+        if (d3d12_adapters != nullptr) {
+            for (uint32_t i = 0; i < num_adapters; i++) {
+                d3d12_adapters->~GnAdapterD3D12();
+            }
+            alloc_callbacks.free_fn(alloc_callbacks.userdata, d3d12_adapters);
+        }
+        
+        factory->Release();
     }
 };
 
@@ -192,26 +215,31 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
     IDXGIAdapter1* current_adapter = nullptr;
     uint32_t adapter_idx = 0;
     while (factory->EnumAdapters1(adapter_idx, &current_adapter) != DXGI_ERROR_NOT_FOUND) adapter_idx++;
+    new_instance->num_dxgi_adapters = adapter_idx;
 
-    new_instance->num_adapters = ++adapter_idx;
-    new_instance->adapters = (GnAdapterD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterD3D12) * new_instance->num_adapters, alignof(GnAdapterD3D12), GnAllocationScope_Instance);
+    // This may waste some memory, but we also need to filter out incompatible adapters. Optimize?
+    new_instance->d3d12_adapters = (GnAdapterD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterD3D12) * new_instance->num_dxgi_adapters, alignof(GnAdapterD3D12), GnAllocationScope_Instance);
     adapter_idx = 0;
 
-    if (new_instance->adapters == nullptr) {
+    if (new_instance->d3d12_adapters == nullptr) {
         alloc_callbacks->free_fn(alloc_callbacks->userdata, new_instance);
         factory->Release();
         return GnError_OutOfHostMemory;
     }
 
-    // Get all adapters
+    // Get all adapters.
     GnAdapterD3D12* predecessor = nullptr;
+    uint32_t i = 0;
     while (factory->EnumAdapters1(adapter_idx, &current_adapter) != DXGI_ERROR_NOT_FOUND) {
         ID3D12Device* device = nullptr;
 
-        // Try create device
-        g_d3d12_dispatcher->D3D12CreateDevice(current_adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+        adapter_idx++;
 
-        GnAdapterD3D12* adapter = &new_instance->d3d12_adapters[adapter_idx++];
+        // Skip current adapter if not compatible.
+        if (FAILED(g_d3d12_dispatcher->D3D12CreateDevice(current_adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))))
+            continue;
+
+        GnAdapterD3D12* adapter = &new_instance->d3d12_adapters[i++];
 
         if (predecessor != nullptr)
             predecessor->next_adapter = adapter;
@@ -220,7 +248,10 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
 
         device->Release();
     }
-    
+
+    new_instance->num_adapters = i;
+    *instance = new_instance;
+
     return GnSuccess;
 }
 

@@ -159,7 +159,6 @@ typedef struct
     uint32_t max_resource_table_resources;
 } GnAdapterLimits;
 
-GnBool GnIsAdapterCompatible(GnAdapter adapter);
 void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties);
 void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits);
 GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature);

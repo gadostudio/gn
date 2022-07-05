@@ -6,10 +6,12 @@
 #include <memory>
 #include <bitset>
 #include <optional>
+#include <algorithm>
 #include <gn/gn.h>
 
 #ifdef WIN32
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <Windows.h>
 #endif
 
@@ -44,7 +46,6 @@ struct GnInstance_t
 struct GnAdapter_t
 {
     GnInstance                      parent_instance = nullptr;
-    GnBool                          is_compatible = GnTrue;
     GnAdapter_t*                    next_adapter = nullptr;
     GnAdapterProperties             properties{};
     GnAdapterLimits                 limits{};
@@ -69,6 +70,12 @@ static T GnGetLibraryFunction(void* dll_handle, const char* fn_name) noexcept
 #ifdef WIN32
     return (T)GetProcAddress((HMODULE)dll_handle, fn_name);
 #endif
+}
+
+static void GnWstrToStr(char* dst, const wchar_t* src, size_t len)
+{
+    std::mbstate_t state{};
+    std::wcsrtombs(dst, &src, len, &state); // C4996
 }
 
 static GnAllocationCallbacks* GnDefaultAllocator() noexcept
@@ -103,6 +110,7 @@ GnResult GnCreateInstance(const GnInstanceDesc* desc,
 
     switch (desc->backend) {
         case GnBackend_D3D12:
+            return GnCreateInstanceD3D12(desc, alloc_callbacks, instance);
         case GnBackend_Vulkan:
             return GnCreateInstanceVulkan(desc, alloc_callbacks, instance);
         default:
@@ -119,12 +127,7 @@ void GnDestroyInstance(GnInstance instance)
 
 GnAdapter GnGetDefaultAdapter(GnInstance instance)
 {
-    GnAdapter current_adapter = instance->adapters;
-
-    while (current_adapter != nullptr && current_adapter->is_compatible == GnTrue)
-        return current_adapter;
-
-    return nullptr;
+    return instance->adapters;
 }
 
 uint32_t GnGetAdapterCount(GnInstance instance)
@@ -174,11 +177,6 @@ GnBackend GnGetBackend(GnInstance instance)
 }
 
 // [GnAdapter]
-
-inline GnBool GnIsAdapterCompatible(GnAdapter adapter)
-{
-    return adapter->is_compatible;
-}
 
 void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties)
 {
