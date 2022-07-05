@@ -135,12 +135,14 @@ struct GnAdapterVK : public GnAdapter_t
         limits.max_per_stage_sampler_resources = vk_limits.maxPerStageDescriptorSamplers;
         limits.max_per_stage_uniform_buffer_resources = vk_limits.maxPerStageDescriptorUniformBuffers;
         limits.max_per_stage_storage_buffer_resources = vk_limits.maxPerStageDescriptorStorageBuffers;
+        limits.max_per_stage_read_only_storage_buffer_resources = vk_limits.maxPerStageDescriptorStorageBuffers;
         limits.max_per_stage_sampled_texture_resources = vk_limits.maxPerStageDescriptorSampledImages;
         limits.max_per_stage_storage_texture_resources = vk_limits.maxPerStageDescriptorStorageImages;
         limits.max_per_stage_resources = vk_limits.maxPerStageResources;
         limits.max_resource_table_samplers = vk_limits.maxDescriptorSetSamplers;
         limits.max_resource_table_uniform_buffers = vk_limits.maxDescriptorSetUniformBuffers;
         limits.max_resource_table_storage_buffers = vk_limits.maxDescriptorSetStorageBuffers;
+        limits.max_resource_table_read_only_storage_buffer_resources = vk_limits.maxDescriptorSetStorageBuffers;
         limits.max_resource_table_sampled_textures = vk_limits.maxDescriptorSetSampledImages;
         limits.max_resource_table_storage_textures = vk_limits.maxDescriptorSetStorageImages;
     }

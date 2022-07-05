@@ -146,14 +146,17 @@ typedef struct
     uint32_t max_per_stage_sampler_resources;
     uint32_t max_per_stage_uniform_buffer_resources;
     uint32_t max_per_stage_storage_buffer_resources;
+    uint32_t max_per_stage_read_only_storage_buffer_resources;
     uint32_t max_per_stage_sampled_texture_resources;
     uint32_t max_per_stage_storage_texture_resources;
     uint32_t max_per_stage_resources;
     uint32_t max_resource_table_samplers;
     uint32_t max_resource_table_uniform_buffers;
     uint32_t max_resource_table_storage_buffers;
+    uint32_t max_resource_table_read_only_storage_buffer_resources;
     uint32_t max_resource_table_sampled_textures;
     uint32_t max_resource_table_storage_textures;
+    uint32_t max_resource_table_resources;
 } GnAdapterLimits;
 
 GnBool GnIsAdapterCompatible(GnAdapter adapter);
