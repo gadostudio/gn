@@ -247,6 +247,7 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
         new(adapter) GnAdapterD3D12(new_instance, current_adapter, device);
 
         device->Release();
+        predecessor = adapter;
     }
 
     new_instance->num_adapters = i;
