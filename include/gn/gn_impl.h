@@ -45,16 +45,14 @@ struct GnInstance_t
 
 struct GnAdapter_t
 {
-    GnInstance                      parent_instance = nullptr;
     GnAdapter_t*                    next_adapter = nullptr;
     GnAdapterProperties             properties{};
     GnAdapterLimits                 limits{};
     std::bitset<GnFeature_Count>    features;
 
-    GnAdapter_t(GnInstance parent_instance) noexcept :
-        parent_instance(parent_instance)
-    {
-    }
+    virtual ~GnAdapter_t() { }
+    virtual GnBool IsTextureFormatSupported(GnFormat format, GnTextureUsageFlags usages, bool blending, bool filtering) const = 0;
+    virtual GnBool IsVertexFormatSupported(GnFormat format) const = 0;
 };
 
 static void* GnLoadLibrary(const char* name) noexcept
@@ -98,7 +96,6 @@ static GnAllocationCallbacks* GnDefaultAllocator() noexcept
 }
 
 GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept;
-
 GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept;
 
 GnResult GnCreateInstance(const GnInstanceDesc* desc,
@@ -230,9 +227,19 @@ uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, void* userdata, GnG
 GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature)
 {
     if (feature >= GnFeature_Count)
-        return GnFalse;
+        return GN_FALSE;
 
     return (GnBool)(bool)adapter->features[feature];
+}
+
+GnBool GnIsTextureFormatSupported(GnAdapter adapter, GnFormat format, GnTextureUsageFlags usage, GnBool blending, GnBool filtering)
+{
+    return adapter->IsTextureFormatSupported(format, usage, blending, filtering);
+}
+
+GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format)
+{
+    return adapter->IsVertexFormatSupported(format);
 }
 
 

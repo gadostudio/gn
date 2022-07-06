@@ -5,7 +5,7 @@
 TEST_CASE("Create instance", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_D3D12;
+    instance_desc.backend = GnBackend_Vulkan;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -19,7 +19,7 @@ TEST_CASE("Create instance", "[instance]")
 TEST_CASE("Adapter query", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_D3D12;
+    instance_desc.backend = GnBackend_Vulkan;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -46,7 +46,7 @@ TEST_CASE("Adapter query", "[instance]")
 TEST_CASE("Adapter feature", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_D3D12;
+    instance_desc.backend = GnBackend_Vulkan;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -67,6 +67,24 @@ TEST_CASE("Adapter feature", "[instance]")
     features.clear();
     num_reported_features = GnGetAdapterFeaturesWithCallback(adapter, [&features](GnFeature feature) { features.push_back(feature); });
     REQUIRE(num_features == num_reported_features);
+
+    GnDestroyInstance(instance);
+}
+
+TEST_CASE("Adapter formats", "[instance]")
+{
+    GnInstanceDesc instance_desc{};
+    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.enable_debugging = GN_TRUE;
+    instance_desc.enable_validation = GN_TRUE;
+    instance_desc.enable_backend_validation = GN_TRUE;
+
+    GnInstance instance;
+    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+
+    GnAdapter adapter = GnGetDefaultAdapter(instance);
+    REQUIRE(GnIsTextureFormatSupported(adapter, GnFormat_RGBA8Unorm, GnTextureUsage_Sampled, GN_FALSE, GN_TRUE) == GN_TRUE);
+    REQUIRE(GnIsVertexFormatSupported(adapter, GnFormat_RGBA8Unorm) == GN_TRUE);
 
     GnDestroyInstance(instance);
 }
