@@ -158,6 +158,11 @@ struct GnAdapterD3D12 : public GnAdapter_t
         limits.max_resource_table_sampled_textures = max_per_stage_srv;
         limits.max_resource_table_storage_textures = max_per_stage_uav;
         limits.max_per_stage_resources = max_per_stage_samplers + max_per_stage_cbv + max_per_stage_srv + max_per_stage_uav;
+
+        features.set(GnFeature_FullDrawIndexRange32Bit, true);
+        features.set(GnFeature_TextureCubeArray, true);
+        features.set(GnFeature_NativeMultiDrawIndirect, true);
+        features.set(GnFeature_DrawIndirectFirstInstance, true);
     }
 
     ~GnAdapterD3D12()

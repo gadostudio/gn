@@ -135,10 +135,10 @@ uint32_t GnGetAdapterCount(GnInstance instance)
     return instance->num_adapters;
 }
 
-GnResult GnGetAdapters(GnInstance instance, uint32_t num_adapters, GN_OUT GnAdapter* adapters)
+uint32_t GnGetAdapters(GnInstance instance, uint32_t num_adapters, GN_OUT GnAdapter* adapters)
 {
     if (instance->adapters == nullptr)
-        return GnError_NoAdapterAvailable;
+        return 0;
 
     GnAdapter current_adapter = instance->adapters;
     uint32_t i = 0;
@@ -149,26 +149,24 @@ GnResult GnGetAdapters(GnInstance instance, uint32_t num_adapters, GN_OUT GnAdap
         num_adapters--;
     }
 
-    return GnSuccess;
+    return i;
 }
 
-GnResult GnGetAdaptersWithCallback(GnInstance instance, uint32_t num_adapters, void* userdata, GnGetAdapterCallbackFn callback_fn)
+uint32_t GnGetAdaptersWithCallback(GnInstance instance, void* userdata, GnGetAdapterCallbackFn callback_fn)
 {
     if (instance->adapters == nullptr)
-        return GnError_NoAdapterAvailable;
-
-    if (num_adapters == 0)
-        num_adapters = instance->num_adapters;
+        return 0;
 
     GnAdapter current_adapter = instance->adapters;
+    uint32_t i = 0;
 
-    while (current_adapter != nullptr && num_adapters != 0) {
-        callback_fn(current_adapter, userdata);
+    while (current_adapter != nullptr) {
+        callback_fn(userdata, current_adapter);
         current_adapter = current_adapter->next_adapter;
-        num_adapters--;
+        i++;
     }
 
-    return GnSuccess;
+    return i;
 }
 
 GnBackend GnGetBackend(GnInstance instance)
@@ -188,6 +186,47 @@ void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits)
     std::memcpy(limits, &adapter->limits, sizeof(GnAdapterLimits));
 }
 
+uint32_t GnGetAdapterFeatureCount(GnAdapter adapter)
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < GnFeature_Count; i++) {
+        if (!adapter->features[i]) continue;
+        n++;
+    }
+
+    return n;
+}
+
+uint32_t GnGetAdapterFeatures(GnAdapter adapter, uint32_t num_features, GnFeature* features)
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < GnFeature_Count && n < num_features; i++) {
+        if (!adapter->features[i]) continue;
+
+        if (features != nullptr)
+            features[n] = (GnFeature)i;
+
+        n++;
+    }
+
+    return n;
+}
+
+uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterFeatureCallbackFn callback_fn)
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < GnFeature_Count; i++) {
+        if (!adapter->features[i]) continue;
+        callback_fn(userdata, (GnFeature)i);
+        n++;
+    }
+
+    return n;
+}
+
 GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature)
 {
     if (feature >= GnFeature_Count)
@@ -195,5 +234,6 @@ GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature)
 
     return (GnBool)(bool)adapter->features[feature];
 }
+
 
 #endif // GN_IMPL_H_
