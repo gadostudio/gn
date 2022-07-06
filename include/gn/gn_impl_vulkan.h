@@ -27,6 +27,7 @@ struct GnVulkanInstanceFunctions
     PFN_vkGetPhysicalDeviceFeatures vkGetPhysicalDeviceFeatures;
     PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties;
     PFN_vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties;
+    PFN_vkGetPhysicalDeviceImageFormatProperties vkGetPhysicalDeviceImageFormatProperties;
 };
 
 struct GnVulkanFunctionDispatcher
@@ -43,20 +44,23 @@ struct GnVulkanFunctionDispatcher
     static bool Init() noexcept;
 };
 
-static std::optional<GnVulkanFunctionDispatcher> g_vk_dispatcher;
+struct GnFormatSupportVK
+{
+    VkSampleCountFlags  sample_counts;
+};
 
 struct GnAdapterVK : public GnAdapter_t
 {
-    GnInstanceVK* parent_instance = nullptr;
-    VkPhysicalDevice physical_device = nullptr;
+    GnInstanceVK*       parent_instance = nullptr;
+    VkPhysicalDevice    physical_device = nullptr;
 
     GnAdapterVK(GnInstanceVK* parent_instance, VkPhysicalDevice physical_device) noexcept;
     ~GnAdapterVK() { }
 
-    void ApplyProperties(const VkPhysicalDeviceProperties& vk_properties);
-    void ApplyFeatureSet(const VkPhysicalDeviceFeatures& vk_features);
-    GnBool IsTextureFormatSupported(GnFormat format, GnTextureUsageFlags usages, bool blending, bool filtering) const override;
-    GnBool IsVertexFormatSupported(GnFormat format) const override;
+    void ApplyProperties(const VkPhysicalDeviceProperties& vk_properties) noexcept;
+    void ApplyFeatureSet(const VkPhysicalDeviceFeatures& vk_features) noexcept;
+    GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
+    GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
 };
 
 struct GnInstanceVK : public GnInstance_t
@@ -73,7 +77,9 @@ struct GnInstanceVK : public GnInstance_t
 //                    IMPLEMENTATION
 // -------------------------------------------------------
 
-static GnResult GnConvertFromVkResult(VkResult result)
+static std::optional<GnVulkanFunctionDispatcher> g_vk_dispatcher;
+
+inline static GnResult GnConvertFromVkResult(VkResult result)
 {
     switch (result) {
         case VK_SUCCESS:
@@ -87,7 +93,7 @@ static GnResult GnConvertFromVkResult(VkResult result)
     return GnError_Unknown;
 }
 
-static inline VkFormat GnConvertToVkFormat(GnFormat format)
+inline static VkFormat GnConvertToVkFormat(GnFormat format)
 {
     switch (format) {
         case GnFormat_R8Unorm:      return VK_FORMAT_R8_UNORM;
@@ -103,7 +109,30 @@ static inline VkFormat GnConvertToVkFormat(GnFormat format)
         case GnFormat_RGBA8Snorm:   return VK_FORMAT_R8G8B8A8_SNORM;
         case GnFormat_RGBA8Uint:    return VK_FORMAT_R8G8B8A8_UINT;
         case GnFormat_RGBA8Sint:    return VK_FORMAT_R8G8B8A8_SNORM;
-        default:                    GN_DBG_ASSERT(false && "Unreachable");
+        case GnFormat_BGRA8Unorm:   return VK_FORMAT_B8G8R8A8_UNORM;
+        case GnFormat_BGRA8Srgb:    return VK_FORMAT_B8G8R8A8_SRGB;
+        case GnFormat_R16Uint:      return VK_FORMAT_R16_UINT;
+        case GnFormat_R16Sint:      return VK_FORMAT_R16_SINT;
+        case GnFormat_R16Float:     return VK_FORMAT_R16_SFLOAT;
+        case GnFormat_RG16Uint:     return VK_FORMAT_R16G16_UINT;
+        case GnFormat_RG16Sint:     return VK_FORMAT_R16G16_SINT;
+        case GnFormat_RG16Float:    return VK_FORMAT_R16G16_SFLOAT;
+        case GnFormat_RGBA16Uint:   return VK_FORMAT_R16G16B16A16_UINT;
+        case GnFormat_RGBA16Sint:   return VK_FORMAT_R16G16B16A16_SINT;
+        case GnFormat_RGBA16Float:  return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case GnFormat_R32Uint:      return VK_FORMAT_R32_UINT;
+        case GnFormat_R32Sint:      return VK_FORMAT_R32_SINT;
+        case GnFormat_R32Float:     return VK_FORMAT_R32_SFLOAT;
+        case GnFormat_RG32Uint:     return VK_FORMAT_R32G32_UINT;
+        case GnFormat_RG32Sint:     return VK_FORMAT_R32G32_SINT;
+        case GnFormat_RG32Float:    return VK_FORMAT_R32G32_SFLOAT;
+        case GnFormat_RGB32Uint:    return VK_FORMAT_R32G32B32_UINT;
+        case GnFormat_RGB32Sint:    return VK_FORMAT_R32G32B32_SINT;
+        case GnFormat_RGB32Float:   return VK_FORMAT_R32G32B32_SFLOAT;
+        case GnFormat_RGBA32Uint:   return VK_FORMAT_R32G32B32A32_UINT;
+        case GnFormat_RGBA32Sint:   return VK_FORMAT_R32G32B32A32_SINT;
+        case GnFormat_RGBA32Float:  return VK_FORMAT_R32G32B32A32_SFLOAT;
+        default:                    break;
     }
 
     return VK_FORMAT_UNDEFINED;
@@ -292,7 +321,7 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* parent_instance, VkPhysicalDevice physica
 {
 }
 
-void GnAdapterVK::ApplyProperties(const VkPhysicalDeviceProperties& vk_properties)
+void GnAdapterVK::ApplyProperties(const VkPhysicalDeviceProperties& vk_properties) noexcept
 {
     // Set properties
     std::memcpy(properties.name, vk_properties.deviceName, GN_MAX_CHARS);
@@ -344,7 +373,7 @@ void GnAdapterVK::ApplyProperties(const VkPhysicalDeviceProperties& vk_propertie
         limits.max_per_stage_storage_texture_resources;
 }
 
-void GnAdapterVK::ApplyFeatureSet(const VkPhysicalDeviceFeatures& vk_features)
+void GnAdapterVK::ApplyFeatureSet(const VkPhysicalDeviceFeatures& vk_features) noexcept
 {
     features.set(GnFeature_FullDrawIndexRange32Bit, vk_features.fullDrawIndexUint32);
     features.set(GnFeature_TextureCubeArray, vk_features.imageCubeArray);
@@ -352,53 +381,49 @@ void GnAdapterVK::ApplyFeatureSet(const VkPhysicalDeviceFeatures& vk_features)
     features.set(GnFeature_DrawIndirectFirstInstance, vk_features.drawIndirectFirstInstance);
 }
 
-GnBool GnAdapterVK::IsTextureFormatSupported(GnFormat format, GnTextureUsageFlags usage, bool blending, bool filtering) const
+GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat format) const noexcept
 {
-    VkFormatProperties fmt_properties;
-    parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt_properties);
-    VkFormatFeatureFlags fmt_features = 0;
+    VkFormatProperties fmt;
+    parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
 
-    if (usage & GnTextureUsage_CopySrc) {
-        fmt_features |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
-    }
+    VkFormatFeatureFlags features = fmt.optimalTilingFeatures & fmt.linearTilingFeatures;
+    GnTextureFormatFeatureFlags ret = 0;
+    
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT))
+        ret |= GnTextureFormatFeature_CopySrc;
 
-    if (usage & GnTextureUsage_CopyDst) {
-        fmt_features |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-    }
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_DST_BIT))
+        ret |= GnTextureFormatFeature_CopyDst;
 
-    if (usage & GnTextureUsage_BlitSrc) {
-        fmt_features |= VK_FORMAT_FEATURE_BLIT_SRC_BIT;
-    }
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_SRC_BIT))
+        ret |= GnTextureFormatFeature_BlitSrc;
 
-    if (usage & GnTextureUsage_BlitDst) {
-        fmt_features |= VK_FORMAT_FEATURE_BLIT_DST_BIT;
-    }
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_DST_BIT))
+        ret |= GnTextureFormatFeature_BlitSrc;
 
-    if (usage & GnTextureUsage_Sampled) {
-        fmt_features |= filtering ? VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT : VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-    }
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
+        ret |= GnTextureFormatFeature_Sampled;
 
-    if (usage & GnTextureUsage_Storage) {
-        fmt_features |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-    }
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+        ret |= GnTextureFormatFeature_SampledFilterable;
 
-    if (usage & GnTextureUsage_ColorAttachment) {
-        fmt_features |= blending ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT : VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
-    }
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
+        ret |= GnTextureFormatFeature_StorageRead | GnTextureFormatFeature_StorageWrite;
 
-    if (usage & GnTextureUsage_DepthStencilAttachment) {
-        fmt_features |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    }
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
+        ret |= GnTextureFormatFeature_ColorAttachment;
 
-    return (GnBool)((fmt_properties.linearTilingFeatures & fmt_features) == fmt_features &&
-        (fmt_properties.optimalTilingFeatures & fmt_features) == fmt_features);
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
+        ret |= GnTextureFormatFeature_DepthStencilAttachment;
+
+    return ret;
 }
 
-GnBool GnAdapterVK::IsVertexFormatSupported(GnFormat format) const
+GnBool GnAdapterVK::IsVertexFormatSupported(GnFormat format) const noexcept
 {
-    VkFormatProperties fmt_properties;
-    parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt_properties);
-    return (GnBool)((fmt_properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) == VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+    VkFormatProperties fmt;
+    parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
+    return GnTestBitmask(fmt.bufferFeatures, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
 }
 
 #endif

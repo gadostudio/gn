@@ -83,7 +83,7 @@ TEST_CASE("Adapter formats", "[instance]")
     REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
 
     GnAdapter adapter = GnGetDefaultAdapter(instance);
-    REQUIRE(GnIsTextureFormatSupported(adapter, GnFormat_RGBA8Unorm, GnTextureUsage_Sampled, GN_FALSE, GN_TRUE) == GN_TRUE);
+    REQUIRE(GnGetTextureFormatFeatureSupport(adapter, GnFormat_RGBA8Unorm) != 0);
     REQUIRE(GnIsVertexFormatSupported(adapter, GnFormat_RGBA8Unorm) == GN_TRUE);
 
     GnDestroyInstance(instance);

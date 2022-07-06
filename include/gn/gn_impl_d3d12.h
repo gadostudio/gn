@@ -33,12 +33,13 @@ struct GnAdapterD3D12 : public GnAdapter_t
 {
     IDXGIAdapter1* adapter = nullptr;
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT fmt_support[GnFormat_Count];
 
     GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noexcept;
     ~GnAdapterD3D12();
 
-    GnBool IsTextureFormatSupported(GnFormat format, GnTextureUsageFlags usages, bool blending, bool filtering) const override;
-    GnBool IsVertexFormatSupported(GnFormat format) const override;
+    GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
+    GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
 };
 
 struct GnInstanceD3D12 : public GnInstance_t
@@ -53,6 +54,51 @@ struct GnInstanceD3D12 : public GnInstance_t
 // -------------------------------------------------------
 //                    IMPLEMENTATION
 // -------------------------------------------------------
+
+inline static DXGI_FORMAT GnConvertToDxgiFormat(GnFormat format)
+{
+    switch (format) {
+        case GnFormat_R8Unorm:      return DXGI_FORMAT_R8_UNORM;
+        case GnFormat_R8Snorm:      return DXGI_FORMAT_R8_SNORM;
+        case GnFormat_R8Uint:       return DXGI_FORMAT_R8_UINT;
+        case GnFormat_R8Sint:       return DXGI_FORMAT_R8_SINT;
+        case GnFormat_RG8Unorm:     return DXGI_FORMAT_R8G8_UNORM;
+        case GnFormat_RG8Snorm:     return DXGI_FORMAT_R8G8_SNORM;
+        case GnFormat_RG8Uint:      return DXGI_FORMAT_R8G8_UINT;
+        case GnFormat_RG8Sint:      return DXGI_FORMAT_R8G8_SINT;
+        case GnFormat_RGBA8Srgb:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        case GnFormat_RGBA8Unorm:   return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case GnFormat_RGBA8Snorm:   return DXGI_FORMAT_R8G8B8A8_SNORM;
+        case GnFormat_RGBA8Uint:    return DXGI_FORMAT_R8G8B8A8_UINT;
+        case GnFormat_RGBA8Sint:    return DXGI_FORMAT_R8G8B8A8_SNORM;
+        case GnFormat_BGRA8Unorm:   return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case GnFormat_BGRA8Srgb:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        case GnFormat_R16Uint:      return DXGI_FORMAT_R16_UINT;
+        case GnFormat_R16Sint:      return DXGI_FORMAT_R16_SINT;
+        case GnFormat_R16Float:     return DXGI_FORMAT_R16_FLOAT;
+        case GnFormat_RG16Uint:     return DXGI_FORMAT_R16G16_UINT;
+        case GnFormat_RG16Sint:     return DXGI_FORMAT_R16G16_SINT;
+        case GnFormat_RG16Float:    return DXGI_FORMAT_R16G16_FLOAT;
+        case GnFormat_RGBA16Uint:   return DXGI_FORMAT_R16G16B16A16_UINT;
+        case GnFormat_RGBA16Sint:   return DXGI_FORMAT_R16G16B16A16_SINT;
+        case GnFormat_RGBA16Float:  return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        case GnFormat_R32Uint:      return DXGI_FORMAT_R32_UINT;
+        case GnFormat_R32Sint:      return DXGI_FORMAT_R32_SINT;
+        case GnFormat_R32Float:     return DXGI_FORMAT_R32_FLOAT;
+        case GnFormat_RG32Uint:     return DXGI_FORMAT_R32G32_UINT;
+        case GnFormat_RG32Sint:     return DXGI_FORMAT_R32G32_SINT;
+        case GnFormat_RG32Float:    return DXGI_FORMAT_R32G32_FLOAT;
+        case GnFormat_RGB32Uint:    return DXGI_FORMAT_R32G32B32_UINT;
+        case GnFormat_RGB32Sint:    return DXGI_FORMAT_R32G32B32_SINT;
+        case GnFormat_RGB32Float:   return DXGI_FORMAT_R32G32B32_FLOAT;
+        case GnFormat_RGBA32Uint:   return DXGI_FORMAT_R32G32B32A32_UINT;
+        case GnFormat_RGBA32Sint:   return DXGI_FORMAT_R32G32B32A32_SINT;
+        case GnFormat_RGBA32Float:  return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        default:                    break;
+    }
+
+    return DXGI_FORMAT_UNKNOWN;
+}
 
 inline UINT GnCalcSubresourceD3D12(uint32_t mip_slice, uint32_t array_slice, uint32_t plane_slice, uint32_t mip_levels, uint32_t array_size)
 {
@@ -279,6 +325,13 @@ GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noe
     features.set(GnFeature_TextureCubeArray, true);
     features.set(GnFeature_NativeMultiDrawIndirect, true);
     features.set(GnFeature_DrawIndirectFirstInstance, true);
+
+    fmt_support[0] = {};
+
+    for (uint32_t format = 1; format < GnFormat_Count; format++) {
+        fmt_support[format].Format = GnConvertToDxgiFormat((GnFormat)format);
+        device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support[format], sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT));
+    }
 }
 
 GnAdapterD3D12::~GnAdapterD3D12()
@@ -286,14 +339,15 @@ GnAdapterD3D12::~GnAdapterD3D12()
     adapter->Release();
 }
 
-GnBool GnAdapterD3D12::IsTextureFormatSupported(GnFormat format, GnTextureUsageFlags usages, bool blending, bool filtering) const
+GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFormat format) const noexcept
 {
-    return GnBool();
+    return 0;
 }
 
-GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const
+GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
 {
-    return GnBool();
+    const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[format];
+    return (fmt.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER) == D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
 }
 
 #endif

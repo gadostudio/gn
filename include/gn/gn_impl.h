@@ -51,8 +51,8 @@ struct GnAdapter_t
     std::bitset<GnFeature_Count>    features;
 
     virtual ~GnAdapter_t() { }
-    virtual GnBool IsTextureFormatSupported(GnFormat format, GnTextureUsageFlags usages, bool blending, bool filtering) const = 0;
-    virtual GnBool IsVertexFormatSupported(GnFormat format) const = 0;
+    virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
+    virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
 };
 
 static void* GnLoadLibrary(const char* name) noexcept
@@ -74,6 +74,11 @@ static void GnWstrToStr(char* dst, const wchar_t* src, size_t len)
 {
     std::mbstate_t state{};
     std::wcsrtombs(dst, &src, len, &state); // C4996
+}
+
+inline static constexpr bool GnTestBitmask(uint32_t a, uint32_t b) noexcept
+{
+    return (a & b) == b;
 }
 
 static GnAllocationCallbacks* GnDefaultAllocator() noexcept
@@ -232,13 +237,19 @@ GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature)
     return (GnBool)(bool)adapter->features[feature];
 }
 
-GnBool GnIsTextureFormatSupported(GnAdapter adapter, GnFormat format, GnTextureUsageFlags usage, GnBool blending, GnBool filtering)
+GnTextureFormatFeatureFlags GnGetTextureFormatFeatureSupport(GnAdapter adapter, GnFormat format)
 {
-    return adapter->IsTextureFormatSupported(format, usage, blending, filtering);
+    if (format >= GnFormat_Count)
+        return 0;
+
+    return adapter->GetTextureFormatFeatureSupport(format);
 }
 
 GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format)
 {
+    if (format >= GnFormat_Count)
+        return GN_FALSE;
+
     return adapter->IsVertexFormatSupported(format);
 }
 

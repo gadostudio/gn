@@ -163,6 +163,7 @@ typedef enum
     GnFormat_RGBA32Uint,
     GnFormat_RGBA32Sint,
     GnFormat_RGBA32Float,
+    GnFormat_Count,
 
     // Vertex Formats
     // 8-bpc vertex formats
@@ -203,21 +204,23 @@ typedef enum
     GnFormat_Sint32x2 = GnFormat_RG32Sint,
     GnFormat_Sint32x3 = GnFormat_RGB32Sint,
     GnFormat_Sint32x4 = GnFormat_RGBA32Sint,
-    GnFormat_Count,
 } GnFormat;
 
 typedef enum
 {
-    GnTextureUsage_CopySrc = 1 << 0,
-    GnTextureUsage_CopyDst = 1 << 1,
-    GnTextureUsage_BlitSrc = 1 << 2,
-    GnTextureUsage_BlitDst = 1 << 3,
-    GnTextureUsage_Sampled = 1 << 4,
-    GnTextureUsage_Storage = 1 << 5,
-    GnTextureUsage_ColorAttachment = 1 << 6,
-    GnTextureUsage_DepthStencilAttachment = 1 << 7,
-} GnTextureUsage;
-typedef uint32_t GnTextureUsageFlags;
+    GnTextureFormatFeature_CopySrc = 1 << 0,
+    GnTextureFormatFeature_CopyDst = 1 << 1,
+    GnTextureFormatFeature_BlitSrc = 1 << 2,
+    GnTextureFormatFeature_BlitDst = 1 << 3,
+    GnTextureFormatFeature_Sampled = 1 << 4,
+    GnTextureFormatFeature_SampledFilterable = 1 << 5,
+    GnTextureFormatFeature_StorageRead = 1 << 6,
+    GnTextureFormatFeature_StorageWrite = 1 << 7,
+    GnTextureFormatFeature_ColorAttachment = 1 << 8,
+    GnTextureFormatFeature_ColorAttachmentBlending = 1 << 9,
+    GnTextureFormatFeature_DepthStencilAttachment = 1 << 10,
+} GnTextureFormatFeature;
+typedef uint32_t GnTextureFormatFeatureFlags;
 
 typedef void (*GnGetAdapterFeatureCallbackFn)(void* userdata, GnFeature feature);
 
@@ -260,7 +263,7 @@ uint32_t GnGetAdapterFeatureCount(GnAdapter adapter);
 uint32_t GnGetAdapterFeatures(GnAdapter adapter, uint32_t num_features, GnFeature* features);
 uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterFeatureCallbackFn callback_fn);
 GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature);
-GnBool GnIsTextureFormatSupported(GnAdapter adapter, GnFormat format, GnTextureUsageFlags usage, GnBool blending, GnBool filtering);
+GnTextureFormatFeatureFlags GnGetTextureFormatFeatureSupport(GnAdapter adapter, GnFormat format);
 GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format);
 
 typedef struct
@@ -301,6 +304,19 @@ typedef enum
     GnTextureType_2D,
     GnTextureType_3D,
 } GnTextureType;
+
+typedef enum
+{
+    GnTextureUsage_CopySrc = 1 << 0,
+    GnTextureUsage_CopyDst = 1 << 1,
+    GnTextureUsage_BlitSrc = 1 << 2,
+    GnTextureUsage_BlitDst = 1 << 3,
+    GnTextureUsage_Sampled = 1 << 4,
+    GnTextureUsage_Storage = 1 << 5,
+    GnTextureUsage_ColorAttachment = 1 << 6,
+    GnTextureUsage_DepthStencilAttachment = 1 << 7,
+} GnTextureUsage;
+typedef uint32_t GnTextureUsageFlags;
 
 typedef struct
 {
