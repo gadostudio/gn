@@ -122,7 +122,88 @@ typedef enum
 
 typedef enum
 {
-    GnFormat_Unknown
+    GnFormat_Unknown,
+
+    // [Pixel Format]
+    // 8-bpc pixel formats
+    GnFormat_R8Unorm,
+    GnFormat_R8Snorm,
+    GnFormat_R8Uint,
+    GnFormat_R8Sint,
+    GnFormat_RG8Unorm,
+    GnFormat_RG8Snorm,
+    GnFormat_RG8Uint,
+    GnFormat_RG8Sint,
+    GnFormat_RGBA8Srgb,
+    GnFormat_RGBA8Unorm,
+    GnFormat_RGBA8Snorm,
+    GnFormat_RGBA8Uint,
+    GnFormat_RGBA8Sint,
+    GnFormat_BGRA8Unorm,
+    GnFormat_BGRA8Srgb,
+
+    // 16-bpc pixel formats
+    GnFormat_R16Uint,
+    GnFormat_R16Sint,
+    GnFormat_R16Float,
+    GnFormat_RG16Uint,
+    GnFormat_RG16Sint,
+    GnFormat_RG16Float,
+    GnFormat_RGBA16Uint,
+    GnFormat_RGBA16Sint,
+    GnFormat_RGBA16Float,
+
+    // 32-bpc pixel formats
+    GnFormat_R32Uint,
+    GnFormat_R32Sint,
+    GnFormat_R32Float,
+    GnFormat_RG32Uint,
+    GnFormat_RG32Sint,
+    GnFormat_RG32Float,
+    GnFormat_RGBA32Uint,
+    GnFormat_RGBA32Sint,
+    GnFormat_RGBA32Float,
+
+    // Vertex Formats
+    // 8-bpc vertex formats
+    GnFormat_Unorm8,
+    GnFormat_Unorm8x2,
+    GnFormat_Unorm8x4,
+    GnFormat_Snorm8,
+    GnFormat_Snorm8x2,
+    GnFormat_Snorm8x4,
+    GnFormat_Uint8,
+    GnFormat_Uint8x2,
+    GnFormat_Uint8x4,
+    GnFormat_Sint8,
+    GnFormat_Sint8x2,
+    GnFormat_Sint8x4,
+
+    // 16-bpc vertex formats
+    GnFormat_Float16,
+    GnFormat_Float16x2,
+    GnFormat_Float16x4,
+    GnFormat_Uint16,
+    GnFormat_Uint16x2,
+    GnFormat_Uint16x4,
+    GnFormat_Sint16,
+    GnFormat_Sint16x2,
+    GnFormat_Sint16x4,
+
+    // 32-bpc vertex formats
+    GnFormat_Float32,
+    GnFormat_Float32x2,
+    GnFormat_Float32x3,
+    GnFormat_Float32x4,
+    GnFormat_Uint32,
+    GnFormat_Uint32x2,
+    GnFormat_Uint32x3,
+    GnFormat_Uint32x4,
+    GnFormat_Sint32,
+    GnFormat_Sint32x2,
+    GnFormat_Sint32x3,
+    GnFormat_Sint32x4,
+    GnFormat_Count,
 } GnFormat;
 
 typedef void (*GnGetAdapterFeatureCallbackFn)(void* userdata, GnFeature feature);
