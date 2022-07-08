@@ -11,6 +11,9 @@ option(GN_ALLOW_DOWNLOAD_EXTERN_DEPS "Allow downloading of external dependencies
 option(GN_BUILD_EXAMPLES "Build examples (must build static library)" ON)
 option(GN_BUILD_TESTS "Build tests (must build static library)" OFF)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
+
 if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
     include(FetchContent)
 endif()
@@ -27,8 +30,8 @@ target_include_directories(gn
 
 if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
     if(GN_ENABLE_VULKAN)
-        # Get Vulkan-Headers from github if available
         if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
+            # Get Vulkan-Headers from github if allowed
             FetchContent_Declare(
                 Vulkan-Headers
                 GIT_REPOSITORY          https://github.com/KhronosGroup/Vulkan-Headers.git
@@ -47,14 +50,13 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
     endif()
 
     add_library(gn-static STATIC src/gn_impl_stub.cpp)
-    set_property(TARGET gn-static PROPERTY CXX_STANDARD 17)
     target_link_libraries(gn-static PRIVATE ${GN_STATIC_DEPS})
     target_include_directories(gn-static
         PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                $<INSTALL_INTERFACE:include>)
 
     if(GN_BUILD_EXAMPLES)
-        # TODO: make examples
+        add_subdirectory(examples)
     endif()
 
     if(GN_BUILD_TESTS)
@@ -62,7 +64,6 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
             test/expect_test.cpp
             test/instance_test.cpp
             test/test_driver.cpp)
-        set_property(TARGET gn-test PROPERTY CXX_STANDARD 17)
         target_link_libraries(gn-test PRIVATE gn-static)
     endif()
 endif()

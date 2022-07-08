@@ -76,9 +76,11 @@ static void GnWstrToStr(char* dst, const wchar_t* src, size_t len)
     std::wcsrtombs(dst, &src, len, &state); // C4996
 }
 
-inline static constexpr bool GnTestBitmask(uint32_t a, uint32_t b) noexcept
+template<typename T, typename... Args>
+inline static constexpr bool GnTestBitmask(T op, Args... args) noexcept
 {
-    return (a & b) == b;
+    T mask = (args | ...);
+    return (op & mask) == mask;
 }
 
 static GnAllocationCallbacks* GnDefaultAllocator() noexcept

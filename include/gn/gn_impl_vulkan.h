@@ -46,7 +46,8 @@ struct GnVulkanFunctionDispatcher
 
 struct GnFormatSupportVK
 {
-    VkSampleCountFlags  sample_counts;
+    GnTextureFormatFeatureFlags texture_format_features;
+    VkSampleCountFlags          sample_counts;
 };
 
 struct GnAdapterVK : public GnAdapter_t
@@ -272,6 +273,7 @@ void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, GnVu
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceFeatures);
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceProperties);
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceFormatProperties);
+    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceImageFormatProperties);
 }
 
 bool GnVulkanFunctionDispatcher::Init() noexcept
@@ -386,35 +388,18 @@ GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat
     VkFormatProperties fmt;
     parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
 
-    VkFormatFeatureFlags features = fmt.optimalTilingFeatures & fmt.linearTilingFeatures;
+    VkFormatFeatureFlags features = fmt.optimalTilingFeatures & fmt.linearTilingFeatures; // combine
     GnTextureFormatFeatureFlags ret = 0;
     
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT))
-        ret |= GnTextureFormatFeature_CopySrc;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_DST_BIT))
-        ret |= GnTextureFormatFeature_CopyDst;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_SRC_BIT))
-        ret |= GnTextureFormatFeature_BlitSrc;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_DST_BIT))
-        ret |= GnTextureFormatFeature_BlitSrc;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
-        ret |= GnTextureFormatFeature_Sampled;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
-        ret |= GnTextureFormatFeature_SampledFilterable;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
-        ret |= GnTextureFormatFeature_StorageRead | GnTextureFormatFeature_StorageWrite;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
-        ret |= GnTextureFormatFeature_ColorAttachment;
-
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
-        ret |= GnTextureFormatFeature_DepthStencilAttachment;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)) ret |= GnTextureFormatFeature_CopySrc;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) ret |= GnTextureFormatFeature_CopyDst;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_SRC_BIT)) ret |= GnTextureFormatFeature_BlitSrc;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_DST_BIT)) ret |= GnTextureFormatFeature_BlitSrc;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) ret |= GnTextureFormatFeature_Sampled;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) ret |= GnTextureFormatFeature_LinearFilterable;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) ret |= GnTextureFormatFeature_StorageRead | GnTextureFormatFeature_StorageWrite;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_ColorAttachment;
+    if (GnTestBitmask(features, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
 
     return ret;
 }

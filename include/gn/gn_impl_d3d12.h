@@ -341,7 +341,26 @@ GnAdapterD3D12::~GnAdapterD3D12()
 
 GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFormat format) const noexcept
 {
-    return 0;
+    const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)format];
+
+    if (!(fmt.Support1 & (D3D12_FORMAT_SUPPORT1_TEXTURE1D | D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TEXTURE3D | D3D12_FORMAT_SUPPORT1_TEXTURECUBE)))
+        return 0;
+
+    GnTextureFormatFeatureFlags ret = GnTextureFormatFeature_CopySrc | GnTextureFormatFeature_CopyDst | GnTextureFormatFeature_BlitSrc | GnTextureFormatFeature_Sampled;
+    if (GnTestBitmask(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)) ret |= GnTextureFormatFeature_StorageRead;
+    if (GnTestBitmask(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) ret |= GnTextureFormatFeature_StorageWrite;
+    if (GnTestBitmask(fmt.Support1, D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) ret |= GnTextureFormatFeature_ColorAttachment | GnTextureFormatFeature_BlitDst;
+    if (GnTestBitmask(fmt.Support1, D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
+
+    /*
+        https://docs.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1
+
+        "If the device supports the format as a resource (1D, 2D, 3D, or cube map) but doesn't support this option,
+        the resource can still use the Sample method but must use only the point filtering sampler state to perform the sample."
+    */
+    if (GnTestBitmask(fmt.Support1, D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) ret |= GnTextureFormatFeature_LinearFilterable;
+
+    return ret;
 }
 
 GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept

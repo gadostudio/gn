@@ -55,14 +55,6 @@ typedef enum
 
 typedef enum
 {
-    GnQueueType_Direct,
-    GnQueueType_Compute,
-    GnQueueType_Copy,
-    GnQueueType_Count,
-} GnQueueType;
-
-typedef enum
-{
     GnAllocationScope_Command = 0,
     GnAllocationScope_Object = 1,
     GnAllocationScope_Device = 2,
@@ -181,46 +173,54 @@ typedef enum
     GnFormat_Sint8x4,
 
     // 16-bpc vertex formats
-    GnFormat_Float16 = GnFormat_R16Float,
-    GnFormat_Float16x2 = GnFormat_RG16Float,
-    GnFormat_Float16x4 = GnFormat_RGBA16Float,
-    GnFormat_Uint16 = GnFormat_R16Uint,
-    GnFormat_Uint16x2 = GnFormat_RG16Uint,
-    GnFormat_Uint16x4 = GnFormat_RGBA16Uint,
-    GnFormat_Sint16 = GnFormat_R16Sint,
-    GnFormat_Sint16x2 = GnFormat_RG16Sint,
-    GnFormat_Sint16x4 = GnFormat_RGBA16Sint,
+    GnFormat_Float16    = GnFormat_R16Float,
+    GnFormat_Float16x2  = GnFormat_RG16Float,
+    GnFormat_Float16x4  = GnFormat_RGBA16Float,
+    GnFormat_Uint16     = GnFormat_R16Uint,
+    GnFormat_Uint16x2   = GnFormat_RG16Uint,
+    GnFormat_Uint16x4   = GnFormat_RGBA16Uint,
+    GnFormat_Sint16     = GnFormat_R16Sint,
+    GnFormat_Sint16x2   = GnFormat_RG16Sint,
+    GnFormat_Sint16x4   = GnFormat_RGBA16Sint,
 
     // 32-bpc vertex formats
-    GnFormat_Float32 = GnFormat_R32Float,
-    GnFormat_Float32x2 = GnFormat_RG32Float,
-    GnFormat_Float32x3 = GnFormat_RGB32Float,
-    GnFormat_Float32x4 = GnFormat_RGBA32Float,
-    GnFormat_Uint32 = GnFormat_R32Uint,
-    GnFormat_Uint32x2 = GnFormat_RG32Uint,
-    GnFormat_Uint32x3 = GnFormat_RGB32Uint,
-    GnFormat_Uint32x4 = GnFormat_RGBA32Uint,
-    GnFormat_Sint32 = GnFormat_R32Sint,
-    GnFormat_Sint32x2 = GnFormat_RG32Sint,
-    GnFormat_Sint32x3 = GnFormat_RGB32Sint,
-    GnFormat_Sint32x4 = GnFormat_RGBA32Sint,
+    GnFormat_Float32    = GnFormat_R32Float,
+    GnFormat_Float32x2  = GnFormat_RG32Float,
+    GnFormat_Float32x3  = GnFormat_RGB32Float,
+    GnFormat_Float32x4  = GnFormat_RGBA32Float,
+    GnFormat_Uint32     = GnFormat_R32Uint,
+    GnFormat_Uint32x2   = GnFormat_RG32Uint,
+    GnFormat_Uint32x3   = GnFormat_RGB32Uint,
+    GnFormat_Uint32x4   = GnFormat_RGBA32Uint,
+    GnFormat_Sint32     = GnFormat_R32Sint,
+    GnFormat_Sint32x2   = GnFormat_RG32Sint,
+    GnFormat_Sint32x3   = GnFormat_RGB32Sint,
+    GnFormat_Sint32x4   = GnFormat_RGBA32Sint,
 } GnFormat;
 
 typedef enum
 {
-    GnTextureFormatFeature_CopySrc = 1 << 0,
-    GnTextureFormatFeature_CopyDst = 1 << 1,
-    GnTextureFormatFeature_BlitSrc = 1 << 2,
-    GnTextureFormatFeature_BlitDst = 1 << 3,
-    GnTextureFormatFeature_Sampled = 1 << 4,
-    GnTextureFormatFeature_SampledFilterable = 1 << 5,
-    GnTextureFormatFeature_StorageRead = 1 << 6,
-    GnTextureFormatFeature_StorageWrite = 1 << 7,
-    GnTextureFormatFeature_ColorAttachment = 1 << 8,
-    GnTextureFormatFeature_ColorAttachmentBlending = 1 << 9,
-    GnTextureFormatFeature_DepthStencilAttachment = 1 << 10,
+    GnTextureFormatFeature_CopySrc                  = 1 << 0,
+    GnTextureFormatFeature_CopyDst                  = 1 << 1,
+    GnTextureFormatFeature_BlitSrc                  = 1 << 2,
+    GnTextureFormatFeature_BlitDst                  = 1 << 3,
+    GnTextureFormatFeature_Sampled                  = 1 << 4,
+    GnTextureFormatFeature_LinearFilterable         = 1 << 5,
+    GnTextureFormatFeature_StorageRead              = 1 << 6,
+    GnTextureFormatFeature_StorageWrite             = 1 << 7,
+    GnTextureFormatFeature_ColorAttachment          = 1 << 8,
+    GnTextureFormatFeature_ColorAttachmentBlending  = 1 << 9,
+    GnTextureFormatFeature_DepthStencilAttachment   = 1 << 10,
 } GnTextureFormatFeature;
 typedef uint32_t GnTextureFormatFeatureFlags;
+
+typedef enum
+{
+    GnQueueType_Direct,
+    GnQueueType_Compute,
+    GnQueueType_Copy,
+    GnQueueType_Count,
+} GnQueueType;
 
 typedef void (*GnGetAdapterFeatureCallbackFn)(void* userdata, GnFeature feature);
 
@@ -257,6 +257,12 @@ typedef struct
     uint32_t max_resource_table_storage_textures;
 } GnAdapterLimits;
 
+typedef struct
+{
+    GnQueueType type;
+    GnBool      sparse_binding;
+} GnQueueGroupProperties;
+
 void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties);
 void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits);
 uint32_t GnGetAdapterFeatureCount(GnAdapter adapter);
@@ -265,6 +271,7 @@ uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, void* userdata, GnG
 GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature);
 GnTextureFormatFeatureFlags GnGetTextureFormatFeatureSupport(GnAdapter adapter, GnFormat format);
 GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format);
+GnBool GnIsGraphicsQueueSupported(GnAdapter adapter);
 
 typedef struct
 {
