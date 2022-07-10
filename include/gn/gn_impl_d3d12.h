@@ -352,7 +352,13 @@ GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noe
         GnQueueProperties& queue = queue_properties[i];
         queue.index = i;
         queue.type = (GnQueueType)i;
-        queue.timestamp_query_supported = queue.type == GnQueueType_Copy && is_copy_queue_timestamp_query_supported;
+
+        if (queue.type != GnQueueType_Copy) {
+            queue.timestamp_query_supported = GN_TRUE;
+        }
+        else {
+            queue.timestamp_query_supported = is_copy_queue_timestamp_query_supported;
+        }
     }
 }
 

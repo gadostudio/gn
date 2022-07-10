@@ -92,7 +92,7 @@ TEST_CASE("Adapter formats", "[instance]")
 TEST_CASE("Adapter queues", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = GnBackend_D3D12;
     instance_desc.enable_debugging = GN_TRUE;
     instance_desc.enable_validation = GN_TRUE;
     instance_desc.enable_backend_validation = GN_TRUE;
