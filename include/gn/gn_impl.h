@@ -45,6 +45,7 @@ struct GnInstance_t
 
 struct GnAdapter_t
 {
+    GnInstance                      parent_instance = nullptr;
     GnAdapter_t*                    next_adapter = nullptr;
     GnAdapterProperties             properties{};
     GnAdapterLimits                 limits{};
@@ -59,7 +60,12 @@ struct GnAdapter_t
 
 struct GnDevice_t
 {
-    GnAdapter   parent_adapter;
+    GnAllocationCallbacks   alloc_callbacks{};
+
+    virtual ~GnDevice_t()
+    {
+        alloc_callbacks.free_fn(alloc_callbacks.userdata, this);
+    }
 
     virtual GnResult CreateQueue(uint32_t group_index, GnQueue* queue) noexcept = 0;
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
@@ -112,6 +118,8 @@ static GnAllocationCallbacks* GnDefaultAllocator() noexcept
 
     return &default_allocator;
 }
+
+// -- [GnInstance] --
 
 GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept;
 GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept;
@@ -189,7 +197,7 @@ GnBackend GnGetBackend(GnInstance instance)
     return instance->backend;
 }
 
-// [GnAdapter]
+// -- [GnAdapter] --
 
 void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties)
 {
@@ -285,6 +293,21 @@ uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userda
     }
 
     return adapter->num_queues;
+}
+
+// -- [GnDevice] --
+
+GnResult GnCreateDeviceVulkan(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device);
+GnResult GnCreateDeviceD3D12(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device);
+
+GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device)
+{
+    return GnError_Unimplemented;
+}
+
+void GnDestroyDevice(GnDevice device)
+{
+
 }
 
 #endif // GN_IMPL_H_

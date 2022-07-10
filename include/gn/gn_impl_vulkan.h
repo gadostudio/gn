@@ -29,6 +29,12 @@ struct GnVulkanInstanceFunctions
     PFN_vkGetPhysicalDeviceImageFormatProperties vkGetPhysicalDeviceImageFormatProperties;
     PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
+    PFN_vkCreateDevice vkCreateDevice;
+};
+
+struct GnVulkanDeviceFunctions
+{
+
 };
 
 struct GnVulkanFunctionDispatcher
@@ -51,18 +57,6 @@ struct GnFormatSupportVK
     VkSampleCountFlags          sample_counts;
 };
 
-struct GnAdapterVK : public GnAdapter_t
-{
-    GnInstanceVK*           parent_instance = nullptr;
-    VkPhysicalDevice        physical_device = nullptr;
-
-    GnAdapterVK(GnInstanceVK* parent_instance, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept;
-    ~GnAdapterVK() { }
-
-    GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
-    GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
-};
-
 struct GnInstanceVK : public GnInstance_t
 {
     GnVulkanInstanceFunctions   fn{};
@@ -71,6 +65,28 @@ struct GnInstanceVK : public GnInstance_t
 
     GnInstanceVK() noexcept;
     ~GnInstanceVK();
+};
+
+struct GnAdapterVK : public GnAdapter_t
+{
+    VkPhysicalDevice    physical_device = nullptr;
+    uint32_t            queue_count[4]; // queue count for each queue family
+
+    GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept;
+    ~GnAdapterVK() { }
+
+    GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
+    GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
+};
+
+struct GnDeviceVK : public GnDevice_t
+{
+    GnVulkanDeviceFunctions fn{};
+    VkDevice device;
+
+    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
+    GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
+    GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
 };
 
 // -------------------------------------------------------
@@ -136,6 +152,18 @@ inline static VkFormat GnConvertToVkFormat(GnFormat format)
     }
 
     return VK_FORMAT_UNDEFINED;
+}
+
+inline static bool GnConvertAndCheckDeviceFeatures(const uint32_t num_requested_features, const GnFeature* features, VkPhysicalDeviceFeatures& enabled_features)
+{
+    for (uint32_t i = 0; i < num_requested_features; i++) {
+        switch (features[i]) {
+            case GnFeature_FullDrawIndexRange32Bit:     enabled_features.fullDrawIndexUint32 = VK_TRUE; break;
+            case GnFeature_TextureCubeArray:            enabled_features.imageCubeArray = VK_TRUE; break;
+            case GnFeature_NativeMultiDrawIndirect:     enabled_features.multiDrawIndirect = VK_TRUE; break;
+            case GnFeature_DrawIndirectFirstInstance:   enabled_features.drawIndirectFirstInstance = VK_TRUE; break;
+        }
+    }
 }
 
 GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept
@@ -271,6 +299,7 @@ void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, GnVu
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceImageFormatProperties);
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceProperties);
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceQueueFamilyProperties);
+    GN_LOAD_INSTANCE_FN(vkCreateDevice);
 }
 
 bool GnVulkanFunctionDispatcher::Init() noexcept
@@ -314,10 +343,11 @@ GnInstanceVK::~GnInstanceVK()
 
 // -- [GnAdapterVK] --
 
-GnAdapterVK::GnAdapterVK(GnInstanceVK* parent_instance, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept :
-    parent_instance(parent_instance),
+GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept :
     physical_device(physical_device)
 {
+    parent_instance = instance;
+
     // Sets properties
     std::memcpy(properties.name, vk_properties.deviceName, GN_MAX_CHARS);
     properties.vendor_id = vk_properties.vendorID;
@@ -375,8 +405,8 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* parent_instance, VkPhysicalDevice physica
     features[GnFeature_DrawIndirectFirstInstance] = vk_features.drawIndirectFirstInstance;
 
     VkQueueFamilyProperties queue_families[4]{};
-    parent_instance->fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, nullptr);
-    parent_instance->fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, queue_families);
+    instance->fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, nullptr);
+    instance->fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, queue_families);
 
     for (uint32_t i = 0; i < num_queues; i++) {
         const VkQueueFamilyProperties& queue_family = queue_families[i];
@@ -395,13 +425,14 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* parent_instance, VkPhysicalDevice physica
         }
 
         queue.timestamp_query_supported = queue_family.timestampValidBits != 0;
+        queue_count[i] = queue_family.queueCount;
     }
 }
 
 GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat format) const noexcept
 {
     VkFormatProperties fmt;
-    parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
+    ((GnInstanceVK*)parent_instance)->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
 
     VkFormatFeatureFlags features = fmt.optimalTilingFeatures & fmt.linearTilingFeatures; // combine
     GnTextureFormatFeatureFlags ret = 0;
@@ -422,8 +453,67 @@ GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat
 GnBool GnAdapterVK::IsVertexFormatSupported(GnFormat format) const noexcept
 {
     VkFormatProperties fmt;
-    parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
+    ((GnInstanceVK*)parent_instance)->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
     return GnTestBitmask(fmt.bufferFeatures, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+}
+
+// -- [GnDeviceVK] --
+
+GnResult GnCreateDeviceVulkan(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device)
+{
+    GnAdapterVK* vk_adapter = (GnAdapterVK*)adapter;
+    GnInstanceVK* instance = (GnInstanceVK*)adapter->parent_instance;
+    const GnVulkanInstanceFunctions& fn = instance->fn;
+
+    static const float queue_priorities[16] = { 1.0f }; // idk if 16 is enough.
+    VkDeviceQueueCreateInfo queue_infos[4];
+
+    // Fill queue create info structs
+    for (uint32_t i = 0; i < desc->num_enabled_queues; i++) {
+        VkDeviceQueueCreateInfo& queue_info = queue_infos[i];
+        queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_info.pNext = nullptr;
+        queue_info.flags = 0;
+        queue_info.queueFamilyIndex = desc->enabled_queue_indices[i];
+        queue_info.queueCount = vk_adapter->queue_count[i];
+        queue_info.pQueuePriorities = queue_priorities;
+    }
+
+    static const char* device_extensions[] = {
+        "VK_KHR_swapchain"
+    };
+
+    VkPhysicalDeviceFeatures enabled_features{};
+    GnConvertAndCheckDeviceFeatures(desc->num_enabled_features, desc->enabled_features, enabled_features);
+
+    VkDeviceCreateInfo device_info;
+    device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_info.pNext = nullptr;
+    device_info.flags = 0;
+    device_info.queueCreateInfoCount = desc->num_enabled_queues;
+    device_info.pQueueCreateInfos = queue_infos;
+    device_info.enabledLayerCount = 0;
+    device_info.ppEnabledLayerNames = nullptr;
+    device_info.enabledExtensionCount = 1;
+    device_info.ppEnabledExtensionNames = device_extensions;
+    device_info.pEnabledFeatures = &enabled_features;
+
+    return GnError_Unimplemented;
+}
+
+GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept
+{
+    return GnError_Unimplemented;
 }
 
 #endif

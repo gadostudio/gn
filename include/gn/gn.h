@@ -282,15 +282,18 @@ typedef struct
 {
     uint32_t num_enabled_features;
     const GnFeature* enabled_features;
-    uint32_t num_queues;
+    uint32_t num_enabled_queues;
+    const uint32_t* enabled_queue_indices;
 } GnDeviceDesc;
 
-GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device);
+GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device);
 void GnDestroyDevice(GnDevice device);
 
 typedef struct
 {
-
+    uint32_t num_wait_fences;
+    uint32_t num_command_lists;
+    uint32_t num_signal_fences;
 } GnSubmission;
 
 GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, GnQueue* queue);

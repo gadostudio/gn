@@ -35,7 +35,7 @@ struct GnAdapterD3D12 : public GnAdapter_t
     D3D_FEATURE_LEVEL                   feature_level = D3D_FEATURE_LEVEL_11_0;
     D3D12_FEATURE_DATA_FORMAT_SUPPORT   fmt_support[GnFormat_Count];
 
-    GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noexcept;
+    GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D12Device* device) noexcept;
     ~GnAdapterD3D12();
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
@@ -160,7 +160,7 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
         if (predecessor != nullptr)
             predecessor->next_adapter = adapter;
 
-        new(adapter) GnAdapterD3D12(current_adapter, device);
+        new(adapter) GnAdapterD3D12(new_instance, current_adapter, device);
 
         device->Release();
         predecessor = adapter;
@@ -234,9 +234,11 @@ GnInstanceD3D12::~GnInstanceD3D12()
 
 // -- [GnAdapterD3D12] --
 
-GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noexcept :
+GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D12Device* device) noexcept :
     adapter(adapter)
 {
+    parent_instance = instance;
+
     DXGI_ADAPTER_DESC1 adapter_desc;
     adapter->GetDesc1(&adapter_desc);
 
@@ -395,6 +397,13 @@ GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
 {
     const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[format];
     return (fmt.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER) == D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
+}
+
+// -- [GnDeviceD3D12] -- 
+
+GnResult GnCreateDeviceD3D12(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device)
+{
+    return GnError_Unimplemented;
 }
 
 #endif
