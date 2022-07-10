@@ -31,9 +31,9 @@ static std::optional<GnD3D12FunctionDispatcher> g_d3d12_dispatcher;
 
 struct GnAdapterD3D12 : public GnAdapter_t
 {
-    IDXGIAdapter1* adapter = nullptr;
-    D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
-    D3D12_FEATURE_DATA_FORMAT_SUPPORT fmt_support[GnFormat_Count];
+    IDXGIAdapter1*                      adapter = nullptr;
+    D3D_FEATURE_LEVEL                   feature_level = D3D_FEATURE_LEVEL_11_0;
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT   fmt_support[GnFormat_Count];
 
     GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noexcept;
     ~GnAdapterD3D12();
@@ -239,6 +239,8 @@ GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noe
 {
     DXGI_ADAPTER_DESC1 adapter_desc;
     adapter->GetDesc1(&adapter_desc);
+
+    // Set the adapter general info.
     GnWstrToStr(properties.name, adapter_desc.Description, sizeof(adapter_desc.Description));
     properties.vendor_id = adapter_desc.VendorId;
 
@@ -246,6 +248,7 @@ GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noe
     if (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
         properties.type = GnAdapterType_Software;
     else {
+        // If the adapter is a UMA architecture, then it is an integrated adapter.
         D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
         architecture.NodeIndex = 0;
         device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture));
@@ -283,6 +286,7 @@ GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noe
     uint32_t max_per_stage_srv = 0;
     uint32_t max_per_stage_uav = 0;
 
+    // Set resource binding limits based on D3D12 resource binding tier
     // See: https://docs.microsoft.com/en-us/windows/win32/direct3d12/hardware-support
     switch (options.ResourceBindingTier) {
         case D3D12_RESOURCE_BINDING_TIER_1:
@@ -304,7 +308,7 @@ GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noe
             max_per_stage_uav = 1048576;
             break;
         default:
-            GN_DBG_ASSERT(false && "Unreachable");
+            GN_DBG_ASSERT(false && "Unreachable"); // just in case if things messed up.
     }
 
     limits.max_per_stage_sampler_resources = max_per_stage_samplers;
@@ -321,16 +325,34 @@ GnAdapterD3D12::GnAdapterD3D12(IDXGIAdapter1* adapter, ID3D12Device* device) noe
     limits.max_resource_table_storage_textures = max_per_stage_uav;
     limits.max_per_stage_resources = max_per_stage_samplers + max_per_stage_cbv + max_per_stage_srv + max_per_stage_uav;
 
+    // Apply feature sets
     features.set(GnFeature_FullDrawIndexRange32Bit, true);
     features.set(GnFeature_TextureCubeArray, true);
     features.set(GnFeature_NativeMultiDrawIndirect, true);
     features.set(GnFeature_DrawIndirectFirstInstance, true);
 
+    // Apply format supports
     fmt_support[0] = {};
-
     for (uint32_t format = 1; format < GnFormat_Count; format++) {
         fmt_support[format].Format = GnConvertToDxgiFormat((GnFormat)format);
         device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support[format], sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT));
+    }
+
+    num_queues = 3; // Since we can't get the number of queues in D3D12, we have to assume most GPUs support multiple queues.
+
+    // Check if timestamp can be queried in copy queue
+    bool is_copy_queue_timestamp_query_supported = false;
+    D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3;
+    if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3)))) {
+        is_copy_queue_timestamp_query_supported = options3.CopyQueueTimestampQueriesSupported;
+    }
+
+    // prepare the queue properties
+    for (uint32_t i = 0; i < num_queues; i++) {
+        GnQueueProperties& queue = queue_properties[i];
+        queue.index = i;
+        queue.type = (GnQueueType)i;
+        queue.timestamp_query_supported = queue.type == GnQueueType_Copy && is_copy_queue_timestamp_query_supported;
     }
 }
 
@@ -344,7 +366,7 @@ GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFor
     const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)format];
 
     if (!(fmt.Support1 & (D3D12_FORMAT_SUPPORT1_TEXTURE1D | D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TEXTURE3D | D3D12_FORMAT_SUPPORT1_TEXTURECUBE)))
-        return 0;
+        return 0; // returns nothing if this format does not support any type of texture
 
     GnTextureFormatFeatureFlags ret = GnTextureFormatFeature_CopySrc | GnTextureFormatFeature_CopyDst | GnTextureFormatFeature_BlitSrc | GnTextureFormatFeature_Sampled;
     if (GnTestBitmask(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)) ret |= GnTextureFormatFeature_StorageRead;

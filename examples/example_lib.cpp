@@ -7,7 +7,8 @@ int main(int argc, const char* argv[])
     if (GnExampleApp::g_app == nullptr)
         return -1;
 
-    GnExampleApp::g_app->Init();
+    if (!GnExampleApp::g_app->Init())
+        return -1;
 
     return GnExampleApp::g_app->Run();
 }

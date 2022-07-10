@@ -49,10 +49,21 @@ struct GnAdapter_t
     GnAdapterProperties             properties{};
     GnAdapterLimits                 limits{};
     std::bitset<GnFeature_Count>    features;
+    uint32_t                        num_queues = 0;
+    GnQueueProperties               queue_properties[4]{}; // is 4 enough?
 
     virtual ~GnAdapter_t() { }
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
     virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
+};
+
+struct GnDevice_t
+{
+    GnAdapter   parent_adapter;
+
+    virtual GnResult CreateQueue(uint32_t group_index, GnQueue* queue) noexcept = 0;
+    virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
+    virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
 };
 
 static void* GnLoadLibrary(const char* name) noexcept
@@ -255,5 +266,25 @@ GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format)
     return adapter->IsVertexFormatSupported(format);
 }
 
+uint32_t GnGetAdapterQueueCount(GnAdapter adapter)
+{
+    return adapter->num_queues;
+}
+
+uint32_t GnGetAdapterQueueProperties(GnAdapter adapter, uint32_t num_queues, GnQueueProperties* queue_properties)
+{
+    uint32_t n = std::min(num_queues, adapter->num_queues);
+    std::memcpy(queue_properties, adapter->queue_properties, sizeof(GnQueueProperties) * n);
+    return n;
+}
+
+uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterQueuePropertiesCallbackFn callback_fn)
+{
+    for (uint32_t i = 0; i < adapter->num_queues; i++) {
+        callback_fn(userdata, &adapter->queue_properties[i]);
+    }
+
+    return adapter->num_queues;
+}
 
 #endif // GN_IMPL_H_

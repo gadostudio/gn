@@ -69,6 +69,8 @@ struct GnExampleApp
         }
 
         adapter = GnGetDefaultAdapter(instance);
+
+        return true;
     }
 
     int Run()
