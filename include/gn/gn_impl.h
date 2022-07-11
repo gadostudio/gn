@@ -56,6 +56,7 @@ struct GnAdapter_t
     virtual ~GnAdapter_t() { }
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
     virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
+    virtual GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept = 0;
 };
 
 struct GnDevice_t
@@ -297,17 +298,17 @@ uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userda
 
 // -- [GnDevice] --
 
-GnResult GnCreateDeviceVulkan(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device);
-GnResult GnCreateDeviceD3D12(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device);
-
 GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device)
 {
-    return GnError_Unimplemented;
+    if (alloc_callbacks == nullptr)
+        alloc_callbacks = GnDefaultAllocator();
+
+    return adapter->CreateDevice(desc, alloc_callbacks, device);
 }
 
 void GnDestroyDevice(GnDevice device)
 {
-
+    device->~GnDevice_t();
 }
 
 #endif // GN_IMPL_H_

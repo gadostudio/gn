@@ -29,6 +29,15 @@ struct GnD3D12FunctionDispatcher
 
 static std::optional<GnD3D12FunctionDispatcher> g_d3d12_dispatcher;
 
+struct GnInstanceD3D12 : public GnInstance_t
+{
+    IDXGIFactory1* factory = nullptr;
+    GnAdapterD3D12* d3d12_adapters = nullptr;
+
+    GnInstanceD3D12() noexcept;
+    ~GnInstanceD3D12();
+};
+
 struct GnAdapterD3D12 : public GnAdapter_t
 {
     IDXGIAdapter1*                      adapter = nullptr;
@@ -40,15 +49,14 @@ struct GnAdapterD3D12 : public GnAdapter_t
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
+    GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept override;
 };
 
-struct GnInstanceD3D12 : public GnInstance_t
+struct GnDeviceD3D12 : public GnDevice_t
 {
-    IDXGIFactory1* factory = nullptr;
-    GnAdapterD3D12* d3d12_adapters = nullptr;
-
-    GnInstanceD3D12() noexcept;
-    ~GnInstanceD3D12();
+    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
+    GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
+    GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
 };
 
 // -------------------------------------------------------
@@ -399,9 +407,24 @@ GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
     return (fmt.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER) == D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
 }
 
+GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept
+{
+    return GnResult();
+}
+
 // -- [GnDeviceD3D12] -- 
 
-GnResult GnCreateDeviceD3D12(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device)
+GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnDeviceD3D12::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnDeviceD3D12::CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept
 {
     return GnError_Unimplemented;
 }

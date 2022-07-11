@@ -41,7 +41,8 @@ typedef enum
     GnError_InitializationFailed,
     GnError_BackendNotAvailable,
     GnError_NoAdapterAvailable,
-    GnError_IncompatibleAdapter,
+    GnError_UnsupportedFeature,
+    GnError_InternalError,
     GnError_OutOfHostMemory,
 } GnResult;
 

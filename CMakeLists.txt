@@ -63,6 +63,7 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
         add_executable(gn-test
             test/expect_test.cpp
             test/instance_test.cpp
+            test/device_test.cpp
             test/test_driver.cpp)
         target_link_libraries(gn-test PRIVATE gn-static)
     endif()
