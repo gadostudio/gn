@@ -202,12 +202,12 @@ GnBackend GnGetBackend(GnInstance instance)
 
 void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties)
 {
-    std::memcpy(properties, &adapter->properties, sizeof(GnAdapterProperties));
+    *properties = adapter->properties;
 }
 
 void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits)
 {
-    std::memcpy(limits, &adapter->limits, sizeof(GnAdapterLimits));
+    *limits = adapter->limits;
 }
 
 uint32_t GnGetAdapterFeatureCount(GnAdapter adapter)
