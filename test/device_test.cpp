@@ -18,17 +18,17 @@ TEST_CASE("Create device", "[device]")
     std::vector<GnFeature> features;
     GnGetAdapterFeaturesWithCallback(adapter, [&features](GnFeature feature) { features.push_back(feature); });
 
-    std::vector<uint32_t> enabled_queues;
+    std::vector<uint32_t> enabled_queue_ids;
     GnGetAdapterQueuePropertiesWithCallback(adapter,
-                                            [&enabled_queues](const GnQueueProperties& queue_properties) {
-                                                enabled_queues.push_back(queue_properties.index);
+                                            [&enabled_queue_ids](const GnQueueProperties& queue_properties) {
+                                                enabled_queue_ids.push_back(queue_properties.id);
                                             });
 
     SECTION("Create device regularly")
     {
         GnDeviceDesc desc;
-        desc.num_enabled_queues = enabled_queues.size();
-        desc.enabled_queue_indices = enabled_queues.data();
+        desc.num_enabled_queues = enabled_queue_ids.size();
+        desc.enabled_queue_ids = enabled_queue_ids.data();
         desc.num_enabled_features = features.size();
         desc.enabled_features = features.data();
 

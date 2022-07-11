@@ -304,17 +304,17 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAll
         alloc_callbacks = GnDefaultAllocator();
 
     GnDeviceDesc tmp_desc{};
-    uint32_t queue_indices[4]{};
+    uint32_t queue_ids[4]{};
     GnFeature enabled_features[GnFeature_Count];
     bool is_feature_retrieved_implicitly = false;
 
     if (desc != nullptr) tmp_desc = *desc;
 
-    if (tmp_desc.num_enabled_queues == 0 || tmp_desc.enabled_queue_indices == nullptr) {
+    if (tmp_desc.num_enabled_queues == 0 || tmp_desc.enabled_queue_ids == nullptr) {
         tmp_desc.num_enabled_queues = adapter->num_queues;
         for (uint32_t i = 0; i < adapter->num_queues; i++)
-            queue_indices[i] = adapter->queue_properties[i].index;
-        tmp_desc.enabled_queue_indices = queue_indices;
+            queue_ids[i] = adapter->queue_properties[i].id;
+        tmp_desc.enabled_queue_ids = queue_ids;
     }
 
     if (tmp_desc.num_enabled_features == 0 || tmp_desc.enabled_features == nullptr) {

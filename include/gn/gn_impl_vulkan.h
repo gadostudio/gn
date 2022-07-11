@@ -50,7 +50,7 @@ struct GnVulkanFunctionDispatcher
 
     bool LoadFunctions() noexcept;
     void LoadInstanceFunctions(VkInstance instance, GnVulkanInstanceFunctions& fn) noexcept;
-    void LoadDeviceFunctions(VkInstance instance, VkDevice device, GnVulkanDeviceFunctions& fn) noexcept;
+    void LoadDeviceFunctions(VkInstance instance, VkDevice device, uint32_t api_version, GnVulkanDeviceFunctions& fn) noexcept;
 
     static bool Init() noexcept;
 };
@@ -75,6 +75,7 @@ struct GnAdapterVK : public GnAdapter_t
 {
     VkPhysicalDevice            physical_device = nullptr;
     uint32_t                    queue_count[4]; // queue count for each queue family
+    uint32_t                    api_version = 0;
     VkPhysicalDeviceFeatures    supported_features{};
 
     GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept;
@@ -317,7 +318,7 @@ void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, GnVu
     GN_LOAD_INSTANCE_FN(vkCreateDevice);
 }
 
-void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevice device, GnVulkanDeviceFunctions& fn) noexcept
+void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevice device, uint32_t api_version, GnVulkanDeviceFunctions& fn) noexcept
 {
     PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr");
     GN_LOAD_DEVICE_FN(vkDestroyDevice);
@@ -369,6 +370,7 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_devic
     // Sets properties
     std::memcpy(properties.name, vk_properties.deviceName, GN_MAX_CHARS);
     properties.vendor_id = vk_properties.vendorID;
+    api_version = vk_properties.apiVersion;
 
     // Sets adapter type
     switch (vk_properties.deviceType) {
@@ -431,7 +433,7 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_devic
         const VkQueueFamilyProperties& queue_family = queue_families[i];
         GnQueueProperties& queue = queue_properties[i];
 
-        queue.index = i;
+        queue.id = i;
 
         if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_COMPUTE_BIT)) queue.type = GnQueueType_Direct;
         else if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_COMPUTE_BIT)) queue.type = GnQueueType_Compute;
@@ -484,12 +486,13 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
         queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_info.pNext = nullptr;
         queue_info.flags = 0;
-        queue_info.queueFamilyIndex = desc->enabled_queue_indices[i];
+        queue_info.queueFamilyIndex = desc->enabled_queue_ids[i];
         queue_info.queueCount = queue_count[i];
         queue_info.pQueuePriorities = queue_priorities;
     }
 
     static const char* device_extensions[] = {
+        "VK_KHR_maintenance1",
         "VK_KHR_swapchain"
     };
 
@@ -505,7 +508,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
     device_info.pQueueCreateInfos = queue_infos;
     device_info.enabledLayerCount = 0;
     device_info.ppEnabledLayerNames = nullptr;
-    device_info.enabledExtensionCount = 1;
+    device_info.enabledExtensionCount = GN_ARRAY_SIZE(device_extensions);
     device_info.ppEnabledExtensionNames = device_extensions;
     device_info.pEnabledFeatures = &enabled_features;
 
@@ -515,7 +518,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
         return GnError_InternalError;
 
     GnVulkanDeviceFunctions device_fn;
-    g_vk_dispatcher->LoadDeviceFunctions(instance->instance, vk_device, device_fn);
+    g_vk_dispatcher->LoadDeviceFunctions(instance->instance, vk_device, api_version, device_fn);
 
     GnDeviceVK* new_device = (GnDeviceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnDeviceVK), alignof(GnDeviceVK), GnAllocationScope_Device);
 

@@ -260,7 +260,7 @@ typedef struct
 
 typedef struct
 {
-    uint32_t    index;
+    uint32_t    id;
     GnQueueType type;
     GnBool      timestamp_query_supported;
 } GnQueueProperties;
@@ -283,7 +283,7 @@ uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userda
 typedef struct
 {
     uint32_t num_enabled_queues;
-    const uint32_t* enabled_queue_indices;
+    const uint32_t* enabled_queue_ids;
     uint32_t num_enabled_features;
     const GnFeature* enabled_features;
 } GnDeviceDesc;

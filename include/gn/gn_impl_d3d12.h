@@ -54,6 +54,9 @@ struct GnAdapterD3D12 : public GnAdapter_t
 
 struct GnDeviceD3D12 : public GnDevice_t
 {
+    ID3D12Device* device;
+
+    virtual ~GnDeviceD3D12();
     GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
@@ -280,6 +283,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
     supported_feature_levels.NumFeatureLevels = GN_ARRAY_SIZE(feature_levels);
     supported_feature_levels.pFeatureLevelsRequested = feature_levels;
     device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &supported_feature_levels, sizeof(supported_feature_levels));
+    feature_level = supported_feature_levels.MaxSupportedFeatureLevel;
 
     limits.max_texture_size_1d = D3D12_REQ_TEXTURE1D_U_DIMENSION;
     limits.max_texture_size_2d = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
@@ -353,22 +357,19 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
     // Check if timestamp can be queried in copy queue
     bool is_copy_queue_timestamp_query_supported = false;
     D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3;
-    if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3)))) {
+    if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3))))
         is_copy_queue_timestamp_query_supported = options3.CopyQueueTimestampQueriesSupported;
-    }
 
     // prepare the queue properties
     for (uint32_t i = 0; i < num_queues; i++) {
         GnQueueProperties& queue = queue_properties[i];
-        queue.index = i;
+        queue.id = i;
         queue.type = (GnQueueType)i;
 
-        if (queue.type != GnQueueType_Copy) {
+        if (queue.type != GnQueueType_Copy)
             queue.timestamp_query_supported = GN_TRUE;
-        }
-        else {
+        else
             queue.timestamp_query_supported = is_copy_queue_timestamp_query_supported;
-        }
     }
 }
 
@@ -409,10 +410,31 @@ GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
 
 GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept
 {
-    return GnResult();
+    ID3D12Device* d3d12_device;
+
+    if (FAILED(g_d3d12_dispatcher->D3D12CreateDevice(adapter, feature_level, IID_PPV_ARGS(&d3d12_device))))
+        return GnError_InternalError;
+
+    GnDeviceD3D12* new_device = (GnDeviceD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnDeviceD3D12), alignof(GnDeviceD3D12), GnAllocationScope_Device);
+
+    if (new_device == nullptr) {
+        d3d12_device->Release();
+        return GnError_OutOfHostMemory;
+    }
+
+    new(new_device) GnDeviceD3D12();
+    new_device->alloc_callbacks = *alloc_callbacks;
+    new_device->device = d3d12_device;
+
+    return GnSuccess;
 }
 
 // -- [GnDeviceD3D12] -- 
+
+GnDeviceD3D12::~GnDeviceD3D12()
+{
+    device->Release();
+}
 
 GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
 {
