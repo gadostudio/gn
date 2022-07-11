@@ -303,7 +303,28 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAll
     if (alloc_callbacks == nullptr)
         alloc_callbacks = GnDefaultAllocator();
 
-    return adapter->CreateDevice(desc, alloc_callbacks, device);
+    GnDeviceDesc tmp_desc{};
+    uint32_t queue_indices[4]{};
+    GnFeature enabled_features[GnFeature_Count];
+    bool is_feature_retrieved_implicitly = false;
+
+    if (desc != nullptr) tmp_desc = *desc;
+
+    if (tmp_desc.num_enabled_queues == 0 || tmp_desc.enabled_queue_indices == nullptr) {
+        tmp_desc.num_enabled_queues = adapter->num_queues;
+        for (uint32_t i = 0; i < adapter->num_queues; i++)
+            queue_indices[i] = adapter->queue_properties[i].index;
+        tmp_desc.enabled_queue_indices = queue_indices;
+    }
+
+    if (tmp_desc.num_enabled_features == 0 || tmp_desc.enabled_features == nullptr) {
+        is_feature_retrieved_implicitly = true;
+        tmp_desc.num_enabled_features = GnGetAdapterFeatureCount(adapter);
+        GnGetAdapterFeatures(adapter, tmp_desc.num_enabled_features, enabled_features);
+        tmp_desc.enabled_features = enabled_features;
+    }
+
+    return adapter->CreateDevice(&tmp_desc, alloc_callbacks, device);
 }
 
 void GnDestroyDevice(GnDevice device)

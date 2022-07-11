@@ -10,6 +10,7 @@
 #define GN_ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 #define GN_TRUE 1
 #define GN_FALSE 0
+#define GN_FAILED(x) ((x) < GnSuccess)
 
 #ifdef __cplusplus
 extern "C"
@@ -281,10 +282,10 @@ uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userda
 
 typedef struct
 {
-    uint32_t num_enabled_features;
-    const GnFeature* enabled_features;
     uint32_t num_enabled_queues;
     const uint32_t* enabled_queue_indices;
+    uint32_t num_enabled_features;
+    const GnFeature* enabled_features;
 } GnDeviceDesc;
 
 GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device);
