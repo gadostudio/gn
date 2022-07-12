@@ -306,7 +306,6 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAll
     GnDeviceDesc tmp_desc{};
     uint32_t queue_ids[4]{};
     GnFeature enabled_features[GnFeature_Count];
-    bool is_feature_retrieved_implicitly = false;
 
     if (desc != nullptr) tmp_desc = *desc;
 
@@ -318,7 +317,6 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAll
     }
 
     if (tmp_desc.num_enabled_features == 0 || tmp_desc.enabled_features == nullptr) {
-        is_feature_retrieved_implicitly = true;
         tmp_desc.num_enabled_features = GnGetAdapterFeatureCount(adapter);
         GnGetAdapterFeatures(adapter, tmp_desc.num_enabled_features, enabled_features);
         tmp_desc.enabled_features = enabled_features;
