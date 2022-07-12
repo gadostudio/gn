@@ -298,10 +298,46 @@ uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userda
 
 // -- [GnDevice] --
 
+bool GnValidateCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept
+{
+    bool error = false;
+
+    if (adapter == nullptr) error = true;
+
+    if (desc != nullptr && desc->num_enabled_queues > 0 && desc->enabled_queue_ids != nullptr) {
+        if (desc->num_enabled_queues > adapter->num_queues)
+            error = true;
+
+        uint32_t queue_ids[GN_MAX_QUEUE];
+
+        std::copy_n(desc->enabled_queue_ids, desc->num_enabled_queues, queue_ids);
+
+        // check if each queue ID is valid
+        for (uint32_t i = 0; i < desc->num_enabled_queues; i++) {
+            bool found = false;
+            for (uint32_t j = 0; j < adapter->num_queues; j++)
+                if (queue_ids[i] == adapter->queue_properties[j].id) {
+                    found = true;
+                    break;
+                }
+            error = error || !found;
+        }
+
+        // check if each ID is unique
+        std::sort(queue_ids, &queue_ids[desc->num_enabled_queues]);
+        if (std::unique(queue_ids, &queue_ids[desc->num_enabled_queues]) != &queue_ids[desc->num_enabled_queues])
+            error = true;
+    }
+
+    if (device == nullptr) error = true;
+
+    return error;
+}
+
 GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device)
 {
-    if (alloc_callbacks == nullptr)
-        alloc_callbacks = GnDefaultAllocator();
+    if (GnValidateCreateDevice(adapter, desc, alloc_callbacks, device)) return GnError_InitializationFailed;
+    if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator();
 
     GnDeviceDesc tmp_desc{};
     uint32_t queue_ids[4]{};
@@ -310,6 +346,7 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAll
     if (desc != nullptr) tmp_desc = *desc;
 
     if (tmp_desc.num_enabled_queues == 0 || tmp_desc.enabled_queue_ids == nullptr) {
+        // enable all queues implicitly
         tmp_desc.num_enabled_queues = adapter->num_queues;
         for (uint32_t i = 0; i < adapter->num_queues; i++)
             queue_ids[i] = adapter->queue_properties[i].id;
@@ -317,6 +354,7 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAll
     }
 
     if (tmp_desc.num_enabled_features == 0 || tmp_desc.enabled_features == nullptr) {
+        // enable all features implicitly
         tmp_desc.num_enabled_features = GnGetAdapterFeatureCount(adapter);
         GnGetAdapterFeatures(adapter, tmp_desc.num_enabled_features, enabled_features);
         tmp_desc.enabled_features = enabled_features;

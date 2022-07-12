@@ -11,6 +11,7 @@
 #define GN_TRUE 1
 #define GN_FALSE 0
 #define GN_FAILED(x) ((x) < GnSuccess)
+#define GN_MAX_QUEUE 4
 
 #ifdef __cplusplus
 extern "C"

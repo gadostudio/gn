@@ -24,12 +24,12 @@ TEST_CASE("Create device", "[device]")
                                                 enabled_queue_ids.push_back(queue_properties.id);
                                             });
 
-    SECTION("Create device regularly")
+    SECTION("Create device")
     {
         GnDeviceDesc desc;
-        desc.num_enabled_queues = enabled_queue_ids.size();
+        desc.num_enabled_queues = (uint32_t)enabled_queue_ids.size();
         desc.enabled_queue_ids = enabled_queue_ids.data();
-        desc.num_enabled_features = features.size();
+        desc.num_enabled_features = (uint32_t)features.size();
         desc.enabled_features = features.data();
 
         GnDevice device;
@@ -40,7 +40,6 @@ TEST_CASE("Create device", "[device]")
     SECTION("Create device with zeros in desc")
     {
         GnDeviceDesc desc{};
-
         GnDevice device;
         REQUIRE(GnCreateDevice(adapter, &desc, nullptr, &device) == GnSuccess);
         GnDestroyDevice(device);

@@ -426,6 +426,8 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocati
     new_device->alloc_callbacks = *alloc_callbacks;
     new_device->device = d3d12_device;
 
+    *device = new_device;
+
     return GnSuccess;
 }
 

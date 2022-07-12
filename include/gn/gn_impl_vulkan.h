@@ -487,7 +487,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
         queue_info.pNext = nullptr;
         queue_info.flags = 0;
         queue_info.queueFamilyIndex = desc->enabled_queue_ids[i];
-        queue_info.queueCount = queue_count[i];
+        queue_info.queueCount = queue_count[queue_info.queueFamilyIndex];
         queue_info.pQueuePriorities = queue_priorities;
     }
 
