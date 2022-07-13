@@ -49,7 +49,7 @@ struct GnAdapterD3D12 : public GnAdapter_t
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
-    GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept override;
+    GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept override;
 };
 
 struct GnDeviceD3D12 : public GnDevice_t
@@ -57,7 +57,8 @@ struct GnDeviceD3D12 : public GnDevice_t
     ID3D12Device* device;
 
     virtual ~GnDeviceD3D12();
-    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
+    GnResult CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept override;
+    GnResult CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
 };
@@ -352,7 +353,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support[format], sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT));
     }
 
-    num_queues = 3; // Since we can't get the number of queues in D3D12, we have to assume most GPUs support multiple queues.
+    num_queues = 3; // Since we can't get the number of queues in D3D12, we have to assume most GPUs supports multiple queues.
 
     // Check if timestamp can be queried in copy queue
     bool is_copy_queue_timestamp_query_supported = false;
@@ -365,11 +366,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         GnQueueProperties& queue = queue_properties[i];
         queue.id = i;
         queue.type = (GnQueueType)i;
-
-        if (queue.type != GnQueueType_Copy)
-            queue.timestamp_query_supported = GN_TRUE;
-        else
-            queue.timestamp_query_supported = is_copy_queue_timestamp_query_supported;
+        queue.timestamp_query_supported = queue.type != GnQueueType_Copy ? GN_TRUE : is_copy_queue_timestamp_query_supported;
     }
 }
 
@@ -408,7 +405,7 @@ GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
     return (fmt.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER) == D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
 }
 
-GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept
+GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept
 {
     ID3D12Device* d3d12_device;
 
@@ -438,9 +435,14 @@ GnDeviceD3D12::~GnDeviceD3D12()
     device->Release();
 }
 
-GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
+GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept
 {
     return GnError_Unimplemented;
+}
+
+GnResult GnDeviceD3D12::CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept
+{
+    return GnResult();
 }
 
 GnResult GnDeviceD3D12::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept

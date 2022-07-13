@@ -38,6 +38,9 @@ struct GnVulkanInstanceFunctions
 struct GnVulkanDeviceFunctions
 {
     PFN_vkDestroyDevice vkDestroyDevice;
+    PFN_vkGetDeviceQueue vkGetDeviceQueue;
+    PFN_vkCreateFence vkCreateFence;
+    PFN_vkDestroyFence vkDestroyFence;
 };
 
 struct GnVulkanFunctionDispatcher
@@ -83,18 +86,32 @@ struct GnAdapterVK : public GnAdapter_t
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
-    GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept override;
+    GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept override;
 };
 
 struct GnDeviceVK : public GnDevice_t
 {
     GnVulkanDeviceFunctions fn{};
-    VkDevice device;
+    VkDevice                device;
+    uint32_t                queue_create_pos[4]{};
 
     ~GnDeviceVK();
-    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
+    GnResult CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept override;
+    GnResult CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
+};
+
+struct GnQueueVK : public GnQueue_t
+{
+    GnDeviceVK* parent_device;
+    VkQueue     queue;
+    VkFence     wait_fence;
+
+    ~GnQueueVK()
+    {
+        parent_device->fn.vkDestroyFence(parent_device->device, wait_fence, nullptr);
+    }
 };
 
 // -------------------------------------------------------
@@ -322,6 +339,9 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
 {
     PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr");
     GN_LOAD_DEVICE_FN(vkDestroyDevice);
+    GN_LOAD_DEVICE_FN(vkGetDeviceQueue);
+    GN_LOAD_DEVICE_FN(vkCreateFence);
+    GN_LOAD_DEVICE_FN(vkDestroyFence);
 }
 
 bool GnVulkanFunctionDispatcher::Init() noexcept
@@ -472,7 +492,7 @@ GnBool GnAdapterVK::IsVertexFormatSupported(GnFormat format) const noexcept
     return GnTestBitmask(fmt.bufferFeatures, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
 }
 
-GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) const noexcept
+GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept
 {   
     GnInstanceVK* instance = (GnInstanceVK*)parent_instance;
     const GnVulkanInstanceFunctions& fn = instance->fn;
@@ -529,8 +549,11 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
 
     new(new_device) GnDeviceVK;
     new_device->alloc_callbacks = *alloc_callbacks;
+    new_device->parent_adapter = this;
     new_device->device = vk_device;
     new_device->fn = device_fn;
+    new_device->num_enabled_queues = desc->num_enabled_queues;
+    std::copy_n(desc->enabled_queue_ids, desc->num_enabled_queues, new_device->enabled_queue_ids);
 
     *device = new_device;
 
@@ -544,9 +567,45 @@ GnDeviceVK::~GnDeviceVK()
     fn.vkDestroyDevice(device, nullptr);
 }
 
-GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
+GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept
 {
-    return GnError_Unimplemented;
+    GnAdapterVK* vk_parent_adapter = (GnAdapterVK*)parent_adapter;
+
+    // Create internal VkFence for GnQueueSubmitAndWait
+    VkFenceCreateInfo fence_info;
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_info.pNext = nullptr;
+    fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    VkFence fence;
+    if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &fence)))
+        return GnError_InternalError;
+
+    GnQueueVK* new_queue = (GnQueueVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+
+    if (new_queue == nullptr) {
+        fn.vkDestroyFence(device, fence, nullptr);
+        return GnError_OutOfHostMemory;
+    }
+
+    VkQueue vk_queue;
+    fn.vkGetDeviceQueue(device, queue_index, queue_create_pos[queue_index], &vk_queue);
+    queue_create_pos[queue_index] = (queue_create_pos[queue_index] + 1) % vk_parent_adapter->queue_count[queue_index];
+
+    new(new_queue) GnQueueVK;
+    new_queue->parent_device = this;
+    new_queue->queue = vk_queue;
+    new_queue->wait_fence = fence;
+    
+    *queue = new_queue;
+
+    return GnSuccess;
+}
+
+GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept
+{
+    if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator();
+    return GnResult();
 }
 
 GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept

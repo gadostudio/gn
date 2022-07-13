@@ -11,7 +11,6 @@
 #define GN_TRUE 1
 #define GN_FALSE 0
 #define GN_FAILED(x) ((x) < GnSuccess)
-#define GN_MAX_QUEUE 4
 
 #ifdef __cplusplus
 extern "C"
@@ -22,6 +21,7 @@ typedef struct GnInstance_t* GnInstance;
 typedef struct GnAdapter_t* GnAdapter;
 typedef struct GnDevice_t* GnDevice;
 typedef struct GnQueue_t* GnQueue;
+typedef struct GnFence_t* GnFence;
 typedef struct GnBuffer_t* GnBuffer;
 typedef struct GnTexture_t* GnTexture;
 typedef struct GnResourceTableLayout_t* GnResourceTableLayout;
@@ -294,16 +294,30 @@ void GnDestroyDevice(GnDevice device);
 
 typedef struct
 {
-    uint32_t num_wait_fences;
-    uint32_t num_command_lists;
-    uint32_t num_signal_fences;
+    uint32_t                num_wait_fences;
+    const GnFence*          wait_fences;
+    uint32_t                num_command_lists;
+    const GnCommandList*    command_lists;
+    uint32_t                num_signal_fences;
+    const GnFence*          signal_fences;
 } GnSubmission;
 
-GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, GnQueue* queue);
-void GnDestoryQueue(GnQueue queue);
-GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions);
+GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnQueue* queue);
+void GnDestroyQueue(GnQueue queue);
+GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions, GnFence signal_host_fence);
 GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions);
+GnResult GnQueuePresent(GnQueue queue);
 void GnWaitQueue(GnQueue queue);
+
+typedef enum
+{
+    GnFence_DeviceToDeviceSync,
+    GnFence_DeviceToHostSync,
+} GnFenceType;
+
+GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence);
+void GnDestroyFence(GnFence fence);
+GnFenceType GnGetFenceType(GnFence fence);
 
 typedef enum
 {
@@ -455,6 +469,7 @@ void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint
 void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot);
 void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors);
 void GnCmdSetBlendConstants(GnCommandList command_list, float r, float g, float b, float a);
+void GnCmdSetBlendConstants2(GnCommandList command_list, float blend_constants[4]);
 void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref);
 void GnCmdBeginRenderPass(GnCommandList command_list);
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex);
