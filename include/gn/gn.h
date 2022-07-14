@@ -12,6 +12,12 @@
 #define GN_FALSE 0
 #define GN_FAILED(x) ((x) < GnSuccess)
 
+#ifdef _WIN32
+#define GN_FPTR __stdcall
+#else
+#define GN_FPTR
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -468,8 +474,8 @@ void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t
 void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot);
 void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors);
-void GnCmdSetBlendConstants(GnCommandList command_list, float r, float g, float b, float a);
-void GnCmdSetBlendConstants2(GnCommandList command_list, float blend_constants[4]);
+void GnCmdSetBlendConstants(GnCommandList command_list, const float blend_constants[4]);
+void GnCmdSetBlendConstants2(GnCommandList command_list, float r, float g, float b, float a);
 void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref);
 void GnCmdBeginRenderPass(GnCommandList command_list);
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex);

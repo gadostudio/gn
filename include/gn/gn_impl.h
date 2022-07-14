@@ -100,6 +100,120 @@ struct GnFence_t
     }
 };
 
+struct GnCommandPool_t
+{
+    GnAllocationCallbacks   alloc_callbacks{};
+    GnCommandList           command_lists;
+};
+
+struct GnUpdateRange
+{
+    // 16-bit to save space
+    uint16_t first = 0xFFFF;
+    uint16_t last = 0xFFFF;
+
+    inline void update(uint32_t idx)
+    {
+        if (first == 0xFFFF) {
+            first = (uint32_t)idx;
+            last = (uint32_t)idx + 1;
+            return;
+        }
+
+        if (idx < first) first = (uint32_t)idx;
+        if (idx > last) last = idx + 1;
+    }
+
+    inline void update(uint32_t first_idx, uint32_t last_idx)
+    {
+        if (first == 0xFFFF) {
+            first = (uint32_t)first_idx;
+            last = (uint32_t)last_idx + 1;
+            return;
+        }
+
+        if (first_idx < first) first = (uint32_t)first_idx;
+        if (last_idx > last) last = (uint32_t)last_idx + 1;
+    }
+
+    inline void flush()
+    {
+        first = 0xFFFF;
+        last = 0xFFFF;
+    }
+};
+
+struct GnCommandListState
+{
+    enum
+    {
+        GraphicsStateUpdate = (1 << 7) - 1
+    };
+
+    union
+    {
+        struct
+        {
+            bool graphics_pipeline : 1;
+            bool graphics_resource_binding : 1;
+            bool compute_pipeline : 1;
+            bool compute_resource_binding : 1;
+            bool index_buffer : 1;
+            bool vertex_buffers : 1;
+            bool blend_constants : 1;
+            bool viewports : 1;
+            bool scissors : 1;
+        };
+
+        uint32_t    u32;
+    } update_flags;
+
+    float           blend_constants[4];
+    GnBuffer        index_buffer;
+    GnDeviceSize    index_buffer_offset;
+    GnBuffer        vertex_buffers[32];
+    GnDeviceSize    vertex_buffer_offsets[32];
+    GnUpdateRange   vertex_buffer_upd_range;
+
+    inline bool graphics_state_updated() const
+    {
+        return (update_flags.u32 & GraphicsStateUpdate) > 0;
+    }
+};
+
+typedef void (GN_FPTR* GnFlushGfxStateFn)(GnCommandList command_list);
+typedef void (GN_FPTR* GnFlushComputeStateFn)(GnCommandList command_list);
+typedef void (GN_FPTR* GnDrawCmdFn)(void* cmd_data, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance);
+typedef void (GN_FPTR* GnDrawIndexedCmdFn)(void* cmd_data, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance);
+typedef void (GN_FPTR* GnDispatchCmdFn)(void* cmd_data, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z);
+
+struct GnCommandList_t
+{
+    GnCommandListState          state;
+
+    // Function pointer for certain functions are defined here to avoid vtables.
+    // We absolutely can directly bind backend function (i.e. vkCmdDraw) to reduce call indirections.
+    GnFlushGfxStateFn           flush_gfx_state_fn;
+    GnFlushComputeStateFn       flush_compute_state_fn;
+
+    void*                       draw_cmd_private_data;
+    GnDrawCmdFn                 draw_cmd_fn;
+    void*                       draw_indexed_cmd_private_data;
+    GnDrawIndexedCmdFn          draw_indexed_cmd_fn;
+    void*                       dispatch_cmd_private_data;
+    GnDispatchCmdFn             dispatch_cmd_fn;
+
+    bool                        is_recording;
+    GnCommandList               next_command_list;
+
+    virtual GnResult Begin() = 0;
+    virtual void BeginRenderPass() = 0;
+    virtual void EndRenderPass() = 0;
+    virtual GnResult End() = 0;
+};
+
+constexpr uint32_t clsize = sizeof(GnCommandList_t);
+
 static void* GnLoadLibrary(const char* name) noexcept
 {
 #ifdef WIN32
@@ -283,7 +397,7 @@ GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature)
     if (feature >= GnFeature_Count)
         return GN_FALSE;
 
-    return (GnBool)(bool)adapter->features[feature];
+    return (GnBool)adapter->features[feature];
 }
 
 GnTextureFormatFeatureFlags GnGetTextureFormatFeatureSupport(GnAdapter adapter, GnFormat format)
@@ -453,6 +567,113 @@ void GnDestroyFence(GnFence fence)
 GnFenceType GnGetFenceType(GnFence fence)
 {
     return fence->type;
+}
+
+// -- [GnCommandPool] --
+
+GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GN_OUT GnCommandPool* command_pool)
+{
+    return GnError_Unimplemented;
+}
+
+void GnDestroyCommandPool(GnCommandPool command_pool)
+{
+
+}
+
+// -- [GnCommandList] --
+
+GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GN_OUT GnCommandList* command_lists)
+{
+    return GnError_Unimplemented;
+}
+
+void GnDestroyCommandList(GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists)
+{
+
+}
+
+GnResult GnBeginCommandList(GnCommandList command_list)
+{
+    command_list->is_recording = true;
+    return command_list->Begin();
+}
+
+GnResult GnEndCommandList(GnCommandList command_list)
+{
+    command_list->is_recording = false;
+    return command_list->End();
+}
+
+GnBool GnIsRecordingCommandList(GnCommandList command_list)
+{
+    return command_list->is_recording;
+}
+
+void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset)
+{
+    command_list->state.index_buffer = index_buffer;
+    command_list->state.index_buffer_offset = offset;
+    command_list->state.update_flags.index_buffer = true;
+}
+
+void GnCmdSetVertexBuffer(GnCommandList command_list, uint32_t slot, GnBuffer vertex_buffer, GnDeviceSize offset)
+{
+    command_list->state.vertex_buffers[slot] = vertex_buffer;
+    command_list->state.vertex_buffer_offsets[slot] = offset;
+    command_list->state.vertex_buffer_upd_range.update(slot);
+    command_list->state.update_flags.vertex_buffers = true;
+}
+
+void GnCmdSetVertexBuffers(GnCommandList command_list, uint32_t first_slot, uint32_t num_vertex_buffers, const GnBuffer* vertex_buffers, const GnDeviceSize* offsets)
+{
+    for (uint32_t i = 0; i < num_vertex_buffers; i++) {
+        uint32_t slot = i + first_slot;
+        command_list->state.vertex_buffers[slot] = vertex_buffers[i];
+        command_list->state.vertex_buffer_offsets[slot] = offsets[i];
+    }
+
+    command_list->state.vertex_buffer_upd_range.update(first_slot, first_slot + num_vertex_buffers);
+    command_list->state.update_flags.vertex_buffers = true;
+}
+
+void GnCmdSetBlendConstants(GnCommandList command_list, const float blend_constants[4])
+{
+    command_list->state.blend_constants[0] = blend_constants[0];
+    command_list->state.blend_constants[1] = blend_constants[1];
+    command_list->state.blend_constants[2] = blend_constants[2];
+    command_list->state.blend_constants[3] = blend_constants[3];
+    command_list->state.update_flags.blend_constants = true;
+}
+
+void GnCmdSetBlendConstants2(GnCommandList command_list, float r, float g, float b, float a)
+{
+    const float constants[4] = { r, g, b, a };
+    GnCmdSetBlendConstants(command_list, constants);
+}
+
+void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex)
+{
+    if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
+    command_list->draw_cmd_fn(command_list->draw_cmd_private_data, num_vertices, 1, 0, 0);
+}
+
+void GnCmdDrawInstanced(GnCommandList command_list, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance)
+{
+    if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
+    command_list->draw_cmd_fn(command_list->draw_cmd_private_data, num_vertices, num_instances, first_vertex, first_instance);
+}
+
+void GnCmdDrawIndexed(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, int32_t vertex_offset)
+{
+    if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
+    command_list->draw_indexed_cmd_fn(command_list->draw_indexed_cmd_private_data, num_indices, first_index, 1, 0, 0);
+}
+
+void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance)
+{
+    if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
+    command_list->draw_indexed_cmd_fn(command_list->draw_indexed_cmd_private_data, num_indices, first_index, num_instances, vertex_offset, first_instance);
 }
 
 #endif // GN_IMPL_H_

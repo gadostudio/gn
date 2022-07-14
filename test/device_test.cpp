@@ -54,3 +54,34 @@ TEST_CASE("Create device", "[device]")
 
     GnDestroyInstance(instance);
 }
+
+TEST_CASE("Create queue", "[device]")
+{
+    GnInstanceDesc instance_desc{};
+    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.enable_debugging = true;
+    instance_desc.enable_validation = true;
+    instance_desc.enable_backend_validation = true;
+
+    GnInstance instance;
+    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+
+    GnAdapter adapter = GnGetDefaultAdapter(instance);
+
+    GnDevice device;
+    REQUIRE(GnCreateDevice(adapter, nullptr, nullptr, &device) == GnSuccess);
+
+    uint32_t queue_id = 0;
+    GnGetAdapterQueuePropertiesWithCallback(adapter,
+                                            [&queue_id](const GnQueueProperties& queue_properties) {
+                                                if (queue_properties.type == GnQueueType_Direct)
+                                                    queue_id = queue_properties.id;
+                                            });
+    
+    GnQueue queue;
+    REQUIRE(GnCreateQueue(device, queue_id, nullptr, &queue) == GnSuccess);
+    GnDestroyQueue(queue);
+
+    GnDestroyDevice(device);
+    GnDestroyInstance(instance);
+}

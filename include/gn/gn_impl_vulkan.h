@@ -41,6 +41,9 @@ struct GnVulkanDeviceFunctions
     PFN_vkGetDeviceQueue vkGetDeviceQueue;
     PFN_vkCreateFence vkCreateFence;
     PFN_vkDestroyFence vkDestroyFence;
+    PFN_vkCmdDraw vkCmdDraw;
+    PFN_vkCmdDrawIndexed vkCmdDrawIndexed;
+    PFN_vkCmdDispatch vkCmdDispatch;
 };
 
 struct GnVulkanFunctionDispatcher
@@ -76,7 +79,7 @@ struct GnInstanceVK : public GnInstance_t
 
 struct GnAdapterVK : public GnAdapter_t
 {
-    VkPhysicalDevice            physical_device = nullptr;
+    VkPhysicalDevice            physical_device = VK_NULL_HANDLE;
     uint32_t                    queue_count[4]; // queue count for each queue family
     uint32_t                    api_version = 0;
     VkPhysicalDeviceFeatures    supported_features{};
@@ -113,6 +116,30 @@ struct GnQueueVK : public GnQueue_t
         parent_device->fn.vkDestroyFence(parent_device->device, wait_fence, nullptr);
     }
 };
+
+struct GnCommandPoolVK : public GnCommandPool_t
+{
+    GnDeviceVK*         parent_device;
+    VkCommandPool       cmd_pool;
+};
+
+struct GnCommandListVK : public GnCommandList_t
+{
+    GnCommandPoolVK*            parent_cmd_pool;
+    PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets;
+    PFN_vkCmdBindIndexBuffer    cmd_bind_index_buffer;
+    PFN_vkCmdBindVertexBuffers  cmd_bind_vertex_buffers;
+
+    GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer);
+    ~GnCommandListVK();
+
+    GnResult Begin() override;
+    void BeginRenderPass() override;
+    void EndRenderPass() override;
+    GnResult End() override;
+};
+
+constexpr uint32_t clvksize = sizeof(GnCommandListVK);
 
 // -------------------------------------------------------
 //                    IMPLEMENTATION
@@ -213,6 +240,7 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCa
     app_info.engineVersion = 0;
     app_info.apiVersion = VK_HEADER_VERSION_COMPLETE;
 
+    // For now, gn will always activate debugging extensions and validation layer
     static const char* extensions[] = {
         "VK_KHR_surface",
         "VK_KHR_win32_surface",
@@ -342,6 +370,9 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkGetDeviceQueue);
     GN_LOAD_DEVICE_FN(vkCreateFence);
     GN_LOAD_DEVICE_FN(vkDestroyFence);
+    GN_LOAD_DEVICE_FN(vkCmdDraw);
+    GN_LOAD_DEVICE_FN(vkCmdDrawIndexed);
+    GN_LOAD_DEVICE_FN(vkCmdDispatch);
 }
 
 bool GnVulkanFunctionDispatcher::Init() noexcept
@@ -605,7 +636,7 @@ GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbac
 GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept
 {
     if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator();
-    return GnResult();
+    return GnError_Unimplemented;
 }
 
 GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept
@@ -614,6 +645,46 @@ GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) no
 }
 
 GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept
+{
+    return GnError_Unimplemented;
+}
+
+// -- [GnCommandListVK] --
+
+GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) :
+    parent_cmd_pool((GnCommandPoolVK*)parent_cmd_pool)
+{
+    draw_cmd_private_data = (void*)cmd_buffer; // We don't need VkCommandBuffer in this struct since it can be stored in *_cmd_private_data
+    draw_indexed_cmd_private_data = (void*)cmd_buffer;
+    dispatch_cmd_private_data = (void*)cmd_buffer;
+
+    // Bind function table
+    const GnVulkanDeviceFunctions& fn = this->parent_cmd_pool->parent_device->fn; // lol :P
+    draw_cmd_fn = (GnDrawCmdFn)fn.vkCmdDraw;
+    draw_indexed_cmd_fn = (GnDrawIndexedCmdFn)fn.vkCmdDrawIndexed;
+    dispatch_cmd_fn = (GnDispatchCmdFn)fn.vkCmdDispatch;
+}
+
+GnCommandListVK::~GnCommandListVK()
+{
+}
+
+GnResult GnCommandListVK::Begin()
+{
+    return GnError_Unimplemented;
+}
+
+void GnCommandListVK::BeginRenderPass()
+{
+
+}
+
+void GnCommandListVK::EndRenderPass()
+{
+
+}
+
+GnResult GnCommandListVK::End()
 {
     return GnError_Unimplemented;
 }

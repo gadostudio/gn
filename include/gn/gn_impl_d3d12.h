@@ -442,7 +442,7 @@ GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCall
 
 GnResult GnDeviceD3D12::CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept
 {
-    return GnResult();
+    return GnError_Unimplemented;
 }
 
 GnResult GnDeviceD3D12::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept
