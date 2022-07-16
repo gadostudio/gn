@@ -1,19 +1,15 @@
 #ifndef GN_IMPL_H_
 #define GN_IMPL_H_
 
+#include <gn/gn.h>
+
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <bitset>
 #include <optional>
 #include <algorithm>
-#include <gn/gn.h>
-
-#ifdef WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
-#endif
 
 #ifdef NDEBUG
 #define GN_DBG_ASSERT(x)
@@ -23,7 +19,15 @@
 
 #define GN_CHECK(x) GN_DBG_ASSERT(x)
 
-#ifdef WIN32
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#elif defined(__linux__)
+#include <dlfcn.h>
+#endif
+
+#ifdef _WIN32
 #include <malloc.h>
 #define GN_ALLOCA(size) _alloca(size)
 #else
@@ -218,6 +222,8 @@ static void* GnLoadLibrary(const char* name) noexcept
 {
 #ifdef WIN32
     return (void*)::LoadLibrary(name);
+#else
+    return dlopen(name, RTLD_NOW | RTLD_LOCAL);
 #endif
 }
 
@@ -226,6 +232,8 @@ static T GnGetLibraryFunction(void* dll_handle, const char* fn_name) noexcept
 {
 #ifdef WIN32
     return (T)GetProcAddress((HMODULE)dll_handle, fn_name);
+#else
+    return (T)dlsym(dll_handle, fn_name);
 #endif
 }
 
@@ -274,8 +282,10 @@ GnResult GnCreateInstance(const GnInstanceDesc* desc,
         alloc_callbacks = GnDefaultAllocator();
 
     switch (desc->backend) {
+#ifdef _WIN32
         case GnBackend_D3D12:
             return GnCreateInstanceD3D12(desc, alloc_callbacks, instance);
+#endif
         case GnBackend_Vulkan:
             return GnCreateInstanceVulkan(desc, alloc_callbacks, instance);
         default:

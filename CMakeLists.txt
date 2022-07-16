@@ -50,7 +50,7 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
     endif()
 
     add_library(gn-static STATIC src/gn_impl_stub.cpp)
-    target_link_libraries(gn-static PRIVATE ${GN_STATIC_DEPS})
+    target_link_libraries(gn-static PRIVATE ${GN_STATIC_DEPS} ${CMAKE_DL_LIBS})
     target_include_directories(gn-static
         PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                $<INSTALL_INTERFACE:include>)

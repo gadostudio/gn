@@ -12,8 +12,10 @@
 #define GN_FALSE 0
 #define GN_FAILED(x) ((x) < GnSuccess)
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #define GN_FPTR __stdcall
+#elif defined(__linux__)
+#define GN_FPTR
 #else
 #define GN_FPTR
 #endif

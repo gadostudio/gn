@@ -5,8 +5,10 @@
 
 #define VK_NO_PROTOTYPES
 
-#ifdef WIN32
+#if defined(_WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
+#else
+// TODO: define linux platform
 #endif
 
 #include <vulkan/vulkan.h>
@@ -226,6 +228,73 @@ inline static bool GnConvertAndCheckDeviceFeatures(const uint32_t num_requested_
     return true;
 }
 
+// -- [GnVulkanFunctionDispatcher] --
+
+GnVulkanFunctionDispatcher::GnVulkanFunctionDispatcher(void* dll_handle) noexcept :
+    dll_handle(dll_handle)
+{
+}
+
+bool GnVulkanFunctionDispatcher::LoadFunctions() noexcept
+{
+    vkGetInstanceProcAddr = GnGetLibraryFunction<PFN_vkGetInstanceProcAddr>(dll_handle, "vkGetInstanceProcAddr");
+    vkCreateInstance = (PFN_vkCreateInstance)vkGetInstanceProcAddr(nullptr, "vkCreateInstance");
+    return vkGetInstanceProcAddr && vkCreateInstance;
+}
+
+void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, GnVulkanInstanceFunctions& fn) noexcept
+{
+    GN_LOAD_INSTANCE_FN(vkDestroyInstance);
+    GN_LOAD_INSTANCE_FN(vkEnumeratePhysicalDevices);
+    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceFeatures);
+    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceFormatProperties);
+    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceImageFormatProperties);
+    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceProperties);
+    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceQueueFamilyProperties);
+    GN_LOAD_INSTANCE_FN(vkCreateDevice);
+}
+
+void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevice device, uint32_t api_version, GnVulkanDeviceFunctions& fn) noexcept
+{
+    PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr");
+    GN_LOAD_DEVICE_FN(vkDestroyDevice);
+    GN_LOAD_DEVICE_FN(vkGetDeviceQueue);
+    GN_LOAD_DEVICE_FN(vkCreateFence);
+    GN_LOAD_DEVICE_FN(vkDestroyFence);
+    GN_LOAD_DEVICE_FN(vkCmdDraw);
+    GN_LOAD_DEVICE_FN(vkCmdDrawIndexed);
+    GN_LOAD_DEVICE_FN(vkCmdDispatch);
+}
+
+bool GnVulkanFunctionDispatcher::Init() noexcept
+{
+    if (g_vk_dispatcher) return true;
+
+#if defined(_WIN32)
+    #define GN_VULKAN_DLL_NAME "vulkan-1.dll"
+#elif defined(__linux__)
+    #define GN_VULKAN_DLL_NAME "libvulkan.so.1"
+    #define GN_VULKAN_DLL_ALTER_NAME "libvulkan.so"
+#else
+    // TODO: define another vulkan dynamic library name
+#endif
+
+    void* vulkan_dll = GnLoadLibrary(GN_VULKAN_DLL_NAME);
+
+#ifdef __linux__
+    if (vulkan_dll == nullptr)
+        vulkan_dll = GnLoadLibrary(GN_VULKAN_DLL_ALTER_NAME);
+#endif
+
+    if (vulkan_dll == nullptr) return false;
+
+    g_vk_dispatcher.emplace(vulkan_dll);
+
+    return g_vk_dispatcher->LoadFunctions();
+}
+
+// -- [GnInstanceVK] --
+
 GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept
 {
     if (!GnVulkanFunctionDispatcher::Init())
@@ -243,7 +312,6 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCa
     // For now, gn will always activate debugging extensions and validation layer
     static const char* extensions[] = {
         "VK_KHR_surface",
-        "VK_KHR_win32_surface",
         "VK_EXT_debug_report",
         "VK_EXT_debug_utils",
     };
@@ -336,61 +404,6 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCa
 
     return GnSuccess;
 }
-
-// -- [GnVulkanFunctionDispatcher] --
-
-GnVulkanFunctionDispatcher::GnVulkanFunctionDispatcher(void* dll_handle) noexcept :
-    dll_handle(dll_handle)
-{
-}
-
-bool GnVulkanFunctionDispatcher::LoadFunctions() noexcept
-{
-    vkGetInstanceProcAddr = GnGetLibraryFunction<PFN_vkGetInstanceProcAddr>(dll_handle, "vkGetInstanceProcAddr");
-    vkCreateInstance = (PFN_vkCreateInstance)vkGetInstanceProcAddr(nullptr, "vkCreateInstance");
-    return vkGetInstanceProcAddr && vkCreateInstance;
-}
-
-void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, GnVulkanInstanceFunctions& fn) noexcept
-{
-    GN_LOAD_INSTANCE_FN(vkDestroyInstance);
-    GN_LOAD_INSTANCE_FN(vkEnumeratePhysicalDevices);
-    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceFeatures);
-    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceFormatProperties);
-    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceImageFormatProperties);
-    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceProperties);
-    GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceQueueFamilyProperties);
-    GN_LOAD_INSTANCE_FN(vkCreateDevice);
-}
-
-void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevice device, uint32_t api_version, GnVulkanDeviceFunctions& fn) noexcept
-{
-    PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr");
-    GN_LOAD_DEVICE_FN(vkDestroyDevice);
-    GN_LOAD_DEVICE_FN(vkGetDeviceQueue);
-    GN_LOAD_DEVICE_FN(vkCreateFence);
-    GN_LOAD_DEVICE_FN(vkDestroyFence);
-    GN_LOAD_DEVICE_FN(vkCmdDraw);
-    GN_LOAD_DEVICE_FN(vkCmdDrawIndexed);
-    GN_LOAD_DEVICE_FN(vkCmdDispatch);
-}
-
-bool GnVulkanFunctionDispatcher::Init() noexcept
-{
-    if (g_vk_dispatcher) return true;
-
-#ifdef WIN32
-    void* vulkan_dll = GnLoadLibrary("vulkan-1.dll");
-#endif
-
-    if (vulkan_dll == nullptr) return false;
-
-    g_vk_dispatcher.emplace(vulkan_dll);
-
-    return g_vk_dispatcher->LoadFunctions();
-}
-
-// -- [GnInstanceVK] --
 
 GnInstanceVK::GnInstanceVK() noexcept
 {
@@ -624,6 +637,7 @@ GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbac
     queue_create_pos[queue_index] = (queue_create_pos[queue_index] + 1) % vk_parent_adapter->queue_count[queue_index];
 
     new(new_queue) GnQueueVK;
+    new_queue->alloc_callbacks = *alloc_callbacks;
     new_queue->parent_device = this;
     new_queue->queue = vk_queue;
     new_queue->wait_fence = fence;
@@ -654,7 +668,7 @@ GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture
 GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) :
     parent_cmd_pool((GnCommandPoolVK*)parent_cmd_pool)
 {
-    draw_cmd_private_data = (void*)cmd_buffer; // We don't need VkCommandBuffer in this struct since it can be stored in *_cmd_private_data
+    draw_cmd_private_data = (void*)cmd_buffer; // We don't need VkCommandBuffer in this struct since it can be stored in *_cmd_private_data to save space
     draw_indexed_cmd_private_data = (void*)cmd_buffer;
     dispatch_cmd_private_data = (void*)cmd_buffer;
 
