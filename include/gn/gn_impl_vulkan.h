@@ -43,6 +43,11 @@ struct GnVulkanDeviceFunctions
     PFN_vkGetDeviceQueue vkGetDeviceQueue;
     PFN_vkCreateFence vkCreateFence;
     PFN_vkDestroyFence vkDestroyFence;
+    PFN_vkBeginCommandBuffer vkBeginCommandBuffer;
+    PFN_vkEndCommandBuffer vkEndCommandBuffer;
+    PFN_vkCmdBindIndexBuffer vkCmdBindIndexBuffer;
+    PFN_vkCmdBindVertexBuffers vkCmdBindVertexBuffers;
+    PFN_vkCmdSetBlendConstants vkCmdSetBlendConstants;
     PFN_vkCmdDraw vkCmdDraw;
     PFN_vkCmdDrawIndexed vkCmdDrawIndexed;
     PFN_vkCmdDispatch vkCmdDispatch;
@@ -105,6 +110,7 @@ struct GnDeviceVK : public GnDevice_t
     GnResult CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
+    GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
 };
 
 struct GnQueueVK : public GnQueue_t
@@ -119,6 +125,23 @@ struct GnQueueVK : public GnQueue_t
     }
 };
 
+struct GnDeviceToDeviceFenceVK : public GnFence_t
+{
+    GnDeviceVK* parent_device;
+    VkSemaphore semaphore;
+};
+
+struct GnDeviceToHostFenceVK : public GnFence_t
+{
+    GnDeviceVK* parent_device;
+    VkFence     fence;
+};
+
+struct GnBufferVK : public GnBuffer_t
+{
+    VkBuffer    buffer;
+};
+
 struct GnCommandPoolVK : public GnCommandPool_t
 {
     GnDeviceVK*         parent_device;
@@ -127,21 +150,24 @@ struct GnCommandPoolVK : public GnCommandPool_t
 
 struct GnCommandListVK : public GnCommandList_t
 {
-    GnCommandPoolVK*            parent_cmd_pool;
-    PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets;
-    PFN_vkCmdBindIndexBuffer    cmd_bind_index_buffer;
-    PFN_vkCmdBindVertexBuffers  cmd_bind_vertex_buffers;
+    GnCommandPoolVK*                parent_cmd_pool;
+    const GnVulkanDeviceFunctions&  fn;
+    PFN_vkCmdBindDescriptorSets     cmd_bind_descriptor_sets;
+    PFN_vkCmdBindIndexBuffer        cmd_bind_index_buffer;
+    PFN_vkCmdBindVertexBuffers      cmd_bind_vertex_buffers;
+    PFN_vkCmdSetBlendConstants      cmd_set_blend_constants;
+    PFN_vkCmdSetStencilReference    cmd_set_stencil_reference;
 
-    GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer);
+    GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) noexcept;
     ~GnCommandListVK();
 
-    GnResult Begin() override;
-    void BeginRenderPass() override;
-    void EndRenderPass() override;
-    GnResult End() override;
+    GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
+    void BeginRenderPass() noexcept override;
+    void EndRenderPass() noexcept override;
+    GnResult End() noexcept override;
 };
 
-constexpr uint32_t clvksize = sizeof(GnCommandListVK);
+constexpr uint32_t clvksize = sizeof(GnCommandListVK); // TODO: delete this
 
 // -------------------------------------------------------
 //                    IMPLEMENTATION
@@ -649,7 +675,33 @@ GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbac
 
 GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept
 {
-    if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator();
+    if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator(); // TODO: replace with pool alloc
+
+    GnAdapterVK* vk_parent_adapter = (GnAdapterVK*)parent_adapter;
+
+    VkFenceCreateInfo fence_info;
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_info.pNext = nullptr;
+    fence_info.flags = signaled;
+
+    VkFence vk_fence;
+    if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &vk_fence)))
+        return GnError_InternalError;
+
+    switch (type) {
+        case GnFence_DeviceToDeviceSync:
+        {
+            GnDeviceToHostFenceVK* new_fence = (GnDeviceToHostFenceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+            break;
+        }
+        case GnFence_DeviceToHostSync:
+        {
+            GnDeviceToHostFenceVK* new_fence = (GnDeviceToHostFenceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+            break;
+        }
+        
+    }
+
     return GnError_Unimplemented;
 }
 
@@ -663,44 +715,107 @@ GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture
     return GnError_Unimplemented;
 }
 
+GnResult GnDeviceVK::CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept
+{
+    return GnError_Unimplemented;
+}
+
 // -- [GnCommandListVK] --
 
-GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) :
-    parent_cmd_pool((GnCommandPoolVK*)parent_cmd_pool)
+GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) noexcept :
+    parent_cmd_pool((GnCommandPoolVK*)parent_cmd_pool),
+    fn(this->parent_cmd_pool->parent_device->fn)
 {
-    draw_cmd_private_data = (void*)cmd_buffer; // We don't need VkCommandBuffer in this struct since it can be stored in *_cmd_private_data to save space
+    draw_cmd_private_data = (void*)cmd_buffer; // We use this to store the actual command buffer to save space
     draw_indexed_cmd_private_data = (void*)cmd_buffer;
     dispatch_cmd_private_data = (void*)cmd_buffer;
 
-    // Bind function table
-    const GnVulkanDeviceFunctions& fn = this->parent_cmd_pool->parent_device->fn; // lol :P
-    draw_cmd_fn = (GnDrawCmdFn)fn.vkCmdDraw;
-    draw_indexed_cmd_fn = (GnDrawIndexedCmdFn)fn.vkCmdDrawIndexed;
-    dispatch_cmd_fn = (GnDispatchCmdFn)fn.vkCmdDispatch;
+    flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
+        GnCommandListVK* vk_cmd_list = (GnCommandListVK*)command_list;
+        VkCommandBuffer cmd_buf = (VkCommandBuffer)vk_cmd_list->draw_cmd_private_data;
+
+        if (vk_cmd_list->state.update_flags.index_buffer) {
+            vk_cmd_list->cmd_bind_index_buffer(cmd_buf, ((GnBufferVK*)vk_cmd_list->state.index_buffer)->buffer, vk_cmd_list->state.index_buffer_offset, VK_INDEX_TYPE_UINT32);
+        }
+
+        if (vk_cmd_list->state.update_flags.vertex_buffers) {
+            VkBuffer vtx_buffers[32];
+            const GnUpdateRange& update_range = vk_cmd_list->state.vertex_buffer_upd_range;
+            uint32_t count = update_range.last - update_range.first;
+
+            for (uint32_t i = 0; i < count; i++)
+                vtx_buffers[i] = ((GnBufferVK*)vk_cmd_list->state.vertex_buffers[update_range.first + i])->buffer;
+
+            vk_cmd_list->state.vertex_buffer_upd_range.Flush();
+            vk_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers, &vk_cmd_list->state.vertex_buffer_offsets[update_range.first]);
+        }
+
+        if (vk_cmd_list->state.update_flags.graphics_pipeline) {
+            // TODO
+        }
+
+        if (vk_cmd_list->state.update_flags.blend_constants) {
+            vk_cmd_list->cmd_set_blend_constants(cmd_buf, vk_cmd_list->state.blend_constants);
+        }
+
+        if (vk_cmd_list->state.update_flags.stencil_ref) {
+            vk_cmd_list->cmd_set_stencil_reference(cmd_buf, VK_STENCIL_FACE_FRONT_AND_BACK, vk_cmd_list->state.stencil_ref);
+        }
+
+        if (vk_cmd_list->state.update_flags.viewports) {
+            // TODO
+        }
+
+        if (vk_cmd_list->state.update_flags.scissors) {
+            // TODO
+        }
+
+        vk_cmd_list->state.update_flags.u32 = 0;
+    };
+
+    flush_compute_state_fn = [](GnCommandList command_list) noexcept {
+        GnCommandListVK* vk_cmd_list = (GnCommandListVK*)command_list;
+        VkCommandBuffer cmd_buf = (VkCommandBuffer)vk_cmd_list->draw_cmd_private_data;
+        // TODO
+    };
+
+    // Bind functions
+    cmd_bind_index_buffer   = fn.vkCmdBindIndexBuffer;
+    cmd_bind_vertex_buffers = fn.vkCmdBindVertexBuffers;
+    cmd_set_blend_constants = fn.vkCmdSetBlendConstants;
+    draw_cmd_fn             = (GnDrawCmdFn)fn.vkCmdDraw;
+    draw_indexed_cmd_fn     = (GnDrawIndexedCmdFn)fn.vkCmdDrawIndexed;
+    dispatch_cmd_fn         = (GnDispatchCmdFn)fn.vkCmdDispatch;
 }
 
 GnCommandListVK::~GnCommandListVK()
 {
 }
 
-GnResult GnCommandListVK::Begin()
+GnResult GnCommandListVK::Begin(const GnCommandListBeginDesc* desc) noexcept
 {
-    return GnError_Unimplemented;
+    VkCommandBufferBeginInfo begin_info;
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.pNext = nullptr;
+    begin_info.flags = desc->flags; // No need to convert, they both are compatible
+    begin_info.pInheritanceInfo = nullptr;
+
+    return GnConvertFromVkResult(parent_cmd_pool->parent_device->fn.vkBeginCommandBuffer((VkCommandBuffer)draw_cmd_private_data, &begin_info));
 }
 
-void GnCommandListVK::BeginRenderPass()
+void GnCommandListVK::BeginRenderPass() noexcept
 {
 
 }
 
-void GnCommandListVK::EndRenderPass()
+void GnCommandListVK::EndRenderPass() noexcept
 {
 
 }
 
-GnResult GnCommandListVK::End()
+GnResult GnCommandListVK::End() noexcept
 {
-    return GnError_Unimplemented;
+    return GnConvertFromVkResult(parent_cmd_pool->parent_device->fn.vkEndCommandBuffer((VkCommandBuffer)draw_cmd_private_data));
 }
 
 #endif

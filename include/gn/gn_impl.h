@@ -81,6 +81,7 @@ struct GnDevice_t
     virtual GnResult CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept = 0;
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
+    virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
 };
 
 struct GnQueue_t
@@ -104,10 +105,22 @@ struct GnFence_t
     }
 };
 
+struct GnBuffer_t
+{
+    GnBufferDesc    desc;
+};
+
+struct GnTexture_t
+{
+    GnTextureDesc   desc;
+
+};
+
 struct GnCommandPool_t
 {
     GnAllocationCallbacks   alloc_callbacks{};
-    GnCommandList           command_lists;
+    GnCommandList           command_lists; // linked-list
+
 };
 
 struct GnUpdateRange
@@ -116,7 +129,7 @@ struct GnUpdateRange
     uint16_t first = 0xFFFF;
     uint16_t last = 0xFFFF;
 
-    inline void update(uint32_t idx)
+    inline void Update(uint32_t idx)
     {
         if (first == 0xFFFF) {
             first = (uint32_t)idx;
@@ -128,7 +141,7 @@ struct GnUpdateRange
         if (idx > last) last = idx + 1;
     }
 
-    inline void update(uint32_t first_idx, uint32_t last_idx)
+    inline void Update(uint32_t first_idx, uint32_t last_idx)
     {
         if (first == 0xFFFF) {
             first = (uint32_t)first_idx;
@@ -140,7 +153,7 @@ struct GnUpdateRange
         if (last_idx > last) last = (uint32_t)last_idx + 1;
     }
 
-    inline void flush()
+    inline void Flush()
     {
         first = 0xFFFF;
         last = 0xFFFF;
@@ -151,7 +164,8 @@ struct GnCommandListState
 {
     enum
     {
-        GraphicsStateUpdate = (1 << 7) - 1
+        GraphicsStateUpdate = (1 << 7) - 1,
+        ComputeStateUpdate = ~GraphicsStateUpdate
     };
 
     union
@@ -160,13 +174,16 @@ struct GnCommandListState
         {
             bool graphics_pipeline : 1;
             bool graphics_resource_binding : 1;
-            bool compute_pipeline : 1;
-            bool compute_resource_binding : 1;
             bool index_buffer : 1;
             bool vertex_buffers : 1;
             bool blend_constants : 1;
             bool viewports : 1;
             bool scissors : 1;
+            bool stencil_ref : 1;
+
+            // compute pipeline stuff
+            bool compute_pipeline : 1;
+            bool compute_resource_binding : 1;
         };
 
         uint32_t    u32;
@@ -178,10 +195,20 @@ struct GnCommandListState
     GnBuffer        vertex_buffers[32];
     GnDeviceSize    vertex_buffer_offsets[32];
     GnUpdateRange   vertex_buffer_upd_range;
+    GnViewport      viewports[16];
+    GnUpdateRange   viewport_upd_range;
+    GnScissorRect   scissors[16];
+    GnUpdateRange   scissor_upd_range;
+    uint32_t        stencil_ref;
 
-    inline bool graphics_state_updated() const
+    inline bool graphics_state_updated() const noexcept
     {
         return (update_flags.u32 & GraphicsStateUpdate) > 0;
+    }
+
+    inline bool compute_state_updated() const noexcept
+    {
+        return (update_flags.u32 & ComputeStateUpdate) > 0;
     }
 };
 
@@ -193,13 +220,11 @@ typedef void (GN_FPTR* GnDispatchCmdFn)(void* cmd_data, uint32_t num_thread_grou
 
 struct GnCommandList_t
 {
-    GnCommandListState          state;
+    GnCommandListState          state{};
 
-    // Function pointer for certain functions are defined here to avoid vtables.
-    // We absolutely can directly bind backend function (i.e. vkCmdDraw) to reduce call indirections.
+    // Function pointer for certain functions are defined here to avoid vtables and function call indirections.
     GnFlushGfxStateFn           flush_gfx_state_fn;
     GnFlushComputeStateFn       flush_compute_state_fn;
-
     void*                       draw_cmd_private_data;
     GnDrawCmdFn                 draw_cmd_fn;
     void*                       draw_indexed_cmd_private_data;
@@ -210,13 +235,29 @@ struct GnCommandList_t
     bool                        is_recording;
     GnCommandList               next_command_list;
 
-    virtual GnResult Begin() = 0;
-    virtual void BeginRenderPass() = 0;
-    virtual void EndRenderPass() = 0;
-    virtual GnResult End() = 0;
+    virtual GnResult Begin(const GnCommandListBeginDesc* desc) noexcept = 0;
+    virtual void BeginRenderPass() noexcept = 0;
+    virtual void EndRenderPass() noexcept = 0;
+    virtual GnResult End() noexcept = 0;
 };
 
-constexpr uint32_t clsize = sizeof(GnCommandList_t);
+constexpr uint32_t clsize = sizeof(GnCommandList_t); // TODO: delete this
+
+struct GnCommandPoolFallback : public GnCommandPool_t
+{
+
+};
+
+struct GnCommandListFallback : public GnCommandList_t
+{
+    GnCommandListFallback();
+    ~GnCommandListFallback();
+    
+    GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
+    void BeginRenderPass() noexcept override;
+    void EndRenderPass() noexcept override;
+    GnResult End() noexcept override;
+};
 
 static void* GnLoadLibrary(const char* name) noexcept
 {
@@ -574,6 +615,21 @@ void GnDestroyFence(GnFence fence)
     fence->~GnFence_t();
 }
 
+GnResult GnGetFenceStatus(GnFence fence)
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnWaitFence(GnFence fence, uint64_t timeout)
+{
+    return GnError_Unimplemented;
+}
+
+void GnResetFence(GnFence fence)
+{
+
+}
+
 GnFenceType GnGetFenceType(GnFence fence)
 {
     return fence->type;
@@ -603,10 +659,10 @@ void GnDestroyCommandList(GnCommandPool command_pool, uint32_t num_cmd_lists, co
 
 }
 
-GnResult GnBeginCommandList(GnCommandList command_list)
+GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc)
 {
     command_list->is_recording = true;
-    return command_list->Begin();
+    return command_list->Begin(desc);
 }
 
 GnResult GnEndCommandList(GnCommandList command_list)
@@ -620,8 +676,39 @@ GnBool GnIsRecordingCommandList(GnCommandList command_list)
     return command_list->is_recording;
 }
 
+void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pipeline)
+{
+
+}
+
+void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout layout)
+{
+
+}
+
+void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table)
+{
+
+}
+
+void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, GnDeviceSize offset)
+{
+
+}
+
+void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, GnDeviceSize offset)
+{
+
+}
+
+void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t first_slot, uint32_t size, const void* data, uint32_t offset)
+{
+
+}
+
 void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset)
 {
+    if (index_buffer == command_list->state.index_buffer || offset == command_list->state.index_buffer_offset) return;
     command_list->state.index_buffer = index_buffer;
     command_list->state.index_buffer_offset = offset;
     command_list->state.update_flags.index_buffer = true;
@@ -629,9 +716,14 @@ void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDe
 
 void GnCmdSetVertexBuffer(GnCommandList command_list, uint32_t slot, GnBuffer vertex_buffer, GnDeviceSize offset)
 {
-    command_list->state.vertex_buffers[slot] = vertex_buffer;
-    command_list->state.vertex_buffer_offsets[slot] = offset;
-    command_list->state.vertex_buffer_upd_range.update(slot);
+    GnBuffer& target_vertex_buffer = command_list->state.vertex_buffers[slot];
+    GnDeviceSize& target_buffer_offset = command_list->state.vertex_buffer_offsets[slot];
+
+    if (vertex_buffer == target_vertex_buffer || offset == target_buffer_offset) return;
+
+    target_vertex_buffer = vertex_buffer;
+    target_buffer_offset = offset;
+    command_list->state.vertex_buffer_upd_range.Update(slot);
     command_list->state.update_flags.vertex_buffers = true;
 }
 
@@ -643,8 +735,56 @@ void GnCmdSetVertexBuffers(GnCommandList command_list, uint32_t first_slot, uint
         command_list->state.vertex_buffer_offsets[slot] = offsets[i];
     }
 
-    command_list->state.vertex_buffer_upd_range.update(first_slot, first_slot + num_vertex_buffers);
+    command_list->state.vertex_buffer_upd_range.Update(first_slot, first_slot + num_vertex_buffers);
     command_list->state.update_flags.vertex_buffers = true;
+}
+
+void GnCmdSetViewport(GnCommandList command_list, uint32_t slot, float x, float y, float width, float height, float min_depth, float max_depth)
+{
+    GnViewport& viewport = command_list->state.viewports[slot];
+    viewport.x = x;
+    viewport.y = y;
+    viewport.width = width;
+    viewport.height = height;
+    viewport.min_depth = min_depth;
+    viewport.max_depth = max_depth;
+    command_list->state.update_flags.vertex_buffers = true;
+}
+
+void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot, const GnViewport* viewport)
+{
+    GnViewport& viewport_target = command_list->state.viewports[slot];
+    viewport_target.x = viewport->x;
+    viewport_target.y = viewport->y;
+    viewport_target.width = viewport->width;
+    viewport_target.height = viewport->height;
+    viewport_target.min_depth = viewport->min_depth;
+    viewport_target.max_depth = viewport->max_depth;
+    command_list->state.update_flags.vertex_buffers = true;
+}
+
+void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t num_viewports, const GnViewport* viewports)
+{
+    std::memcpy(&command_list->state.viewports[first_slot], viewports, sizeof(GnViewport) * num_viewports);
+    command_list->state.viewport_upd_range.Update(first_slot, first_slot + num_viewports);
+    command_list->state.update_flags.viewports = true;
+}
+
+void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+
+}
+
+void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnScissorRect* scissor)
+{
+
+}
+
+void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnScissorRect* scissors)
+{
+    std::memcpy(&command_list->state.scissors[first_slot], scissors, sizeof(GnScissorRect) * num_scissors);
+    command_list->state.scissor_upd_range.Update(first_slot, first_slot + num_scissors);
+    command_list->state.update_flags.scissors = true;
 }
 
 void GnCmdSetBlendConstants(GnCommandList command_list, const float blend_constants[4])
@@ -662,6 +802,18 @@ void GnCmdSetBlendConstants2(GnCommandList command_list, float r, float g, float
     GnCmdSetBlendConstants(command_list, constants);
 }
 
+void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref)
+{
+    if (stencil_ref == command_list->state.stencil_ref) return;
+    command_list->state.stencil_ref = stencil_ref;
+    command_list->state.update_flags.stencil_ref = true;
+}
+
+void GnCmdBeginRenderPass(GnCommandList command_list)
+{
+
+}
+
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
@@ -674,6 +826,11 @@ void GnCmdDrawInstanced(GnCommandList command_list, uint32_t num_vertices, uint3
     command_list->draw_cmd_fn(command_list->draw_cmd_private_data, num_vertices, num_instances, first_vertex, first_instance);
 }
 
+void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands)
+{
+
+}
+
 void GnCmdDrawIndexed(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, int32_t vertex_offset)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
@@ -684,6 +841,92 @@ void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices,
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
     command_list->draw_indexed_cmd_fn(command_list->draw_indexed_cmd_private_data, num_indices, first_index, num_instances, vertex_offset, first_instance);
+}
+
+void GnCmdDrawIndexedIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands)
+{
+
+}
+
+void GnCmdEndRenderPass(GnCommandList command_list)
+{
+
+}
+
+void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z)
+{
+    if (command_list->state.compute_state_updated()) command_list->flush_compute_state_fn(command_list);
+    command_list->dispatch_cmd_fn(command_list->dispatch_cmd_private_data, num_thread_group_x, num_thread_group_y, num_thread_group_z);
+}
+
+void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset)
+{
+    if (command_list->state.compute_state_updated()) command_list->flush_compute_state_fn(command_list);
+
+}
+
+GnCommandListFallback::GnCommandListFallback()
+{
+    draw_cmd_private_data = this;
+    draw_indexed_cmd_private_data = this;
+    dispatch_cmd_private_data = this;
+
+    flush_gfx_state_fn = [](GnCommandList command_list) {
+        if (command_list->state.update_flags.index_buffer) {}
+
+        if (command_list->state.update_flags.vertex_buffers) {}
+
+        if (command_list->state.update_flags.graphics_pipeline) {}
+
+        if (command_list->state.update_flags.blend_constants) {}
+
+        if (command_list->state.update_flags.stencil_ref) {}
+
+        if (command_list->state.update_flags.viewports) {}
+
+        if (command_list->state.update_flags.scissors) {}
+    };
+
+    flush_compute_state_fn = [](GnCommandList command_list) {
+
+    };
+
+    draw_cmd_fn = [](void* cmd_data, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance) {
+
+    };
+
+    draw_indexed_cmd_fn = [](void* cmd_data, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance) {
+
+    };
+
+    dispatch_cmd_fn = [](void* cmd_data, uint32_t num_threadgroup_x, uint32_t num_threadgroup_y, uint32_t num_threadgroup_z) {
+
+    };
+}
+
+GnCommandListFallback::~GnCommandListFallback()
+{
+
+}
+
+GnResult GnCommandListFallback::Begin(const GnCommandListBeginDesc* desc) noexcept
+{
+    return GnError_Unimplemented;
+}
+
+void GnCommandListFallback::BeginRenderPass() noexcept
+{
+    
+}
+
+void GnCommandListFallback::EndRenderPass() noexcept
+{
+
+}
+
+GnResult GnCommandListFallback::End() noexcept
+{
+    return GnError_Unimplemented;
 }
 
 #endif // GN_IMPL_H_

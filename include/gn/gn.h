@@ -325,6 +325,9 @@ typedef enum
 
 GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence);
 void GnDestroyFence(GnFence fence);
+GnResult GnGetFenceStatus(GnFence fence);
+GnResult GnWaitFence(GnFence fence, uint64_t timeout);
+void GnResetFence(GnFence fence);
 GnFenceType GnGetFenceType(GnFence fence);
 
 typedef enum
@@ -419,9 +422,29 @@ typedef struct
 GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GN_OUT GnCommandPool* command_pool);
 void GnDestroyCommandPool(GnCommandPool command_pool);
 void GnTrimCommandPool(GnCommandPool command_pool);
+
+typedef enum
+{
+    GnCommandListBegin_OneTimeSubmit = 1 << 0,
+    GnCommandListBegin_RenderPassContinue = 1 << 1,
+    GnCommandListBegin_SimultaneousUse = 1 << 2,
+} GnCommandListBegin;
+typedef uint32_t GnCommandListBeginFlags;
+
+typedef struct
+{
+    
+} GnCommandListInheritance;
+
+typedef struct
+{
+    GnCommandListBeginFlags         flags;
+    const GnCommandListInheritance* inheritance;
+} GnCommandListBeginDesc;
+
 GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GN_OUT GnCommandList* command_lists);
 void GnDestroyCommandList(GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
-GnResult GnBeginCommandList(GnCommandList command_list);
+GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc);
 GnResult GnEndCommandList(GnCommandList command_list);
 GnBool GnIsRecordingCommandList(GnCommandList command_list);
 
@@ -461,6 +484,24 @@ typedef enum
     GnTextureLayout_Present                 = 10,
 } GnTextureLayout;
 
+typedef struct
+{
+    float x;
+    float y;
+    float width;
+    float height;
+    float min_depth;
+    float max_depth;
+} GnViewport;
+
+typedef struct
+{
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} GnScissorRect;
+
 void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pipeline);
 void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
 void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table);
@@ -471,11 +512,11 @@ void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDe
 void GnCmdSetVertexBuffer(GnCommandList command_list, uint32_t slot, GnBuffer vertex_buffer, GnDeviceSize offset);
 void GnCmdSetVertexBuffers(GnCommandList command_list, uint32_t first_slot, uint32_t num_vertex_buffers, const GnBuffer* vertex_buffer, const GnDeviceSize* offsets);
 void GnCmdSetViewport(GnCommandList command_list, uint32_t slot, float x, float y, float width, float height, float min_depth, float max_depth);
-void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot);
-void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t num_viewports);
+void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot, const GnViewport* viewport);
+void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t num_viewports, const GnViewport* viewports);
 void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
-void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot);
-void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors);
+void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnScissorRect* scissor);
+void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnScissorRect* scissors);
 void GnCmdSetBlendConstants(GnCommandList command_list, const float blend_constants[4]);
 void GnCmdSetBlendConstants2(GnCommandList command_list, float r, float g, float b, float a);
 void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref);
