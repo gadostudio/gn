@@ -5,7 +5,7 @@
 TEST_CASE("Create device", "[device]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = GnBackend_D3D12;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -58,7 +58,7 @@ TEST_CASE("Create device", "[device]")
 TEST_CASE("Create queue", "[device]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = GnBackend_D3D12;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;

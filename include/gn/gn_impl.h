@@ -23,6 +23,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <unknwn.h>
 #elif defined(__linux__)
 #include <dlfcn.h>
 #endif
@@ -35,6 +36,11 @@
 #endif
 
 #define GN_MAX_QUEUE 4
+
+// The maximum number of bound resources on resource table here to prevent resource table abuse
+// We may change this number in the future
+#define GN_MAX_RESOURCE_TABLE_SAMPLERS 2048u
+#define GN_MAX_RESOURCE_TABLE_DESCRIPTORS 1048576u
 
 struct GnInstance_t
 {
@@ -290,6 +296,16 @@ inline static constexpr bool GnTestBitmask(T op, Args... args) noexcept
     T mask = (args | ...);
     return (op & mask) == mask;
 }
+
+#ifdef _WIN32
+template<typename T, std::enable_if_t<std::is_base_of_v<IUnknown, T>, bool> = true>
+inline static void GnSafeComRelease(T*& ptr) noexcept
+{
+    if (ptr == nullptr) return;
+    ptr->Release();
+    ptr = nullptr;
+}
+#endif
 
 static GnAllocationCallbacks* GnDefaultAllocator() noexcept
 {

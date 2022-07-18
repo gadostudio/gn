@@ -489,18 +489,18 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_devic
     limits.max_storage_buffer_range = vk_limits.maxStorageBufferRange;
     limits.max_shader_constant_size = vk_limits.maxPushConstantsSize;
     limits.max_bound_pipeline_layout_slots = vk_limits.maxBoundDescriptorSets;
-    limits.max_per_stage_sampler_resources = std::min(2048u, vk_limits.maxPerStageDescriptorSamplers);
-    limits.max_per_stage_uniform_buffer_resources = std::min(1048576u, vk_limits.maxPerStageDescriptorUniformBuffers);
-    limits.max_per_stage_storage_buffer_resources = std::min(1048576u, vk_limits.maxPerStageDescriptorStorageBuffers);
-    limits.max_per_stage_read_only_storage_buffer_resources = std::min(1048576u, vk_limits.maxPerStageDescriptorStorageBuffers);
-    limits.max_per_stage_sampled_texture_resources = std::min(1048576u, vk_limits.maxPerStageDescriptorSampledImages);
-    limits.max_per_stage_storage_texture_resources = std::min(1048576u, vk_limits.maxPerStageDescriptorStorageImages);
-    limits.max_resource_table_samplers = std::min(2048u, vk_limits.maxDescriptorSetSamplers);
-    limits.max_resource_table_uniform_buffers = std::min(1048576u, vk_limits.maxDescriptorSetUniformBuffers);
-    limits.max_resource_table_storage_buffers = std::min(1048576u, vk_limits.maxDescriptorSetStorageBuffers);
-    limits.max_resource_table_read_only_storage_buffer_resources = std::min(1048576u, vk_limits.maxDescriptorSetStorageBuffers);
-    limits.max_resource_table_sampled_textures = std::min(1048576u, vk_limits.maxDescriptorSetSampledImages);
-    limits.max_resource_table_storage_textures = std::min(1048576u, vk_limits.maxDescriptorSetStorageImages);
+    limits.max_per_stage_sampler_resources = std::min(GN_MAX_RESOURCE_TABLE_SAMPLERS, vk_limits.maxPerStageDescriptorSamplers);
+    limits.max_per_stage_uniform_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorUniformBuffers);
+    limits.max_per_stage_storage_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageBuffers);
+    limits.max_per_stage_read_only_storage_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageBuffers);
+    limits.max_per_stage_sampled_texture_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorSampledImages);
+    limits.max_per_stage_storage_texture_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageImages);
+    limits.max_resource_table_samplers = std::min(GN_MAX_RESOURCE_TABLE_SAMPLERS, vk_limits.maxDescriptorSetSamplers);
+    limits.max_resource_table_uniform_buffers = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetUniformBuffers);
+    limits.max_resource_table_storage_buffers = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageBuffers);
+    limits.max_resource_table_read_only_storage_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageBuffers);
+    limits.max_resource_table_sampled_textures = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetSampledImages);
+    limits.max_resource_table_storage_textures = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageImages);
     limits.max_per_stage_resources =
         limits.max_per_stage_sampler_resources +
         limits.max_per_stage_uniform_buffer_resources +

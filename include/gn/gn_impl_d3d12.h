@@ -6,6 +6,7 @@
 #include <dxgi.h>
 #include <d3d12.h>
 #include <cwchar>
+#include <type_traits>
 
 struct GnInstanceD3D12;
 struct GnAdapterD3D12;
@@ -55,6 +56,9 @@ struct GnAdapterD3D12 : public GnAdapter_t
 struct GnDeviceD3D12 : public GnDevice_t
 {
     ID3D12Device* device;
+    ID3D12CommandSignature* draw_cmd_signature;
+    ID3D12CommandSignature* draw_indexed_cmd_signature;
+    ID3D12CommandSignature* dispatch_cmd_signature;
 
     virtual ~GnDeviceD3D12();
     GnResult CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept override;
@@ -68,7 +72,7 @@ struct GnDeviceD3D12 : public GnDevice_t
 //                    IMPLEMENTATION
 // -------------------------------------------------------
 
-inline static DXGI_FORMAT GnConvertToDxgiFormat(GnFormat format)
+inline static DXGI_FORMAT GnConvertToDxgiFormat(GnFormat format) noexcept
 {
     switch (format) {
         case GnFormat_R8Unorm:      return DXGI_FORMAT_R8_UNORM;
@@ -116,6 +120,25 @@ inline static DXGI_FORMAT GnConvertToDxgiFormat(GnFormat format)
 inline UINT GnCalcSubresourceD3D12(uint32_t mip_slice, uint32_t array_slice, uint32_t plane_slice, uint32_t mip_levels, uint32_t array_size)
 {
     return mip_slice + (array_slice * mip_levels) + (plane_slice * mip_levels * array_size);
+}
+
+ID3D12CommandSignature* GnCreateCommandSignatureD3D12(ID3D12Device* device, D3D12_INDIRECT_ARGUMENT_TYPE arg_type)
+{
+    ID3D12CommandSignature* cmd_signature;
+    D3D12_INDIRECT_ARGUMENT_DESC arg_desc{};
+    arg_desc.Type = arg_type;
+
+    D3D12_COMMAND_SIGNATURE_DESC desc{};
+    desc.NumArgumentDescs = 1;
+    desc.pArgumentDescs = &arg_desc;
+
+    switch (arg_type) {
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS); break;
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: desc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS); break;
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: desc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS); break;
+    }
+    
+    return SUCCEEDED(device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&cmd_signature))) ? cmd_signature : nullptr;
 }
 
 GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept
@@ -312,16 +335,16 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
             max_per_stage_uav = (supported_feature_levels.MaxSupportedFeatureLevel > D3D_FEATURE_LEVEL_11_0) ? 64 : 8;
             break;
         case D3D12_RESOURCE_BINDING_TIER_2:
-            max_per_stage_samplers = 2048;
+            max_per_stage_samplers = GN_MAX_RESOURCE_TABLE_SAMPLERS;
             max_per_stage_cbv = 14;
             max_per_stage_srv = 1000000;
             max_per_stage_uav = 64;
             break;
         case D3D12_RESOURCE_BINDING_TIER_3:
-            max_per_stage_samplers = 2048;
-            max_per_stage_cbv = 1048576;
-            max_per_stage_srv = 1048576;
-            max_per_stage_uav = 1048576;
+            max_per_stage_samplers = GN_MAX_RESOURCE_TABLE_SAMPLERS;
+            max_per_stage_cbv = GN_MAX_RESOURCE_TABLE_DESCRIPTORS;
+            max_per_stage_srv = GN_MAX_RESOURCE_TABLE_DESCRIPTORS;
+            max_per_stage_uav = GN_MAX_RESOURCE_TABLE_DESCRIPTORS;
             break;
         default:
             GN_DBG_ASSERT(false && "Unreachable"); // just in case if things messed up.
@@ -413,6 +436,19 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocati
     if (FAILED(g_d3d12_dispatcher->D3D12CreateDevice(adapter, feature_level, IID_PPV_ARGS(&d3d12_device))))
         return GnError_InternalError;
 
+    // Create draw, draw indexed, and dispatch indirect command signature
+    ID3D12CommandSignature* draw_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW);
+    ID3D12CommandSignature* draw_indexed_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED);
+    ID3D12CommandSignature* dispatch_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH);
+
+    if (draw_cmd_signature == nullptr || draw_indexed_cmd_signature == nullptr || dispatch_cmd_signature == nullptr) {
+        GnSafeComRelease(draw_cmd_signature);
+        GnSafeComRelease(draw_indexed_cmd_signature);
+        GnSafeComRelease(dispatch_cmd_signature);
+        d3d12_device->Release();
+        return GnError_InternalError;
+    }
+    
     GnDeviceD3D12* new_device = (GnDeviceD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnDeviceD3D12), alignof(GnDeviceD3D12), GnAllocationScope_Device);
 
     if (new_device == nullptr) {
@@ -423,6 +459,9 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocati
     new(new_device) GnDeviceD3D12();
     new_device->alloc_callbacks = *alloc_callbacks;
     new_device->device = d3d12_device;
+    new_device->draw_cmd_signature = draw_cmd_signature;
+    new_device->draw_indexed_cmd_signature = draw_indexed_cmd_signature;
+    new_device->dispatch_cmd_signature = dispatch_cmd_signature;
 
     *device = new_device;
 
