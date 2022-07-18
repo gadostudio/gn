@@ -1,11 +1,11 @@
 #include "catch.hpp"
-#include <gn/gn.h>
+#include "test_common.h"
 #include <vector>
 
 TEST_CASE("Create instance", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = g_test_backend;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -19,7 +19,7 @@ TEST_CASE("Create instance", "[instance]")
 TEST_CASE("Adapter query", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = g_test_backend;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -46,7 +46,7 @@ TEST_CASE("Adapter query", "[instance]")
 TEST_CASE("Adapter feature", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = g_test_backend;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -74,7 +74,7 @@ TEST_CASE("Adapter feature", "[instance]")
 TEST_CASE("Adapter formats", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = g_test_backend;
     instance_desc.enable_debugging = GN_TRUE;
     instance_desc.enable_validation = GN_TRUE;
     instance_desc.enable_backend_validation = GN_TRUE;
@@ -92,7 +92,7 @@ TEST_CASE("Adapter formats", "[instance]")
 TEST_CASE("Adapter queues", "[instance]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_Vulkan;
+    instance_desc.backend = g_test_backend;
     instance_desc.enable_debugging = GN_TRUE;
     instance_desc.enable_validation = GN_TRUE;
     instance_desc.enable_backend_validation = GN_TRUE;

@@ -1,11 +1,11 @@
 #include "catch.hpp"
-#include <gn/gn.h>
+#include "test_common.h"
 #include <vector>
 
 TEST_CASE("Create device", "[device]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_D3D12;
+    instance_desc.backend = g_test_backend;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;
@@ -58,7 +58,7 @@ TEST_CASE("Create device", "[device]")
 TEST_CASE("Create queue", "[device]")
 {
     GnInstanceDesc instance_desc{};
-    instance_desc.backend = GnBackend_D3D12;
+    instance_desc.backend = g_test_backend;
     instance_desc.enable_debugging = true;
     instance_desc.enable_validation = true;
     instance_desc.enable_backend_validation = true;

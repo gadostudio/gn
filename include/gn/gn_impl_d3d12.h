@@ -477,6 +477,16 @@ GnDeviceD3D12::~GnDeviceD3D12()
 
 GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept
 {
+    ID3D12CommandQueue* command_queue;
+    D3D12_COMMAND_QUEUE_DESC desc;
+    desc.Priority = 0;
+    desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    desc.NodeMask = 1;
+
+    if (FAILED(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&command_queue)))) {
+        return GnError_InternalError;
+    }
+
     return GnError_Unimplemented;
 }
 
