@@ -43,6 +43,8 @@ struct GnVulkanDeviceFunctions
     PFN_vkGetDeviceQueue vkGetDeviceQueue;
     PFN_vkCreateFence vkCreateFence;
     PFN_vkDestroyFence vkDestroyFence;
+    PFN_vkCreateSemaphore vkCreateSemaphore;
+    PFN_vkDestroySemaphore vkDestroySemaphore;
     PFN_vkBeginCommandBuffer vkBeginCommandBuffer;
     PFN_vkEndCommandBuffer vkEndCommandBuffer;
     PFN_vkCmdBindIndexBuffer vkCmdBindIndexBuffer;
@@ -157,6 +159,8 @@ struct GnCommandListVK : public GnCommandList_t
     PFN_vkCmdBindVertexBuffers      cmd_bind_vertex_buffers;
     PFN_vkCmdSetBlendConstants      cmd_set_blend_constants;
     PFN_vkCmdSetStencilReference    cmd_set_stencil_reference;
+    PFN_vkCmdSetViewport            cmd_set_viewport;
+    PFN_vkCmdSetScissor             cmd_set_scissor;
 
     GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) noexcept;
     ~GnCommandListVK();
@@ -287,6 +291,8 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkGetDeviceQueue);
     GN_LOAD_DEVICE_FN(vkCreateFence);
     GN_LOAD_DEVICE_FN(vkDestroyFence);
+    GN_LOAD_DEVICE_FN(vkCreateSemaphore);
+    GN_LOAD_DEVICE_FN(vkDestroySemaphore);
     GN_LOAD_DEVICE_FN(vkCmdDraw);
     GN_LOAD_DEVICE_FN(vkCmdDrawIndexed);
     GN_LOAD_DEVICE_FN(vkCmdDispatch);
@@ -679,30 +685,51 @@ GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAlloca
 
     GnAdapterVK* vk_parent_adapter = (GnAdapterVK*)parent_adapter;
 
-    VkFenceCreateInfo fence_info;
-    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fence_info.pNext = nullptr;
-    fence_info.flags = signaled;
-
-    VkFence vk_fence;
-    if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &vk_fence)))
-        return GnError_InternalError;
-
     switch (type) {
         case GnFence_DeviceToDeviceSync:
         {
-            GnDeviceToHostFenceVK* new_fence = (GnDeviceToHostFenceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+            VkSemaphoreCreateInfo info;
+            info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            info.pNext = nullptr;
+            info.flags = 0;
+
+            VkSemaphore semaphore;
+            if (GN_VULKAN_FAILED(fn.vkCreateSemaphore(device, &info, nullptr, &semaphore)))
+                return GnError_InternalError;
+
+            GnDeviceToDeviceFenceVK* new_fence = (GnDeviceToDeviceFenceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+            
+            if (new_fence == nullptr) {
+                fn.vkDestroySemaphore(device, semaphore, nullptr);
+                return GnError_OutOfHostMemory;
+            }
+
             break;
         }
         case GnFence_DeviceToHostSync:
         {
+            VkFenceCreateInfo fence_info;
+            fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            fence_info.pNext = nullptr;
+            fence_info.flags = signaled;
+
+            VkFence vk_fence;
+            if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &vk_fence)))
+                return GnError_InternalError;
+
             GnDeviceToHostFenceVK* new_fence = (GnDeviceToHostFenceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+            
+            if (new_fence == nullptr) {
+                fn.vkDestroyFence(device, vk_fence, nullptr);
+                return GnError_OutOfHostMemory;
+            }
+            
             break;
         }
         
     }
 
-    return GnError_Unimplemented;
+    return GnSuccess;
 }
 
 GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept
@@ -726,56 +753,57 @@ GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer 
     parent_cmd_pool((GnCommandPoolVK*)parent_cmd_pool),
     fn(this->parent_cmd_pool->parent_device->fn)
 {
-    draw_cmd_private_data = (void*)cmd_buffer; // We use this to store the actual command buffer to save space
+    draw_cmd_private_data = (void*)cmd_buffer; // We use this to store VkCommandBuffer to save space
     draw_indexed_cmd_private_data = (void*)cmd_buffer;
     dispatch_cmd_private_data = (void*)cmd_buffer;
 
     flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
-        GnCommandListVK* vk_cmd_list = (GnCommandListVK*)command_list;
-        VkCommandBuffer cmd_buf = (VkCommandBuffer)vk_cmd_list->draw_cmd_private_data;
+        GnCommandListVK* impl_cmd_list = static_cast<GnCommandListVK*>(command_list);
+        VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->draw_cmd_private_data;
 
-        if (vk_cmd_list->state.update_flags.index_buffer) {
-            vk_cmd_list->cmd_bind_index_buffer(cmd_buf, ((GnBufferVK*)vk_cmd_list->state.index_buffer)->buffer, vk_cmd_list->state.index_buffer_offset, VK_INDEX_TYPE_UINT32);
-        }
+        if (impl_cmd_list->state.update_flags.index_buffer)
+            impl_cmd_list->cmd_bind_index_buffer(cmd_buf, static_cast<GnBufferVK*>(impl_cmd_list->state.index_buffer)->buffer, impl_cmd_list->state.index_buffer_offset, VK_INDEX_TYPE_UINT32);
 
-        if (vk_cmd_list->state.update_flags.vertex_buffers) {
+        if (impl_cmd_list->state.update_flags.vertex_buffers) {
             VkBuffer vtx_buffers[32];
-            const GnUpdateRange& update_range = vk_cmd_list->state.vertex_buffer_upd_range;
+            const GnUpdateRange& update_range = impl_cmd_list->state.vertex_buffer_upd_range;
             uint32_t count = update_range.last - update_range.first;
 
             for (uint32_t i = 0; i < count; i++)
-                vtx_buffers[i] = ((GnBufferVK*)vk_cmd_list->state.vertex_buffers[update_range.first + i])->buffer;
+                vtx_buffers[i] = static_cast<GnBufferVK*>(impl_cmd_list->state.vertex_buffers[update_range.first + i])->buffer;
 
-            vk_cmd_list->state.vertex_buffer_upd_range.Flush();
-            vk_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers, &vk_cmd_list->state.vertex_buffer_offsets[update_range.first]);
+            impl_cmd_list->state.vertex_buffer_upd_range.Flush();
+            impl_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers, &impl_cmd_list->state.vertex_buffer_offsets[update_range.first]);
         }
 
-        if (vk_cmd_list->state.update_flags.graphics_pipeline) {
+        if (impl_cmd_list->state.update_flags.graphics_pipeline) {
             // TODO
         }
 
-        if (vk_cmd_list->state.update_flags.blend_constants) {
-            vk_cmd_list->cmd_set_blend_constants(cmd_buf, vk_cmd_list->state.blend_constants);
+        if (impl_cmd_list->state.update_flags.blend_constants)
+            impl_cmd_list->cmd_set_blend_constants(cmd_buf, impl_cmd_list->state.blend_constants);
+
+        if (impl_cmd_list->state.update_flags.stencil_ref)
+            impl_cmd_list->cmd_set_stencil_reference(cmd_buf, VK_STENCIL_FACE_FRONT_AND_BACK, impl_cmd_list->state.stencil_ref);
+
+        if (impl_cmd_list->state.update_flags.viewports) {
+            uint32_t first = impl_cmd_list->state.viewport_upd_range.first;
+            uint32_t count = impl_cmd_list->state.viewport_upd_range.last - first;
+            impl_cmd_list->cmd_set_viewport(cmd_buf, first, count, (const VkViewport*)&impl_cmd_list->state.viewports[first]);
         }
 
-        if (vk_cmd_list->state.update_flags.stencil_ref) {
-            vk_cmd_list->cmd_set_stencil_reference(cmd_buf, VK_STENCIL_FACE_FRONT_AND_BACK, vk_cmd_list->state.stencil_ref);
+        if (impl_cmd_list->state.update_flags.scissors) {
+            uint32_t first = impl_cmd_list->state.scissor_upd_range.first;
+            uint32_t count = impl_cmd_list->state.scissor_upd_range.last - first;
+            impl_cmd_list->cmd_set_scissor(cmd_buf, first, count, (const VkRect2D*)&impl_cmd_list->state.scissors[first]);
         }
 
-        if (vk_cmd_list->state.update_flags.viewports) {
-            // TODO
-        }
-
-        if (vk_cmd_list->state.update_flags.scissors) {
-            // TODO
-        }
-
-        vk_cmd_list->state.update_flags.u32 = 0;
+        impl_cmd_list->state.update_flags.u32 = 0;
     };
 
     flush_compute_state_fn = [](GnCommandList command_list) noexcept {
-        GnCommandListVK* vk_cmd_list = (GnCommandListVK*)command_list;
-        VkCommandBuffer cmd_buf = (VkCommandBuffer)vk_cmd_list->draw_cmd_private_data;
+        GnCommandListVK* impl_cmd_list = (GnCommandListVK*)command_list;
+        VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->draw_cmd_private_data;
         // TODO
     };
 
@@ -797,10 +825,10 @@ GnResult GnCommandListVK::Begin(const GnCommandListBeginDesc* desc) noexcept
     VkCommandBufferBeginInfo begin_info;
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.pNext = nullptr;
-    begin_info.flags = desc->flags; // No need to convert, they both are compatible
+    begin_info.flags = desc->flags; // No need to convert, they both are compatible (unless we add another flags)
     begin_info.pInheritanceInfo = nullptr;
 
-    return GnConvertFromVkResult(parent_cmd_pool->parent_device->fn.vkBeginCommandBuffer((VkCommandBuffer)draw_cmd_private_data, &begin_info));
+    return GnConvertFromVkResult(fn.vkBeginCommandBuffer((VkCommandBuffer)draw_cmd_private_data, &begin_info));
 }
 
 void GnCommandListVK::BeginRenderPass() noexcept
@@ -815,7 +843,7 @@ void GnCommandListVK::EndRenderPass() noexcept
 
 GnResult GnCommandListVK::End() noexcept
 {
-    return GnConvertFromVkResult(parent_cmd_pool->parent_device->fn.vkEndCommandBuffer((VkCommandBuffer)draw_cmd_private_data));
+    return GnConvertFromVkResult(fn.vkEndCommandBuffer((VkCommandBuffer)draw_cmd_private_data));
 }
 
 #endif

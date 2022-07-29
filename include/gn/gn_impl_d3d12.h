@@ -68,6 +68,26 @@ struct GnDeviceD3D12 : public GnDevice_t
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
 };
 
+struct GnQueueD3D12 : public GnQueue_t
+{
+    ID3D12CommandQueue* cmd_queue;
+
+    virtual ~GnQueueD3D12();
+};
+
+struct GnBufferD3D12 : public GnBuffer_t
+{
+    ID3D12Resource* buffer;
+    D3D12_GPU_VIRTUAL_ADDRESS buffer_va;
+
+    virtual ~GnBufferD3D12();
+};
+
+struct GnCommandListD3D12 : public GnCommandList_t
+{
+    GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept;
+};
+
 // -------------------------------------------------------
 //                    IMPLEMENTATION
 // -------------------------------------------------------
@@ -477,15 +497,30 @@ GnDeviceD3D12::~GnDeviceD3D12()
 
 GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept
 {
-    ID3D12CommandQueue* command_queue;
     D3D12_COMMAND_QUEUE_DESC desc;
     desc.Priority = 0;
     desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     desc.NodeMask = 1;
+    desc.Type = (D3D12_COMMAND_LIST_TYPE)queue_index;
 
+    ID3D12CommandQueue* command_queue;
+ 
     if (FAILED(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&command_queue)))) {
         return GnError_InternalError;
     }
+
+    GnQueueD3D12* new_queue = (GnQueueD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueD3D12), alignof(GnQueueD3D12), GnAllocationScope_Object);
+
+    if (new_queue == nullptr) {
+        GnSafeComRelease(command_queue);
+        return GnError_OutOfHostMemory;
+    }
+
+    new(new_queue) GnQueueD3D12;
+    new_queue->alloc_callbacks = *alloc_callbacks;
+    new_queue->cmd_queue = command_queue;
+
+    *queue = new_queue;
 
     return GnError_Unimplemented;
 }
@@ -508,6 +543,93 @@ GnResult GnDeviceD3D12::CreateTexture(const GnTextureDesc* desc, GnTexture* text
 GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept
 {
     return GnError_Unimplemented;
+}
+
+// -- [GnQueueD3D12] --
+
+GnQueueD3D12::~GnQueueD3D12()
+{
+    cmd_queue->Release();
+}
+
+// -- [GnBufferD3D12] --
+
+GnBufferD3D12::~GnBufferD3D12()
+{
+    buffer->Release();
+}
+
+// -- [GnCommandListD3D12] --
+
+GnCommandListD3D12::GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept
+{
+    draw_cmd_private_data = (void*)cmd_list; // We use this to store ID3D12CommandList to save space
+    draw_indexed_cmd_private_data = (void*)cmd_list;
+    dispatch_cmd_private_data = (void*)cmd_list;
+
+    flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
+        GnCommandListD3D12* impl_cmd_list = (GnCommandListD3D12*)command_list;
+        ID3D12GraphicsCommandList* gfx_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->draw_cmd_private_data;
+
+        if (impl_cmd_list->state.update_flags.graphics_pipeline) {}
+
+        if (impl_cmd_list->state.update_flags.index_buffer) {
+            GnBufferD3D12* impl_index_buffer = (GnBufferD3D12*)impl_cmd_list->state.index_buffer;
+            D3D12_INDEX_BUFFER_VIEW view;
+            view.BufferLocation = impl_index_buffer->buffer_va;
+            view.SizeInBytes = impl_index_buffer->desc.size;
+            view.Format = DXGI_FORMAT_R32_UINT;
+
+            gfx_cmd_list->IASetIndexBuffer(&view);
+        }
+
+        if (impl_cmd_list->state.update_flags.vertex_buffers) {
+            D3D12_VERTEX_BUFFER_VIEW vtx_buffer_views[32];
+            const GnUpdateRange& update_range = impl_cmd_list->state.vertex_buffer_upd_range;
+            uint32_t count = update_range.last - update_range.first;
+
+            for (uint32_t i = 0; i < count; i++) {
+                D3D12_VERTEX_BUFFER_VIEW& view = vtx_buffer_views[i];
+                GnBufferD3D12* impl_vtx_buffer = (GnBufferD3D12*)impl_cmd_list->state.vertex_buffers[i];
+
+                view.BufferLocation = impl_vtx_buffer->buffer_va;
+                view.SizeInBytes = (uint32_t)impl_vtx_buffer->desc.size;
+            }
+
+            gfx_cmd_list->IASetVertexBuffers(update_range.first, count, vtx_buffer_views);
+        }
+
+        if (impl_cmd_list->state.update_flags.blend_constants)
+            gfx_cmd_list->OMSetBlendFactor(impl_cmd_list->state.blend_constants);
+
+        if (impl_cmd_list->state.update_flags.stencil_ref)
+            gfx_cmd_list->OMSetStencilRef(impl_cmd_list->state.stencil_ref);
+
+        if (impl_cmd_list->state.update_flags.viewports)
+            gfx_cmd_list->RSSetViewports(impl_cmd_list->state.viewport_upd_range.last, (D3D12_VIEWPORT*)impl_cmd_list->state.viewports);
+
+        if (impl_cmd_list->state.update_flags.scissors) {
+            D3D12_RECT rects[16];
+            uint32_t count = impl_cmd_list->state.scissor_upd_range.last;
+
+            std::memcpy(rects, impl_cmd_list->state.scissors, sizeof(D3D12_RECT) * count);
+
+            for (uint32_t i = 0; i < impl_cmd_list->state.scissor_upd_range.last; i++) {
+                D3D12_RECT& rect = rects[i];
+
+                rect.right += rect.left;
+                rect.bottom += rect.top;
+            }
+
+            gfx_cmd_list->RSSetScissorRects(impl_cmd_list->state.scissor_upd_range.last, rects);
+        }
+
+        impl_cmd_list->state.update_flags.u32 = 0;
+    };
+
+    flush_compute_state_fn = [](GnCommandList command_list) noexcept {
+
+    };
 }
 
 #endif

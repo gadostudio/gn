@@ -132,8 +132,8 @@ struct GnCommandPool_t
 struct GnUpdateRange
 {
     // 16-bit to save space
-    uint16_t first = 0xFFFF;
-    uint16_t last = 0xFFFF;
+    uint16_t first = UINT16_MAX;
+    uint16_t last = UINT16_MAX;
 
     inline void Update(uint32_t idx)
     {
@@ -161,8 +161,8 @@ struct GnUpdateRange
 
     inline void Flush()
     {
-        first = 0xFFFF;
-        last = 0xFFFF;
+        first = UINT16_MAX;
+        last = UINT16_MAX;
     }
 };
 
