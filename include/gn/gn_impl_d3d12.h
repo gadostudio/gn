@@ -50,7 +50,7 @@ struct GnAdapterD3D12 : public GnAdapter_t
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
-    GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept override;
+    GnResult CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept override;
 };
 
 struct GnDeviceD3D12 : public GnDevice_t
@@ -61,8 +61,8 @@ struct GnDeviceD3D12 : public GnDevice_t
     ID3D12CommandSignature* dispatch_cmd_signature;
 
     virtual ~GnDeviceD3D12();
-    GnResult CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept override;
-    GnResult CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept override;
+    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
+    GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
@@ -161,7 +161,7 @@ ID3D12CommandSignature* GnCreateCommandSignatureD3D12(ID3D12Device* device, D3D1
     return SUCCEEDED(device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&cmd_signature))) ? cmd_signature : nullptr;
 }
 
-GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept
+GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, GN_OUT GnInstance* instance) noexcept
 {
     if (!GnD3D12FunctionDispatcher::Init()) {
         return GnError_BackendNotAvailable;
@@ -172,7 +172,7 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
     if (FAILED(g_d3d12_dispatcher->CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
         return GnError_InitializationFailed;
 
-    GnInstanceD3D12* new_instance = (GnInstanceD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnInstanceD3D12), alignof(GnInstanceD3D12), GnAllocationScope_Instance);
+    GnInstanceD3D12* new_instance = (GnInstanceD3D12*)std::malloc(sizeof(GnInstanceD3D12));
 
     if (new_instance == nullptr) {
         factory->Release();
@@ -180,7 +180,6 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
     }
 
     new(new_instance) GnInstanceD3D12();
-    new_instance->alloc_callbacks = *alloc_callbacks;
     new_instance->factory = factory;
 
     // Get the number of available adapter
@@ -190,11 +189,11 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCal
 
     // This may waste some memory, but we also need to filter out incompatible adapters. Optimize?
     uint32_t num_dxgi_adapters = adapter_idx;
-    new_instance->d3d12_adapters = (GnAdapterD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterD3D12) * num_dxgi_adapters, alignof(GnAdapterD3D12), GnAllocationScope_Instance);
+    new_instance->d3d12_adapters = (GnAdapterD3D12*)std::malloc(sizeof(GnAdapterD3D12) * num_dxgi_adapters);
     adapter_idx = 0;
 
     if (new_instance->d3d12_adapters == nullptr) {
-        alloc_callbacks->free_fn(alloc_callbacks->userdata, new_instance);
+        std::free(new_instance);
         factory->Release();
         return GnError_OutOfHostMemory;
     }
@@ -282,10 +281,10 @@ GnInstanceD3D12::~GnInstanceD3D12()
         for (uint32_t i = 0; i < num_adapters; i++) {
             d3d12_adapters[i].~GnAdapterD3D12();
         }
-        alloc_callbacks.free_fn(alloc_callbacks.userdata, d3d12_adapters);
+        std::free(d3d12_adapters);
     }
 
-    factory->Release();
+    GnSafeComRelease(factory);
 }
 
 // -- [GnAdapterD3D12] --
@@ -416,7 +415,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
 
 GnAdapterD3D12::~GnAdapterD3D12()
 {
-    adapter->Release();
+    GnSafeComRelease(adapter);
 }
 
 GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFormat format) const noexcept
@@ -449,7 +448,7 @@ GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
     return (fmt.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER) == D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
 }
 
-GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept
+GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept
 {
     ID3D12Device* d3d12_device;
 
@@ -465,19 +464,18 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocati
         GnSafeComRelease(draw_cmd_signature);
         GnSafeComRelease(draw_indexed_cmd_signature);
         GnSafeComRelease(dispatch_cmd_signature);
-        d3d12_device->Release();
+        GnSafeComRelease(d3d12_device);
         return GnError_InternalError;
     }
     
-    GnDeviceD3D12* new_device = (GnDeviceD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnDeviceD3D12), alignof(GnDeviceD3D12), GnAllocationScope_Device);
+    GnDeviceD3D12* new_device = (GnDeviceD3D12*)std::malloc(sizeof(GnDeviceD3D12));
 
     if (new_device == nullptr) {
-        d3d12_device->Release();
+        GnSafeComRelease(d3d12_device);
         return GnError_OutOfHostMemory;
     }
 
     new(new_device) GnDeviceD3D12();
-    new_device->alloc_callbacks = *alloc_callbacks;
     new_device->device = d3d12_device;
     new_device->draw_cmd_signature = draw_cmd_signature;
     new_device->draw_indexed_cmd_signature = draw_indexed_cmd_signature;
@@ -492,10 +490,13 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, const GnAllocati
 
 GnDeviceD3D12::~GnDeviceD3D12()
 {
-    device->Release();
+    GnSafeComRelease(draw_cmd_signature);
+    GnSafeComRelease(draw_indexed_cmd_signature);
+    GnSafeComRelease(dispatch_cmd_signature);
+    GnSafeComRelease(device);
 }
 
-GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept
+GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
 {
     D3D12_COMMAND_QUEUE_DESC desc;
     desc.Priority = 0;
@@ -509,7 +510,7 @@ GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCall
         return GnError_InternalError;
     }
 
-    GnQueueD3D12* new_queue = (GnQueueD3D12*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueD3D12), alignof(GnQueueD3D12), GnAllocationScope_Object);
+    GnQueueD3D12* new_queue = (GnQueueD3D12*)std::malloc(sizeof(GnQueueD3D12));
 
     if (new_queue == nullptr) {
         GnSafeComRelease(command_queue);
@@ -517,7 +518,6 @@ GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCall
     }
 
     new(new_queue) GnQueueD3D12;
-    new_queue->alloc_callbacks = *alloc_callbacks;
     new_queue->cmd_queue = command_queue;
 
     *queue = new_queue;
@@ -525,7 +525,7 @@ GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, const GnAllocationCall
     return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept
+GnResult GnDeviceD3D12::CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept
 {
     return GnError_Unimplemented;
 }
@@ -549,14 +549,14 @@ GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnComma
 
 GnQueueD3D12::~GnQueueD3D12()
 {
-    cmd_queue->Release();
+    GnSafeComRelease(cmd_queue);
 }
 
 // -- [GnBufferD3D12] --
 
 GnBufferD3D12::~GnBufferD3D12()
 {
-    buffer->Release();
+    GnSafeComRelease(buffer);
 }
 
 // -- [GnCommandListD3D12] --
@@ -577,7 +577,7 @@ GnCommandListD3D12::GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept
             GnBufferD3D12* impl_index_buffer = (GnBufferD3D12*)impl_cmd_list->state.index_buffer;
             D3D12_INDEX_BUFFER_VIEW view;
             view.BufferLocation = impl_index_buffer->buffer_va;
-            view.SizeInBytes = impl_index_buffer->desc.size;
+            view.SizeInBytes = (UINT)impl_index_buffer->desc.size;
             view.Format = DXGI_FORMAT_R32_UINT;
 
             gfx_cmd_list->IASetIndexBuffer(&view);

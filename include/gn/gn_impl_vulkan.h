@@ -47,9 +47,13 @@ struct GnVulkanDeviceFunctions
     PFN_vkDestroySemaphore vkDestroySemaphore;
     PFN_vkBeginCommandBuffer vkBeginCommandBuffer;
     PFN_vkEndCommandBuffer vkEndCommandBuffer;
+    PFN_vkCmdBindPipeline vkCmdBindPipeline;
+    PFN_vkCmdSetViewport vkCmdSetViewport;
+    PFN_vkCmdSetScissor vkCmdSetScissor;
+    PFN_vkCmdSetBlendConstants vkCmdSetBlendConstants;
+    PFN_vkCmdSetStencilReference vkCmdSetStencilReference;
     PFN_vkCmdBindIndexBuffer vkCmdBindIndexBuffer;
     PFN_vkCmdBindVertexBuffers vkCmdBindVertexBuffers;
-    PFN_vkCmdSetBlendConstants vkCmdSetBlendConstants;
     PFN_vkCmdDraw vkCmdDraw;
     PFN_vkCmdDrawIndexed vkCmdDrawIndexed;
     PFN_vkCmdDispatch vkCmdDispatch;
@@ -93,23 +97,28 @@ struct GnAdapterVK : public GnAdapter_t
     uint32_t                    api_version = 0;
     VkPhysicalDeviceFeatures    supported_features{};
 
-    GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept;
+    GnAdapterVK(GnInstanceVK* instance,
+                const GnVulkanInstanceFunctions& fn,
+                VkPhysicalDevice physical_device,
+                const VkPhysicalDeviceProperties& vk_properties,
+                const VkPhysicalDeviceFeatures& vk_features) noexcept;
+
     ~GnAdapterVK() { }
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
-    GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept override;
+    GnResult CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept override;
 };
 
 struct GnDeviceVK : public GnDevice_t
 {
     GnVulkanDeviceFunctions fn{};
-    VkDevice                device;
+    VkDevice                device = VK_NULL_HANDLE;
     uint32_t                queue_create_pos[4]{};
 
     ~GnDeviceVK();
-    GnResult CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept override;
-    GnResult CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept override;
+    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
+    GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
@@ -154,6 +163,7 @@ struct GnCommandListVK : public GnCommandList_t
 {
     GnCommandPoolVK*                parent_cmd_pool;
     const GnVulkanDeviceFunctions&  fn;
+    PFN_vkCmdBindPipeline           cmd_bind_pipeline;
     PFN_vkCmdBindDescriptorSets     cmd_bind_descriptor_sets;
     PFN_vkCmdBindIndexBuffer        cmd_bind_index_buffer;
     PFN_vkCmdBindVertexBuffers      cmd_bind_vertex_buffers;
@@ -293,6 +303,13 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkDestroyFence);
     GN_LOAD_DEVICE_FN(vkCreateSemaphore);
     GN_LOAD_DEVICE_FN(vkDestroySemaphore);
+    GN_LOAD_DEVICE_FN(vkCmdBindPipeline);
+    GN_LOAD_DEVICE_FN(vkCmdSetViewport);
+    GN_LOAD_DEVICE_FN(vkCmdSetScissor);
+    GN_LOAD_DEVICE_FN(vkCmdSetBlendConstants);
+    GN_LOAD_DEVICE_FN(vkCmdSetStencilReference);
+    GN_LOAD_DEVICE_FN(vkCmdBindIndexBuffer);
+    GN_LOAD_DEVICE_FN(vkCmdBindVertexBuffers);
     GN_LOAD_DEVICE_FN(vkCmdDraw);
     GN_LOAD_DEVICE_FN(vkCmdDrawIndexed);
     GN_LOAD_DEVICE_FN(vkCmdDispatch);
@@ -327,7 +344,7 @@ bool GnVulkanFunctionDispatcher::Init() noexcept
 
 // -- [GnInstanceVK] --
 
-GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept
+GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GN_OUT GnInstance* instance) noexcept
 {
     if (!GnVulkanFunctionDispatcher::Init())
         return GnError_BackendNotAvailable;
@@ -367,55 +384,51 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCa
 
     if (GN_VULKAN_FAILED(result))
         return GnError_InternalError;
-    
+
     GnVulkanInstanceFunctions fn;
     g_vk_dispatcher->LoadInstanceFunctions(vk_instance, fn);
 
     // Allocate memory for the new instance
-    GnInstanceVK* new_instance = (GnInstanceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnInstanceVK), alignof(GnInstanceVK), GnAllocationScope_Instance);
+    GnInstanceVK* new_instance = (GnInstanceVK*)std::malloc(sizeof(GnInstanceVK));
 
     if (new_instance == nullptr) {
         fn.vkDestroyInstance(vk_instance, nullptr);
         return GnError_OutOfHostMemory;
     }
 
-    // Initialize
-    new(new_instance) GnInstanceVK();
-    new_instance->alloc_callbacks = *alloc_callbacks;
-    new_instance->fn = fn;
-    new_instance->instance = vk_instance;
-
-    // Get all physical devices
-    fn.vkEnumeratePhysicalDevices(vk_instance, &new_instance->num_adapters, nullptr);
+    // Get the number of active physical devices
+    uint32_t num_physical_devices;
+    fn.vkEnumeratePhysicalDevices(vk_instance, &num_physical_devices, nullptr);
     
-    if (new_instance->num_adapters > 0) {
+    GnAdapterVK* adapters = nullptr;
+    VkPhysicalDevice* physical_devices = nullptr;
+
+    if (num_physical_devices > 0) {
         // Allocate memory for the adapters
-        new_instance->vk_adapters = (GnAdapterVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterVK) * new_instance->num_adapters, alignof(GnAdapterVK), GnAllocationScope_Instance);
+        adapters = (GnAdapterVK*)std::malloc(sizeof(GnAdapterVK) * num_physical_devices);// alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterVK) * new_instance->num_adapters, alignof(GnAdapterVK), GnAllocationScope_Instance);
         
-        if (new_instance->vk_adapters == nullptr) {
+        if (adapters == nullptr) {
             fn.vkDestroyInstance(vk_instance, nullptr);
-            alloc_callbacks->free_fn(alloc_callbacks->userdata, new_instance);
             return GnError_OutOfHostMemory;
         }
 
-        // Allocate memory for the adapters
-        VkPhysicalDevice* physical_devices = (VkPhysicalDevice*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(VkPhysicalDevice) * new_instance->num_adapters, alignof(VkPhysicalDevice), GnAllocationScope_Command);
+        // Allocate memory for the physical device
+        physical_devices = (VkPhysicalDevice*)std::malloc(sizeof(VkPhysicalDevice) * num_physical_devices);
         
         if (physical_devices == nullptr) {
-            alloc_callbacks->free_fn(alloc_callbacks->userdata, new_instance->vk_adapters);
+            std::free(adapters);
             fn.vkDestroyInstance(vk_instance, nullptr);
-            alloc_callbacks->free_fn(alloc_callbacks->userdata, new_instance);
             return GnError_OutOfHostMemory;
         }
-        
-        fn.vkEnumeratePhysicalDevices(vk_instance, &new_instance->num_adapters, physical_devices);
 
+        fn.vkEnumeratePhysicalDevices(vk_instance, &num_physical_devices, physical_devices);
+        
         GnAdapterVK* predecessor = nullptr;
-        for (uint32_t i = 0; i < new_instance->num_adapters; i++) {
-            GnAdapterVK* adapter = &new_instance->vk_adapters[i];
+        for (uint32_t i = 0; i < num_physical_devices; i++) {
+            GnAdapterVK* adapter = &adapters[i];
 
             if (predecessor != nullptr)
-                predecessor->next_adapter = (GnAdapter)adapter; // construct linked list
+                predecessor->next_adapter = static_cast<GnAdapter>(adapter); // construct linked list
 
             VkPhysicalDevice physical_device = physical_devices[i];
             VkPhysicalDeviceProperties properties;
@@ -423,14 +436,21 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCa
             fn.vkGetPhysicalDeviceProperties(physical_device, &properties);
             fn.vkGetPhysicalDeviceFeatures(physical_device, &features);
 
-            new(adapter) GnAdapterVK(new_instance, physical_device, properties, features);
+            new(adapter) GnAdapterVK(new_instance, fn, physical_device, properties, features);
 
             predecessor = adapter;
         }
 
-        new_instance->adapters = (GnAdapterVK*)new_instance->vk_adapters;
-        alloc_callbacks->free_fn(alloc_callbacks->userdata, physical_devices);
+        std::free(physical_devices);
     }
+
+    // Initialize
+    new(new_instance) GnInstanceVK();
+    new_instance->fn = fn;
+    new_instance->instance = vk_instance;
+    new_instance->num_adapters = num_physical_devices;
+    new_instance->vk_adapters = adapters;
+    new_instance->adapters = static_cast<GnAdapter>(new_instance->vk_adapters);
 
     *instance = new_instance;
 
@@ -449,15 +469,15 @@ GnInstanceVK::~GnInstanceVK()
         for (uint32_t i = 0; i < num_adapters; i++) {
             vk_adapters[i].~GnAdapterVK();
         }
-        alloc_callbacks.free_fn(alloc_callbacks.userdata, vk_adapters);
+        std::free(vk_adapters);
     }
 
-    fn.vkDestroyInstance(instance, nullptr);
+    if (instance) fn.vkDestroyInstance(instance, nullptr);
 }
 
 // -- [GnAdapterVK] --
 
-GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept :
+GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, const GnVulkanInstanceFunctions& fn, VkPhysicalDevice physical_device, const VkPhysicalDeviceProperties& vk_properties, const VkPhysicalDeviceFeatures& vk_features) noexcept :
     physical_device(physical_device),
     supported_features(vk_features)
 {
@@ -522,8 +542,8 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, VkPhysicalDevice physical_devic
 
     // Get the available queues
     VkQueueFamilyProperties queue_families[4]{};
-    instance->fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, nullptr);
-    instance->fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, queue_families);
+    fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, nullptr);
+    fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, queue_families);
 
     for (uint32_t i = 0; i < num_queues; i++) {
         const VkQueueFamilyProperties& queue_family = queue_families[i];
@@ -568,7 +588,7 @@ GnBool GnAdapterVK::IsVertexFormatSupported(GnFormat format) const noexcept
     return GnTestBitmask(fmt.bufferFeatures, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
 }
 
-GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept
+GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept
 {   
     GnInstanceVK* instance = (GnInstanceVK*)parent_instance;
     const GnVulkanInstanceFunctions& fn = instance->fn;
@@ -616,7 +636,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
     GnVulkanDeviceFunctions device_fn;
     g_vk_dispatcher->LoadDeviceFunctions(instance->instance, vk_device, api_version, device_fn);
 
-    GnDeviceVK* new_device = (GnDeviceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnDeviceVK), alignof(GnDeviceVK), GnAllocationScope_Device);
+    GnDeviceVK* new_device = (GnDeviceVK*)std::malloc(sizeof(GnDeviceVK));
 
     if (new_device == nullptr) {
         device_fn.vkDestroyDevice(vk_device, nullptr);
@@ -624,7 +644,6 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
     }
 
     new(new_device) GnDeviceVK;
-    new_device->alloc_callbacks = *alloc_callbacks;
     new_device->parent_adapter = this;
     new_device->device = vk_device;
     new_device->fn = device_fn;
@@ -640,10 +659,10 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, const GnAllocationC
 
 GnDeviceVK::~GnDeviceVK()
 {
-    fn.vkDestroyDevice(device, nullptr);
+    if (device) fn.vkDestroyDevice(device, nullptr);
 }
 
-GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept
+GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
 {
     GnAdapterVK* vk_parent_adapter = (GnAdapterVK*)parent_adapter;
 
@@ -657,7 +676,7 @@ GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbac
     if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &fence)))
         return GnError_InternalError;
 
-    GnQueueVK* new_queue = (GnQueueVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+    GnQueueVK* new_queue = (GnQueueVK*)std::malloc(sizeof(GnQueueVK));
 
     if (new_queue == nullptr) {
         fn.vkDestroyFence(device, fence, nullptr);
@@ -669,7 +688,6 @@ GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbac
     queue_create_pos[queue_index] = (queue_create_pos[queue_index] + 1) % vk_parent_adapter->queue_count[queue_index];
 
     new(new_queue) GnQueueVK;
-    new_queue->alloc_callbacks = *alloc_callbacks;
     new_queue->parent_device = this;
     new_queue->queue = vk_queue;
     new_queue->wait_fence = fence;
@@ -679,10 +697,8 @@ GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, const GnAllocationCallbac
     return GnSuccess;
 }
 
-GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept
+GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept
 {
-    if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator(); // TODO: replace with pool alloc
-
     GnAdapterVK* vk_parent_adapter = (GnAdapterVK*)parent_adapter;
 
     switch (type) {
@@ -697,7 +713,7 @@ GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAlloca
             if (GN_VULKAN_FAILED(fn.vkCreateSemaphore(device, &info, nullptr, &semaphore)))
                 return GnError_InternalError;
 
-            GnDeviceToDeviceFenceVK* new_fence = (GnDeviceToDeviceFenceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+            GnDeviceToDeviceFenceVK* new_fence = (GnDeviceToDeviceFenceVK*)std::malloc(sizeof(GnQueueVK));
             
             if (new_fence == nullptr) {
                 fn.vkDestroySemaphore(device, semaphore, nullptr);
@@ -717,7 +733,7 @@ GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAlloca
             if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &vk_fence)))
                 return GnError_InternalError;
 
-            GnDeviceToHostFenceVK* new_fence = (GnDeviceToHostFenceVK*)alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnQueueVK), alignof(GnQueueVK), GnAllocationScope_Object);
+            GnDeviceToHostFenceVK* new_fence = (GnDeviceToHostFenceVK*)std::malloc(sizeof(GnQueueVK));
             
             if (new_fence == nullptr) {
                 fn.vkDestroyFence(device, vk_fence, nullptr);
@@ -726,7 +742,6 @@ GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, const GnAlloca
             
             break;
         }
-        
     }
 
     return GnSuccess;
@@ -787,6 +802,7 @@ GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer 
             impl_cmd_list->cmd_set_stencil_reference(cmd_buf, VK_STENCIL_FACE_FRONT_AND_BACK, impl_cmd_list->state.stencil_ref);
 
         if (impl_cmd_list->state.update_flags.viewports) {
+            // TODO: Allow negative viewport with VK_KHR_maintenance1
             uint32_t first = impl_cmd_list->state.viewport_upd_range.first;
             uint32_t count = impl_cmd_list->state.viewport_upd_range.last - first;
             impl_cmd_list->cmd_set_viewport(cmd_buf, first, count, (const VkViewport*)&impl_cmd_list->state.viewports[first]);
@@ -804,16 +820,23 @@ GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer 
     flush_compute_state_fn = [](GnCommandList command_list) noexcept {
         GnCommandListVK* impl_cmd_list = (GnCommandListVK*)command_list;
         VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->draw_cmd_private_data;
-        // TODO
+        
+        if (impl_cmd_list->state.update_flags.compute_pipeline) {
+
+        }
     };
 
     // Bind functions
-    cmd_bind_index_buffer   = fn.vkCmdBindIndexBuffer;
-    cmd_bind_vertex_buffers = fn.vkCmdBindVertexBuffers;
-    cmd_set_blend_constants = fn.vkCmdSetBlendConstants;
-    draw_cmd_fn             = (GnDrawCmdFn)fn.vkCmdDraw;
-    draw_indexed_cmd_fn     = (GnDrawIndexedCmdFn)fn.vkCmdDrawIndexed;
-    dispatch_cmd_fn         = (GnDispatchCmdFn)fn.vkCmdDispatch;
+    cmd_bind_pipeline           = fn.vkCmdBindPipeline;
+    cmd_set_viewport            = fn.vkCmdSetViewport;
+    cmd_set_scissor             = fn.vkCmdSetScissor;
+    cmd_set_stencil_reference   = fn.vkCmdSetStencilReference;
+    cmd_set_blend_constants     = fn.vkCmdSetBlendConstants;
+    cmd_bind_index_buffer       = fn.vkCmdBindIndexBuffer;
+    cmd_bind_vertex_buffers     = fn.vkCmdBindVertexBuffers;
+    draw_cmd_fn                 = (GnDrawCmdFn)fn.vkCmdDraw;
+    draw_indexed_cmd_fn         = (GnDrawIndexedCmdFn)fn.vkCmdDrawIndexed;
+    dispatch_cmd_fn             = (GnDispatchCmdFn)fn.vkCmdDispatch;
 }
 
 GnCommandListVK::~GnCommandListVK()
@@ -833,7 +856,14 @@ GnResult GnCommandListVK::Begin(const GnCommandListBeginDesc* desc) noexcept
 
 void GnCommandListVK::BeginRenderPass() noexcept
 {
-
+    VkRenderPassBeginInfo rp_begin_info;
+    rp_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rp_begin_info.pNext = nullptr;
+    rp_begin_info.renderPass = VK_NULL_HANDLE; // TODO
+    rp_begin_info.framebuffer = VK_NULL_HANDLE; // TODO
+    rp_begin_info.renderArea; // TODO
+    rp_begin_info.clearValueCount; // TODO
+    rp_begin_info.pClearValues = nullptr;
 }
 
 void GnCommandListVK::EndRenderPass() noexcept

@@ -44,15 +44,11 @@
 
 struct GnInstance_t
 {
-    GnAllocationCallbacks   alloc_callbacks{};
     GnBackend               backend = GnBackend_Auto;
     uint32_t                num_adapters = 0;
     GnAdapter               adapters = nullptr; // Linked-list
 
-    virtual ~GnInstance_t()
-    {
-        alloc_callbacks.free_fn(alloc_callbacks.userdata, this);
-    }
+    virtual ~GnInstance_t() { }
 };
 
 struct GnAdapter_t
@@ -68,23 +64,19 @@ struct GnAdapter_t
     virtual ~GnAdapter_t() { }
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
     virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
-    virtual GnResult CreateDevice(const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept = 0;
+    virtual GnResult CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept = 0;
 };
 
 struct GnDevice_t
 {
-    GnAllocationCallbacks   alloc_callbacks{};
     GnAdapter               parent_adapter = nullptr;
     uint32_t                num_enabled_queues = 0;
     uint32_t                enabled_queue_ids[4]{};
 
-    virtual ~GnDevice_t()
-    {
-        alloc_callbacks.free_fn(alloc_callbacks.userdata, this);
-    }
+    virtual ~GnDevice_t() { }
 
-    virtual GnResult CreateQueue(uint32_t group_index, const GnAllocationCallbacks* alloc_callbacks, GnQueue* queue) noexcept = 0;
-    virtual GnResult CreateFence(GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence) noexcept = 0;
+    virtual GnResult CreateQueue(uint32_t group_index, GnQueue* queue) noexcept = 0;
+    virtual GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept = 0;
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
     virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
@@ -92,23 +84,14 @@ struct GnDevice_t
 
 struct GnQueue_t
 {
-    GnAllocationCallbacks   alloc_callbacks{};
-
-    virtual ~GnQueue_t()
-    {
-        alloc_callbacks.free_fn(alloc_callbacks.userdata, this);
-    }
+    virtual ~GnQueue_t() { }
 };
 
 struct GnFence_t
 {
-    GnAllocationCallbacks   alloc_callbacks{};
     GnFenceType             type;
 
-    virtual ~GnFence_t()
-    {
-        alloc_callbacks.free_fn(alloc_callbacks.userdata, this);
-    }
+    virtual ~GnFence_t() { }
 };
 
 struct GnBuffer_t
@@ -124,7 +107,7 @@ struct GnTexture_t
 
 struct GnCommandPool_t
 {
-    GnAllocationCallbacks   alloc_callbacks{};
+    
     GnCommandList           command_lists; // linked-list
 
 };
@@ -166,6 +149,7 @@ struct GnUpdateRange
     }
 };
 
+// We track state changes to reduce redundant state changes calls
 struct GnCommandListState
 {
     enum
@@ -249,6 +233,7 @@ struct GnCommandList_t
 
 constexpr uint32_t clsize = sizeof(GnCommandList_t); // TODO: delete this
 
+// Fallback compatibility for the backend that does not have native command buffer/list support
 struct GnCommandPoolFallback : public GnCommandPool_t
 {
 
@@ -307,44 +292,21 @@ inline static void GnSafeComRelease(T*& ptr) noexcept
 }
 #endif
 
-static GnAllocationCallbacks* GnDefaultAllocator() noexcept
-{
-    // TODO: use aligned allocation
-    static GnAllocationCallbacks default_allocator {
-        nullptr,
-        [](void* userdata, size_t size, size_t alignment, GnAllocationScope scope) -> void* {
-            return std::malloc(size);
-        },
-        [](void* userdata, void* original, size_t size, size_t alignment, GnAllocationScope scope) -> void* {
-            return std::realloc(original, size);
-        },
-        [](void* userdata, void* mem) {
-            return std::free(mem);
-        }
-    };
-
-    return &default_allocator;
-}
-
 // -- [GnInstance] --
 
-GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept;
-GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance) noexcept;
+GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, GN_OUT GnInstance* instance) noexcept;
+GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GN_OUT GnInstance* instance) noexcept;
 
 GnResult GnCreateInstance(const GnInstanceDesc* desc,
-                          const GnAllocationCallbacks* alloc_callbacks,
                           GN_OUT GnInstance* instance)
 {
-    if (alloc_callbacks == nullptr)
-        alloc_callbacks = GnDefaultAllocator();
-
     switch (desc->backend) {
 #ifdef _WIN32
         case GnBackend_D3D12:
-            return GnCreateInstanceD3D12(desc, alloc_callbacks, instance);
+            return GnCreateInstanceD3D12(desc, instance);
 #endif
         case GnBackend_Vulkan:
-            return GnCreateInstanceVulkan(desc, alloc_callbacks, instance);
+            return GnCreateInstanceVulkan(desc, instance);
         default:
             break;
     }
@@ -355,6 +317,7 @@ GnResult GnCreateInstance(const GnInstanceDesc* desc,
 void GnDestroyInstance(GnInstance instance)
 {
     instance->~GnInstance_t();
+    std::free(instance);
 }
 
 GnAdapter GnGetDefaultAdapter(GnInstance instance)
@@ -506,7 +469,7 @@ uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userda
 
 // -- [GnDevice] --
 
-bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device) noexcept
+bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept
 {
     bool error = false;
 
@@ -532,7 +495,7 @@ bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, co
             error = error || !found;
         }
 
-        // check if each element is unique
+        // check if each queue ID is unique
         std::sort(queue_ids, &queue_ids[desc->num_enabled_queues]);
         if (std::unique(queue_ids, &queue_ids[desc->num_enabled_queues]) != &queue_ids[desc->num_enabled_queues])
             error = true;
@@ -543,10 +506,9 @@ bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, co
     return error;
 }
 
-GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device)
+GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device)
 {
-    if (GnValidateCreateDeviceParam(adapter, desc, alloc_callbacks, device)) return GnError_InitializationFailed;
-    if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator();
+    if (GnValidateCreateDeviceParam(adapter, desc, device)) return GnError_InitializationFailed;
 
     GnDeviceDesc tmp_desc{};
     uint32_t queue_ids[4]{};
@@ -569,17 +531,18 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAll
         tmp_desc.enabled_features = enabled_features;
     }
 
-    return adapter->CreateDevice(&tmp_desc, alloc_callbacks, device);
+    return adapter->CreateDevice(&tmp_desc, device);
 }
 
 void GnDestroyDevice(GnDevice device)
 {
     device->~GnDevice_t();
+    std::free(device);
 }
 
 // -- [GnQueue] --
 
-bool GnValidateCreateQueueParam(GnDevice device, uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnQueue* queue)
+bool GnValidateCreateQueueParam(GnDevice device, uint32_t queue_index, GN_OUT GnQueue* queue)
 {
     bool error = false;
 
@@ -598,21 +561,21 @@ bool GnValidateCreateQueueParam(GnDevice device, uint32_t queue_index, const GnA
     return error;
 }
 
-GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnQueue* queue)
+GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, GN_OUT GnQueue* queue)
 {
-    if (GnValidateCreateQueueParam(device, queue_index, alloc_callbacks, queue)) return GnError_InitializationFailed;
-    if (alloc_callbacks == nullptr) alloc_callbacks = GnDefaultAllocator();
-    return device->CreateQueue(queue_index, alloc_callbacks, queue);
+    if (GnValidateCreateQueueParam(device, queue_index, queue)) return GnError_InitializationFailed;
+    return device->CreateQueue(queue_index, queue);
 }
 
 void GnDestroyQueue(GnQueue queue)
 {
     queue->~GnQueue_t();
+    std::free(queue);
 }
 
 // -- [GnFence] --
 
-bool GnValidateCreateFenceParam(GnDevice device, GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence)
+bool GnValidateCreateFenceParam(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence)
 {
     bool error = false;
     if (device == nullptr) error = true;
@@ -620,15 +583,16 @@ bool GnValidateCreateFenceParam(GnDevice device, GnFenceType type, bool signaled
     return error;
 }
 
-GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence)
+GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence)
 {
-    if (GnValidateCreateFenceParam(device, type, signaled, alloc_callbacks, fence)) return GnError_InitializationFailed;
-    return device->CreateFence(type, signaled, alloc_callbacks, fence);
+    if (GnValidateCreateFenceParam(device, type, signaled, fence)) return GnError_InitializationFailed;
+    return device->CreateFence(type, signaled, fence);
 }
 
 void GnDestroyFence(GnFence fence)
 {
     fence->~GnFence_t();
+    std::free(fence);
 }
 
 GnResult GnGetFenceStatus(GnFence fence)
@@ -764,6 +728,7 @@ void GnCmdSetViewport(GnCommandList command_list, uint32_t slot, float x, float 
     viewport.height = height;
     viewport.min_depth = min_depth;
     viewport.max_depth = max_depth;
+    command_list->state.viewport_upd_range.Update(slot);
     command_list->state.update_flags.vertex_buffers = true;
 }
 
@@ -776,6 +741,7 @@ void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot, const GnViewpo
     viewport_target.height = viewport->height;
     viewport_target.min_depth = viewport->min_depth;
     viewport_target.max_depth = viewport->max_depth;
+    command_list->state.viewport_upd_range.Update(slot);
     command_list->state.update_flags.vertex_buffers = true;
 }
 
@@ -788,12 +754,19 @@ void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t
 
 void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
 {
-
+    GnScissorRect& rect = command_list->state.scissors[slot];
+    rect.x = x;
+    rect.y = y;
+    rect.width = width;
+    rect.height = height;
+    command_list->state.scissor_upd_range.Update(slot);
 }
 
 void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnScissorRect* scissor)
 {
-
+    GnScissorRect& rect = command_list->state.scissors[slot];
+    rect = *scissor;
+    command_list->state.scissor_upd_range.Update(slot);
 }
 
 void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnScissorRect* scissors)
@@ -869,6 +842,30 @@ void GnCmdEndRenderPass(GnCommandList command_list)
 
 }
 
+void GnCmdSetComputePipeline(GnCommandList command_list, GnPipeline graphics_pipeline)
+{
+}
+
+void GnCmdSetComputePipelineLayout(GnCommandList command_list, GnPipelineLayout layout)
+{
+}
+
+void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table)
+{
+}
+
+void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, GnDeviceSize offset)
+{
+}
+
+void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, GnDeviceSize offset)
+{
+}
+
+void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t first_slot, uint32_t size, const void* data, uint32_t offset)
+{
+}
+
 void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z)
 {
     if (command_list->state.compute_state_updated()) command_list->flush_compute_state_fn(command_list);
@@ -878,7 +875,34 @@ void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint
 void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset)
 {
     if (command_list->state.compute_state_updated()) command_list->flush_compute_state_fn(command_list);
+}
 
+void GnCmdCopyBuffer(GnCommandList command_list, GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size)
+{
+}
+
+void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture)
+{
+}
+
+void GnCmdCopyBufferToTexture(GnCommandList command_list, GnBuffer src_buffer, GnTexture dst_texture)
+{
+}
+
+void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture, GnBuffer dst_buffer)
+{
+}
+
+void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture)
+{
+}
+
+void GnCmdBarrier(GnCommandList command_list)
+{
+}
+
+void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles)
+{
 }
 
 GnCommandListFallback::GnCommandListFallback()

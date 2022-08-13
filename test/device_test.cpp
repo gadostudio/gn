@@ -11,7 +11,7 @@ TEST_CASE("Create device", "[device]")
     instance_desc.enable_backend_validation = true;
 
     GnInstance instance;
-    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+    REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     GnAdapter adapter = GnGetDefaultAdapter(instance);
 
@@ -33,7 +33,7 @@ TEST_CASE("Create device", "[device]")
         desc.enabled_features = features.data();
 
         GnDevice device;
-        REQUIRE(GnCreateDevice(adapter, &desc, nullptr, &device) == GnSuccess);
+        REQUIRE(GnCreateDevice(adapter, &desc, &device) == GnSuccess);
         GnDestroyDevice(device);
     }
 
@@ -41,14 +41,14 @@ TEST_CASE("Create device", "[device]")
     {
         GnDeviceDesc desc{};
         GnDevice device;
-        REQUIRE(GnCreateDevice(adapter, &desc, nullptr, &device) == GnSuccess);
+        REQUIRE(GnCreateDevice(adapter, &desc, &device) == GnSuccess);
         GnDestroyDevice(device);
     }
     
     SECTION("Create device with nullptr desc")
     {
         GnDevice device;
-        REQUIRE(GnCreateDevice(adapter, nullptr, nullptr, &device) == GnSuccess);
+        REQUIRE(GnCreateDevice(adapter, nullptr, &device) == GnSuccess);
         GnDestroyDevice(device);
     }
 
@@ -64,12 +64,12 @@ TEST_CASE("Create queue", "[device]")
     instance_desc.enable_backend_validation = true;
 
     GnInstance instance;
-    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+    REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     GnAdapter adapter = GnGetDefaultAdapter(instance);
 
     GnDevice device;
-    REQUIRE(GnCreateDevice(adapter, nullptr, nullptr, &device) == GnSuccess);
+    REQUIRE(GnCreateDevice(adapter, nullptr, &device) == GnSuccess);
 
     uint32_t queue_id = 0;
     GnGetAdapterQueuePropertiesWithCallback(adapter,
@@ -79,9 +79,9 @@ TEST_CASE("Create queue", "[device]")
                                             });
     
     GnQueue queue;
-    REQUIRE(GnCreateQueue(device, queue_id, nullptr, &queue) == GnSuccess);
-    GnDestroyQueue(queue);
+    REQUIRE(GnCreateQueue(device, queue_id, &queue) == GnSuccess);
 
+    GnDestroyQueue(queue);
     GnDestroyDevice(device);
     GnDestroyInstance(instance);
 }

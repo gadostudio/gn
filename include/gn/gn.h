@@ -32,6 +32,7 @@ typedef struct GnQueue_t* GnQueue;
 typedef struct GnFence_t* GnFence;
 typedef struct GnBuffer_t* GnBuffer;
 typedef struct GnTexture_t* GnTexture;
+typedef struct GnRenderPass_t* GnRenderPass;
 typedef struct GnResourceTableLayout_t* GnResourceTableLayout;
 typedef struct GnPipelineLayout_t* GnPipelineLayout;
 typedef struct GnPipeline_t* GnPipeline;
@@ -65,27 +66,7 @@ typedef enum
     GnBackend_Count,
 } GnBackend;
 
-typedef enum
-{
-    GnAllocationScope_Command = 0,
-    GnAllocationScope_Object = 1,
-    GnAllocationScope_Device = 2,
-    GnAllocationScope_Instance = 3,
-    GnAllocationScope_Count,
-} GnAllocationScope;
-
-typedef void* (*GnMallocFn)(void* userdata, size_t size, size_t alignment, GnAllocationScope scope);
-typedef void* (*GnReallocFn)(void* userdata, void* original, size_t size, size_t alignment, GnAllocationScope scope);
-typedef void (*GnFreeFn)(void* userdata, void* memory);
 typedef void (*GnGetAdapterCallbackFn)(void* userdata, GnAdapter adapter);
-
-typedef struct
-{
-    void*       userdata;
-    GnMallocFn  malloc_fn;
-    GnReallocFn realloc_fn;
-    GnFreeFn    free_fn;
-} GnAllocationCallbacks;
 
 typedef struct
 {
@@ -95,7 +76,7 @@ typedef struct
     GnBool      enable_backend_validation;
 } GnInstanceDesc;
 
-GnResult GnCreateInstance(const GnInstanceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnInstance* instance);
+GnResult GnCreateInstance(const GnInstanceDesc* desc, GN_OUT GnInstance* instance);
 void GnDestroyInstance(GnInstance instance);
 GnAdapter GnGetDefaultAdapter(GnInstance instance);
 uint32_t GnGetAdapterCount(GnInstance instance);
@@ -297,7 +278,7 @@ typedef struct
     const GnFeature* enabled_features;
 } GnDeviceDesc;
 
-GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnDevice* device);
+GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device);
 void GnDestroyDevice(GnDevice device);
 
 typedef struct
@@ -310,7 +291,7 @@ typedef struct
     const GnFence*          signal_fences;
 } GnSubmission;
 
-GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnQueue* queue);
+GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, GN_OUT GnQueue* queue);
 void GnDestroyQueue(GnQueue queue);
 GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions, GnFence signal_host_fence);
 GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions);
@@ -323,7 +304,7 @@ typedef enum
     GnFence_DeviceToHostSync,
 } GnFenceType;
 
-GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, const GnAllocationCallbacks* alloc_callbacks, GN_OUT GnFence* fence);
+GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence);
 void GnDestroyFence(GnFence fence);
 GnResult GnGetFenceStatus(GnFence fence);
 GnResult GnWaitFence(GnFence fence, uint64_t timeout);
@@ -388,6 +369,28 @@ typedef struct
 GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GN_OUT GnTexture* texture);
 void GnDestroyTexture(GnTexture texture);
 void GnGetTextureDesc(GnTexture texture, GN_OUT GnTextureDesc* texture_desc);
+
+typedef struct
+{
+
+} GnRenderPassDesc;
+
+GnResult GnCreateRenderPass(GnDevice device, const GnRenderPassDesc* desc, GN_OUT GnRenderPass* render_pass);
+void GnDestroyRenderPass(GnRenderPass render_pass);
+
+typedef struct
+{
+    // TODO
+} GnGraphicsPipelineDesc;
+
+typedef struct
+{
+    // TODO
+} GnComputePipelineDesc;
+
+GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GN_OUT GnPipeline* graphics_pipeline);
+GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* desc, GN_OUT GnPipeline* compute_pipeline);
+void GnDestroyPipeline(GnPipeline pipeline);
 
 typedef enum
 {
@@ -571,7 +574,7 @@ GnAdapter GnFirstAdapter(const GnAdapterQuery* query);
 
 #ifdef __cplusplus
 // C++ std::function wrapper for GnGetAdaptersWithCallback
-static uint32_t GnGetAdaptersWithCallback(GnInstance instance, std::function<void(GnAdapter)> callback_fn)
+static uint32_t GnGetAdaptersWithCallback(GnInstance instance, std::function<void(GnAdapter)> callback_fn) noexcept
 {
     auto wrapper_fn = [](void* userdata, GnAdapter adapter) {
         const auto& fn = *static_cast<std::function<void(GnAdapter)>*>(userdata);
@@ -582,7 +585,7 @@ static uint32_t GnGetAdaptersWithCallback(GnInstance instance, std::function<voi
 }
 
 // C++ std::function wrapper for GnGetAdapterFeaturesWithCallback
-static uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, std::function<void(GnFeature)> callback_fn)
+static uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, std::function<void(GnFeature)> callback_fn) noexcept
 {
     auto wrapper_fn = [](void* userdata, GnFeature feature) {
         const auto& fn = *static_cast<std::function<void(GnFeature)>*>(userdata);
@@ -592,7 +595,7 @@ static uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, std::functio
     return GnGetAdapterFeaturesWithCallback(adapter, static_cast<void*>(&callback_fn), wrapper_fn);
 }
 
-static uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, std::function<void(const GnQueueProperties&)> callback_fn)
+static uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, std::function<void(const GnQueueProperties&)> callback_fn) noexcept
 {
     auto wrapper_fn = [](void* userdata, const GnQueueProperties* queue_properties) {
         const auto& fn = *static_cast<std::function<void(const GnQueueProperties&)>*>(userdata);

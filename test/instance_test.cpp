@@ -11,7 +11,7 @@ TEST_CASE("Create instance", "[instance]")
     instance_desc.enable_backend_validation = true;
 
     GnInstance instance;
-    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+    REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     GnDestroyInstance(instance);
 }
@@ -25,7 +25,7 @@ TEST_CASE("Adapter query", "[instance]")
     instance_desc.enable_backend_validation = true;
 
     GnInstance instance;
-    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+    REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     std::vector<GnAdapter> adapters;
     adapters.resize(GnGetAdapterCount(instance));
@@ -52,7 +52,7 @@ TEST_CASE("Adapter feature", "[instance]")
     instance_desc.enable_backend_validation = true;
 
     GnInstance instance;
-    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+    REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     GnAdapter adapter = GnGetDefaultAdapter(instance);
 
@@ -80,7 +80,7 @@ TEST_CASE("Adapter formats", "[instance]")
     instance_desc.enable_backend_validation = GN_TRUE;
 
     GnInstance instance;
-    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+    REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     GnAdapter adapter = GnGetDefaultAdapter(instance);
     REQUIRE(GnGetTextureFormatFeatureSupport(adapter, GnFormat_RGBA8Unorm) != 0);
@@ -98,7 +98,7 @@ TEST_CASE("Adapter queues", "[instance]")
     instance_desc.enable_backend_validation = GN_TRUE;
 
     GnInstance instance;
-    REQUIRE(GnCreateInstance(&instance_desc, nullptr, &instance) == GnSuccess);
+    REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     GnAdapter adapter = GnGetDefaultAdapter(instance);
     uint32_t num_queues = GnGetAdapterQueueCount(adapter);
