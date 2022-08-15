@@ -104,13 +104,13 @@ TEST_CASE("Adapter queues", "[instance]")
     uint32_t num_queues = GnGetAdapterQueueCount(adapter);
     REQUIRE(num_queues != 0);
 
-    std::vector<GnQueueProperties> queue_properties;
+    std::vector<GnQueueGroupProperties> queue_properties;
     queue_properties.resize(num_queues);
     uint32_t num_reported_queues = GnGetAdapterQueueProperties(adapter, num_queues, queue_properties.data());
     REQUIRE(num_reported_queues == num_queues);
 
     queue_properties.clear();
-    num_reported_queues = GnGetAdapterQueuePropertiesWithCallback(adapter, [&queue_properties](const GnQueueProperties& feature) { queue_properties.push_back(feature); });
+    num_reported_queues = GnGetAdapterQueuePropertiesWithCallback(adapter, [&queue_properties](const GnQueueGroupProperties& feature) { queue_properties.push_back(feature); });
     REQUIRE(num_queues == num_reported_queues);
 
     GnDestroyInstance(instance);

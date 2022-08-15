@@ -61,7 +61,6 @@ struct GnDeviceD3D12 : public GnDevice_t
     ID3D12CommandSignature* dispatch_cmd_signature;
 
     virtual ~GnDeviceD3D12();
-    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
     GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
@@ -396,7 +395,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support[format], sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT));
     }
 
-    num_queues = 3; // Since we can't get the number of queues in D3D12, we have to assume most GPUs supports multiple queues.
+    num_queue_groups = 3; // Since we can't get the number of queues in D3D12, we have to assume most GPUs supports multiple queues.
 
     // Check if timestamp can be queried in copy queue
     bool is_copy_queue_timestamp_query_supported = false;
@@ -404,12 +403,18 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
     if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3))))
         is_copy_queue_timestamp_query_supported = options3.CopyQueueTimestampQueriesSupported;
 
-    // prepare the queue properties
-    for (uint32_t i = 0; i < num_queues; i++) {
-        GnQueueProperties& queue = queue_properties[i];
-        queue.id = i;
-        queue.type = (GnQueueType)i;
-        queue.timestamp_query_supported = queue.type != GnQueueType_Copy ? GN_TRUE : is_copy_queue_timestamp_query_supported;
+    // Prepare queue group properties
+    for (uint32_t i = 0; i < num_queue_groups; i++) {
+        GnQueueGroupProperties& queue_group = queue_group_properties[i];
+        queue_group.id = i;
+        queue_group.type = (GnQueueType)i;
+        queue_group.timestamp_query_supported = queue_group.type != GnQueueType_Copy ? GN_TRUE : is_copy_queue_timestamp_query_supported;
+
+        switch (queue_group.type) {
+            case GnQueueType_Direct:    queue_group.num_queues = 1; break;
+            case GnQueueType_Compute:   queue_group.num_queues = 8; break;
+            case GnQueueType_Copy:      queue_group.num_queues = 1; break;
+        }
     }
 }
 
@@ -494,35 +499,6 @@ GnDeviceD3D12::~GnDeviceD3D12()
     GnSafeComRelease(draw_indexed_cmd_signature);
     GnSafeComRelease(dispatch_cmd_signature);
     GnSafeComRelease(device);
-}
-
-GnResult GnDeviceD3D12::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
-{
-    D3D12_COMMAND_QUEUE_DESC desc;
-    desc.Priority = 0;
-    desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    desc.NodeMask = 1;
-    desc.Type = (D3D12_COMMAND_LIST_TYPE)queue_index;
-
-    ID3D12CommandQueue* command_queue;
- 
-    if (FAILED(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&command_queue)))) {
-        return GnError_InternalError;
-    }
-
-    GnQueueD3D12* new_queue = (GnQueueD3D12*)std::malloc(sizeof(GnQueueD3D12));
-
-    if (new_queue == nullptr) {
-        GnSafeComRelease(command_queue);
-        return GnError_OutOfHostMemory;
-    }
-
-    new(new_queue) GnQueueD3D12;
-    new_queue->cmd_queue = command_queue;
-
-    *queue = new_queue;
-
-    return GnError_Unimplemented;
 }
 
 GnResult GnDeviceD3D12::CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept

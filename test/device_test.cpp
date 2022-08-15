@@ -20,7 +20,7 @@ TEST_CASE("Create device", "[device]")
 
     std::vector<uint32_t> enabled_queue_ids;
     GnGetAdapterQueuePropertiesWithCallback(adapter,
-                                            [&enabled_queue_ids](const GnQueueProperties& queue_properties) {
+                                            [&enabled_queue_ids](const GnQueueGroupProperties& queue_properties) {
                                                 enabled_queue_ids.push_back(queue_properties.id);
                                             });
 
@@ -73,7 +73,7 @@ TEST_CASE("Create queue", "[device]")
 
     uint32_t queue_id = 0;
     GnGetAdapterQueuePropertiesWithCallback(adapter,
-                                            [&queue_id](const GnQueueProperties& queue_properties) {
+                                            [&queue_id](const GnQueueGroupProperties& queue_properties) {
                                                 if (queue_properties.type == GnQueueType_Direct)
                                                     queue_id = queue_properties.id;
                                             });

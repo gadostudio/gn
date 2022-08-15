@@ -54,14 +54,22 @@ struct GnExampleWindowWin32 : public GnExampleWindow
             return false;
         }
 
+        static constexpr DWORD style = WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_SIZEBOX);
+
         hwnd = CreateWindowEx(WS_EX_APPWINDOW, "gnsamples", "Gn Samples",
-                              (WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_SIZEBOX)),
-                              CW_USEDEFAULT, CW_USEDEFAULT, width, height,
-                              nullptr, nullptr, hinstance, nullptr);
+                              style, CW_USEDEFAULT, CW_USEDEFAULT,
+                              width, height, nullptr, nullptr,
+                              hinstance, nullptr);
 
         if (!hwnd) return false;
 
-
+        // Readjust window's client size
+        RECT rect{};
+        GetWindowRect(hwnd, &rect);
+        AdjustWindowRectEx(&rect, style, FALSE, WS_EX_APPWINDOW);
+        SetWindowPos(hwnd, nullptr, rect.left, rect.top,
+                     rect.right - rect.left,
+                     rect.bottom - rect.top, 0);
 
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
@@ -104,9 +112,10 @@ struct GnExampleWindowWin32 : public GnExampleWindow
 struct GnExampleApp
 {
     static GnExampleApp* g_app;
+    std::unique_ptr<GnExampleWindow> window;
     GnInstance instance = nullptr;
     GnAdapter adapter = nullptr;
-    std::unique_ptr<GnExampleWindow> window;
+    GnDevice device = nullptr;
 
     GnExampleApp() :
         window(std::make_unique<GnExampleWindowWin32>())
@@ -116,8 +125,8 @@ struct GnExampleApp
 
     ~GnExampleApp()
     {
-        if (instance == nullptr)
-            GnDestroyInstance(instance);
+        if (device) GnDestroyDevice(device);
+        if (instance) GnDestroyInstance(instance);
     }
 
     bool Init()
@@ -132,8 +141,37 @@ struct GnExampleApp
 
         adapter = GnGetDefaultAdapter(instance);
 
+        GnGetAdaptersWithCallback(instance,
+                                  [this](GnAdapter candidate_adapter) {
+                                      GnAdapterProperties properties;
+                                      GnGetAdapterProperties(candidate_adapter, &properties);
+
+                                      if (properties.type == GnAdapterType_Discrete) {
+                                          adapter = candidate_adapter;
+                                      }
+                                  });
+
         if (!window->Init(640, 480)) {
             EX_THROW_ERROR("Cannot initialize window");
+            return false;
+        }
+
+        std::vector<GnFeature> features;
+        features.resize(GnGetAdapterFeatureCount(adapter));
+        GnGetAdapterFeatures(adapter, GnGetAdapterFeatureCount(adapter), features.data());
+
+        GnQueueGroupDesc graphics_queue_group;
+        graphics_queue_group.id = 4;
+        graphics_queue_group.num_enabled_queues = 1;
+
+        GnDeviceDesc device_desc{};
+        device_desc.num_enabled_features = static_cast<uint32_t>(features.size());
+        device_desc.enabled_features = features.data();
+        device_desc.num_enabled_queue_groups = 1;
+        device_desc.queue_group_descs = &graphics_queue_group;
+
+        if (GnCreateDevice(adapter, &device_desc, &device) != GnSuccess) {
+            EX_THROW_ERROR("Cannot create device");
             return false;
         }
 

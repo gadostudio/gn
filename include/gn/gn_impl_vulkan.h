@@ -93,7 +93,6 @@ struct GnInstanceVK : public GnInstance_t
 struct GnAdapterVK : public GnAdapter_t
 {
     VkPhysicalDevice            physical_device = VK_NULL_HANDLE;
-    uint32_t                    queue_count[4]; // queue count for each queue family
     uint32_t                    api_version = 0;
     VkPhysicalDeviceFeatures    supported_features{};
 
@@ -117,7 +116,6 @@ struct GnDeviceVK : public GnDevice_t
     uint32_t                queue_create_pos[4]{};
 
     ~GnDeviceVK();
-    GnResult CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept override;
     GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
@@ -369,7 +367,7 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GN_OUT GnInstance* i
         "VK_LAYER_KHRONOS_validation",
     };
 
-    VkInstanceCreateInfo instance_info;
+    VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_info.pNext = nullptr;
     instance_info.flags = 0;
@@ -542,21 +540,21 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, const GnVulkanInstanceFunctions
 
     // Get the available queues
     VkQueueFamilyProperties queue_families[4]{};
-    fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, nullptr);
-    fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queues, queue_families);
+    fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queue_groups, nullptr);
+    fn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queue_groups, queue_families);
 
-    for (uint32_t i = 0; i < num_queues; i++) {
+    for (uint32_t i = 0; i < num_queue_groups; i++) {
         const VkQueueFamilyProperties& queue_family = queue_families[i];
-        GnQueueProperties& queue = queue_properties[i];
+        GnQueueGroupProperties& queue_group = queue_group_properties[i];
 
-        queue.id = i;
+        queue_group.id = i;
 
-        if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_COMPUTE_BIT)) queue.type = GnQueueType_Direct;
-        else if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_COMPUTE_BIT)) queue.type = GnQueueType_Compute;
-        else if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_TRANSFER_BIT)) queue.type = GnQueueType_Copy;
+        if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_COMPUTE_BIT)) queue_group.type = GnQueueType_Direct;
+        else if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_COMPUTE_BIT)) queue_group.type = GnQueueType_Compute;
+        else if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_TRANSFER_BIT)) queue_group.type = GnQueueType_Copy;
 
-        queue.timestamp_query_supported = queue_family.timestampValidBits != 0;
-        queue_count[i] = queue_family.queueCount;
+        queue_group.timestamp_query_supported = queue_family.timestampValidBits != 0;
+        queue_group.num_queues = queue_family.queueCount;
     }
 }
 
@@ -597,13 +595,13 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* de
     VkDeviceQueueCreateInfo queue_infos[4];
 
     // Fill queue create info structs
-    for (uint32_t i = 0; i < desc->num_enabled_queues; i++) {
+    for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
         VkDeviceQueueCreateInfo& queue_info = queue_infos[i];
         queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_info.pNext = nullptr;
         queue_info.flags = 0;
-        queue_info.queueFamilyIndex = desc->enabled_queue_ids[i];
-        queue_info.queueCount = queue_count[queue_info.queueFamilyIndex];
+        queue_info.queueFamilyIndex = desc->queue_group_descs[i].id;
+        queue_info.queueCount = queue_group_properties[queue_info.queueFamilyIndex].num_queues;
         queue_info.pQueuePriorities = queue_priorities;
     }
 
@@ -620,7 +618,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* de
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.pNext = nullptr;
     device_info.flags = 0;
-    device_info.queueCreateInfoCount = desc->num_enabled_queues;
+    device_info.queueCreateInfoCount = desc->num_enabled_queue_groups;
     device_info.pQueueCreateInfos = queue_infos;
     device_info.enabledLayerCount = 0;
     device_info.ppEnabledLayerNames = nullptr;
@@ -647,8 +645,11 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* de
     new_device->parent_adapter = this;
     new_device->device = vk_device;
     new_device->fn = device_fn;
-    new_device->num_enabled_queues = desc->num_enabled_queues;
-    std::copy_n(desc->enabled_queue_ids, desc->num_enabled_queues, new_device->enabled_queue_ids);
+    new_device->num_enabled_queue_groups = desc->num_enabled_queue_groups;
+
+    for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
+        new_device->enabled_queue_ids[i] = desc->queue_group_descs[i].id;
+    }
 
     *device = new_device;
 
@@ -660,41 +661,6 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* de
 GnDeviceVK::~GnDeviceVK()
 {
     if (device) fn.vkDestroyDevice(device, nullptr);
-}
-
-GnResult GnDeviceVK::CreateQueue(uint32_t queue_index, GnQueue* queue) noexcept
-{
-    GnAdapterVK* vk_parent_adapter = (GnAdapterVK*)parent_adapter;
-
-    // Create internal VkFence for GnQueueSubmitAndWait
-    VkFenceCreateInfo fence_info;
-    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fence_info.pNext = nullptr;
-    fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-    VkFence fence;
-    if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &fence)))
-        return GnError_InternalError;
-
-    GnQueueVK* new_queue = (GnQueueVK*)std::malloc(sizeof(GnQueueVK));
-
-    if (new_queue == nullptr) {
-        fn.vkDestroyFence(device, fence, nullptr);
-        return GnError_OutOfHostMemory;
-    }
-
-    VkQueue vk_queue;
-    fn.vkGetDeviceQueue(device, queue_index, queue_create_pos[queue_index], &vk_queue);
-    queue_create_pos[queue_index] = (queue_create_pos[queue_index] + 1) % vk_parent_adapter->queue_count[queue_index];
-
-    new(new_queue) GnQueueVK;
-    new_queue->parent_device = this;
-    new_queue->queue = vk_queue;
-    new_queue->wait_fence = fence;
-    
-    *queue = new_queue;
-
-    return GnSuccess;
 }
 
 GnResult GnDeviceVK::CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept

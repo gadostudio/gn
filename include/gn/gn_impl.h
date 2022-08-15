@@ -58,8 +58,8 @@ struct GnAdapter_t
     GnAdapterProperties             properties{};
     GnAdapterLimits                 limits{};
     std::bitset<GnFeature_Count>    features;
-    uint32_t                        num_queues = 0;
-    GnQueueProperties               queue_properties[4]{}; // is 4 enough?
+    uint32_t                        num_queue_groups = 0;
+    GnQueueGroupProperties          queue_group_properties[4]{}; // is 4 enough?
 
     virtual ~GnAdapter_t() { }
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
@@ -70,12 +70,11 @@ struct GnAdapter_t
 struct GnDevice_t
 {
     GnAdapter               parent_adapter = nullptr;
-    uint32_t                num_enabled_queues = 0;
+    uint32_t                num_enabled_queue_groups = 0;
     uint32_t                enabled_queue_ids[4]{};
 
     virtual ~GnDevice_t() { }
 
-    virtual GnResult CreateQueue(uint32_t group_index, GnQueue* queue) noexcept = 0;
     virtual GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept = 0;
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
@@ -448,23 +447,23 @@ GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format)
 
 uint32_t GnGetAdapterQueueCount(GnAdapter adapter)
 {
-    return adapter->num_queues;
+    return adapter->num_queue_groups;
 }
 
-uint32_t GnGetAdapterQueueProperties(GnAdapter adapter, uint32_t num_queues, GnQueueProperties* queue_properties)
+uint32_t GnGetAdapterQueueProperties(GnAdapter adapter, uint32_t num_queues, GnQueueGroupProperties* queue_properties)
 {
-    uint32_t n = std::min(num_queues, adapter->num_queues);
-    std::memcpy(queue_properties, adapter->queue_properties, sizeof(GnQueueProperties) * n);
+    uint32_t n = std::min(num_queues, adapter->num_queue_groups);
+    std::memcpy(queue_properties, adapter->queue_group_properties, sizeof(GnQueueGroupProperties) * n);
     return n;
 }
 
 uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterQueuePropertiesCallbackFn callback_fn)
 {
-    for (uint32_t i = 0; i < adapter->num_queues; i++) {
-        callback_fn(userdata, &adapter->queue_properties[i]);
+    for (uint32_t i = 0; i < adapter->num_queue_groups; i++) {
+        callback_fn(userdata, &adapter->queue_group_properties[i]);
     }
 
-    return adapter->num_queues;
+    return adapter->num_queue_groups;
 }
 
 // -- [GnDevice] --
@@ -476,28 +475,39 @@ bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, GN
     if (adapter == nullptr) error = true;
 
     // Validate queue IDs
-    if (desc != nullptr && desc->num_enabled_queues > 0 && desc->enabled_queue_ids != nullptr) {
-        if (desc->num_enabled_queues > adapter->num_queues)
+    if (desc != nullptr && desc->num_enabled_queue_groups > 0 && desc->queue_group_descs != nullptr) {
+        if (desc->num_enabled_queue_groups > adapter->num_queue_groups)
             error = true;
 
-        uint32_t queue_ids[GN_MAX_QUEUE];
+        uint32_t group_ids[GN_MAX_QUEUE];
 
-        std::copy_n(desc->enabled_queue_ids, desc->num_enabled_queues, queue_ids);
-
-        // check if each queue ID is valid
-        for (uint32_t i = 0; i < desc->num_enabled_queues; i++) {
-            bool found = false;
-            for (uint32_t j = 0; j < adapter->num_queues; j++)
-                if (queue_ids[i] == adapter->queue_properties[j].id) {
-                    found = true;
-                    break;
-                }
-            error = error || !found;
+        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
+            group_ids[i] = desc->queue_group_descs[i].id;
         }
 
-        // check if each queue ID is unique
-        std::sort(queue_ids, &queue_ids[desc->num_enabled_queues]);
-        if (std::unique(queue_ids, &queue_ids[desc->num_enabled_queues]) != &queue_ids[desc->num_enabled_queues])
+        // check if each queue group id is valid
+        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++)
+            for (uint32_t j = 0; j < adapter->num_queue_groups; j++)
+                if (group_ids[i] == adapter->queue_group_properties[j].id)
+                {
+                    error = error || true;
+                    break;
+                }
+
+        // check if each queue count is valid
+        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
+            GnQueueGroupProperties& queue_group_properties = adapter->queue_group_properties[group_ids[i]];
+            if (desc->queue_group_descs[i].num_enabled_queues <= queue_group_properties.num_queues) {
+                error = error || true;
+                break;
+            }
+        }
+
+        // check if each queue group ID is unique
+        auto begin_group_id = group_ids;
+        auto end_group_id = &group_ids[desc->num_enabled_queue_groups];
+        std::sort(begin_group_id, end_group_id);
+        if (std::unique(begin_group_id, end_group_id) != end_group_id)
             error = true;
     }
 
@@ -511,17 +521,19 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDe
     if (GnValidateCreateDeviceParam(adapter, desc, device)) return GnError_InitializationFailed;
 
     GnDeviceDesc tmp_desc{};
-    uint32_t queue_ids[4]{};
+    GnQueueGroupDesc queue_groups[4]{};
     GnFeature enabled_features[GnFeature_Count];
 
     if (desc != nullptr) tmp_desc = *desc;
 
-    if (tmp_desc.num_enabled_queues == 0 || tmp_desc.enabled_queue_ids == nullptr) {
+    if (tmp_desc.num_enabled_queue_groups == 0 || tmp_desc.queue_group_descs == nullptr) {
         // enable all queues implicitly
-        tmp_desc.num_enabled_queues = adapter->num_queues;
-        for (uint32_t i = 0; i < adapter->num_queues; i++)
-            queue_ids[i] = adapter->queue_properties[i].id;
-        tmp_desc.enabled_queue_ids = queue_ids;
+        tmp_desc.num_enabled_queue_groups = adapter->num_queue_groups;
+        for (uint32_t i = 0; i < adapter->num_queue_groups; i++) {
+            queue_groups[i].id = adapter->queue_group_properties[i].id;
+            queue_groups[i].num_enabled_queues = adapter->queue_group_properties[i].num_queues;
+        }
+        tmp_desc.queue_group_descs = queue_groups;
     }
 
     if (tmp_desc.num_enabled_features == 0 || tmp_desc.enabled_features == nullptr) {
@@ -549,7 +561,7 @@ bool GnValidateCreateQueueParam(GnDevice device, uint32_t queue_index, GN_OUT Gn
     if (device == nullptr) error = true;
 
     bool found = false;
-    for (uint32_t i = 0; i < device->num_enabled_queues; i++)
+    for (uint32_t i = 0; i < device->num_enabled_queue_groups; i++)
         if (queue_index == device->enabled_queue_ids[i]) {
             found = true;
             break;
@@ -559,18 +571,6 @@ bool GnValidateCreateQueueParam(GnDevice device, uint32_t queue_index, GN_OUT Gn
     if (queue == nullptr) error = true;
 
     return error;
-}
-
-GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, GN_OUT GnQueue* queue)
-{
-    if (GnValidateCreateQueueParam(device, queue_index, queue)) return GnError_InitializationFailed;
-    return device->CreateQueue(queue_index, queue);
-}
-
-void GnDestroyQueue(GnQueue queue)
-{
-    queue->~GnQueue_t();
-    std::free(queue);
 }
 
 // -- [GnFence] --

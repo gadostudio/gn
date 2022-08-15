@@ -252,11 +252,12 @@ typedef struct
 {
     uint32_t    id;
     GnQueueType type;
+    uint32_t    num_queues;
     GnBool      timestamp_query_supported;
-} GnQueueProperties;
+} GnQueueGroupProperties;
 
 typedef void (*GnGetAdapterFeatureCallbackFn)(void* userdata, GnFeature feature);
-typedef void (*GnGetAdapterQueuePropertiesCallbackFn)(void* userdata, const GnQueueProperties* queue_properties);
+typedef void (*GnGetAdapterQueuePropertiesCallbackFn)(void* userdata, const GnQueueGroupProperties* queue_properties);
 
 void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties);
 void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits);
@@ -267,15 +268,21 @@ GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature);
 GnTextureFormatFeatureFlags GnGetTextureFormatFeatureSupport(GnAdapter adapter, GnFormat format);
 GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format);
 uint32_t GnGetAdapterQueueCount(GnAdapter adapter);
-uint32_t GnGetAdapterQueueProperties(GnAdapter adapter, uint32_t num_queues, GnQueueProperties* queue_properties);
+uint32_t GnGetAdapterQueueProperties(GnAdapter adapter, uint32_t num_queues, GnQueueGroupProperties* queue_properties);
 uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterQueuePropertiesCallbackFn callback_fn);
 
 typedef struct
 {
+    uint32_t id;
     uint32_t num_enabled_queues;
-    const uint32_t* enabled_queue_ids;
-    uint32_t num_enabled_features;
-    const GnFeature* enabled_features;
+} GnQueueGroupDesc;
+
+typedef struct
+{
+    uint32_t                num_enabled_features;
+    const GnFeature*        enabled_features;
+    uint32_t                num_enabled_queue_groups;
+    const GnQueueGroupDesc* queue_group_descs;
 } GnDeviceDesc;
 
 GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device);
@@ -291,8 +298,6 @@ typedef struct
     const GnFence*          signal_fences;
 } GnSubmission;
 
-GnResult GnCreateQueue(GnDevice device, uint32_t queue_index, GN_OUT GnQueue* queue);
-void GnDestroyQueue(GnQueue queue);
 GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions, GnFence signal_host_fence);
 GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions);
 GnResult GnQueuePresent(GnQueue queue);
@@ -595,10 +600,10 @@ static uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, std::functio
     return GnGetAdapterFeaturesWithCallback(adapter, static_cast<void*>(&callback_fn), wrapper_fn);
 }
 
-static uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, std::function<void(const GnQueueProperties&)> callback_fn) noexcept
+static uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, std::function<void(const GnQueueGroupProperties&)> callback_fn) noexcept
 {
-    auto wrapper_fn = [](void* userdata, const GnQueueProperties* queue_properties) {
-        const auto& fn = *static_cast<std::function<void(const GnQueueProperties&)>*>(userdata);
+    auto wrapper_fn = [](void* userdata, const GnQueueGroupProperties* queue_properties) {
+        const auto& fn = *static_cast<std::function<void(const GnQueueGroupProperties&)>*>(userdata);
         fn(*queue_properties);
     };
 
