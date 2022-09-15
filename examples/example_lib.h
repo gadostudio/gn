@@ -116,6 +116,12 @@ struct GnExampleApp
     GnInstance instance = nullptr;
     GnAdapter adapter = nullptr;
     GnDevice device = nullptr;
+    GnSurface surface = nullptr;
+    GnQueue queue = nullptr;
+
+    GnFormat surface_format{};
+    int32_t direct_queue_group = -1;
+    int32_t present_queue_group = -1;
 
     GnExampleApp() :
         window(std::make_unique<GnExampleWindowWin32>())
@@ -126,6 +132,7 @@ struct GnExampleApp
     ~GnExampleApp()
     {
         if (device) GnDestroyDevice(device);
+        if (surface) GnDestroySurface(surface);
         if (instance) GnDestroyInstance(instance);
     }
 
@@ -141,39 +148,63 @@ struct GnExampleApp
 
         adapter = GnGetDefaultAdapter(instance);
 
-        GnGetAdaptersWithCallback(instance,
-                                  [this](GnAdapter candidate_adapter) {
-                                      GnAdapterProperties properties;
-                                      GnGetAdapterProperties(candidate_adapter, &properties);
+        GnEnumerateAdapters(instance,
+                            [this](GnAdapter candidate_adapter) {
+                                GnAdapterProperties properties;
+                                GnGetAdapterProperties(candidate_adapter, &properties);
 
-                                      if (properties.type == GnAdapterType_Discrete) {
-                                          adapter = candidate_adapter;
-                                      }
-                                  });
+                                if (properties.type == GnAdapterType_Discrete) {
+                                    adapter = candidate_adapter;
+                                }
+                            });
 
         if (!window->Init(640, 480)) {
             EX_THROW_ERROR("Cannot initialize window");
             return false;
         }
 
-        std::vector<GnFeature> features;
-        features.resize(GnGetAdapterFeatureCount(adapter));
-        GnGetAdapterFeatures(adapter, GnGetAdapterFeatureCount(adapter), features.data());
+        GnSurfaceDesc desc{};
+        desc.type = GnSurfaceType_Win32;
+        desc.hwnd = (HWND)window->GetNativeHandle();
 
-        GnQueueGroupDesc graphics_queue_group;
-        graphics_queue_group.id = 4;
-        graphics_queue_group.num_enabled_queues = 1;
+        if (GnCreateSurface(instance, &desc, &surface) != GnSuccess) {
+            EX_THROW_ERROR("Cannot create surface");
+            return false;
+        }
 
-        GnDeviceDesc device_desc{};
-        device_desc.num_enabled_features = static_cast<uint32_t>(features.size());
-        device_desc.enabled_features = features.data();
-        device_desc.num_enabled_queue_groups = 1;
-        device_desc.queue_group_descs = &graphics_queue_group;
+        auto find_queue_group_fn =
+            [this](const GnQueueGroupProperties& queue_group) {
+                if (direct_queue_group == -1 && queue_group.type == GnQueueType_Direct) {
+                    direct_queue_group = queue_group.index;
+                }
 
-        if (GnCreateDevice(adapter, &device_desc, &device) != GnSuccess) {
+                if (present_queue_group == -1 && GnIsSurfacePresentationSupported(adapter, queue_group.index, surface)) {
+                    present_queue_group = queue_group.index;
+                }
+            };
+
+        // Find the required queue groups
+        GnEnumerateAdapterQueueGroupProperties(adapter, find_queue_group_fn);
+
+        // For now, we assume the driver can do presentation in direct queue
+        if (direct_queue_group != present_queue_group) {
+            return false;
+        }
+
+        if (GnCreateDevice(adapter, nullptr, &device) != GnSuccess) {
             EX_THROW_ERROR("Cannot create device");
             return false;
         }
+
+        queue = GnGetDeviceQueue(device, direct_queue_group, 0);
+
+        // Find BGRA8Unorm surface format
+        GnEnumerateSurfaceFormats(adapter, surface,
+                                  [this](GnFormat format) {
+                                      if (surface_format == GnFormat_Unknown && format == GnFormat_BGRA8Unorm) {
+                                          surface_format = format;
+                                      }
+                                  });
 
         return true;
     }

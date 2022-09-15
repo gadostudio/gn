@@ -10,6 +10,20 @@
 
 struct GnInstanceD3D12;
 struct GnAdapterD3D12;
+struct GnSurfaceD3D12;
+struct GnDeviceD3D12;
+struct GnQueueD3D12;
+struct GnFenceD3D12;
+struct GnBufferD3D12;
+struct GnTextureD3D12;
+struct GnRenderPassD3D12;
+struct GnResourceTableLayoutD3D12;
+struct GnPipelineLayoutD3D12;
+struct GnPipelineD3D12;
+struct GnResourceTablePoolD3D12;
+struct GnResourceTableD3D12;
+struct GnCommandPoolD3D12;
+struct GnCommandListD3D12;
 
 typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY_1)(REFIID riid, _COM_Outptr_ void** ppFactory);
 
@@ -18,6 +32,7 @@ struct GnD3D12FunctionDispatcher
     void* dxgi_dll_handle;
     void* d3d12_dll_handle;
     PFN_CREATE_DXGI_FACTORY_1 CreateDXGIFactory1 = nullptr;
+    PFN_D3D12_GET_DEBUG_INTERFACE D3D12GetDebugInterface = nullptr;
     PFN_D3D12_CREATE_DEVICE D3D12CreateDevice = nullptr;
     PFN_D3D12_SERIALIZE_ROOT_SIGNATURE D3D12SerializeRootSignature = nullptr;
     PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE D3D12SerializeVersionedRootSignature = nullptr;
@@ -37,6 +52,8 @@ struct GnInstanceD3D12 : public GnInstance_t
 
     GnInstanceD3D12() noexcept;
     ~GnInstanceD3D12();
+
+    GnResult CreateSurface(const GnSurfaceDesc* desc, GN_OUT GnSurface* surface) noexcept override;
 };
 
 struct GnAdapterD3D12 : public GnAdapter_t
@@ -50,21 +67,33 @@ struct GnAdapterD3D12 : public GnAdapter_t
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
+    GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept override;
+    void GetSurfaceProperties(GnSurface surface, GN_OUT GnSurfaceProperties* properties) const noexcept override;
+    GnResult GetSurfaceFormats(GnSurface surface, uint32_t* num_surface_formats, GN_OUT GnFormat* formats) const noexcept;
+    GnResult GnEnumerateSurfaceFormats(GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn) const noexcept override;
     GnResult CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept override;
+};
+
+struct GnSurfaceD3D12 : public GnSurface_t
+{
+    HWND    hwnd;
 };
 
 struct GnDeviceD3D12 : public GnDevice_t
 {
-    ID3D12Device* device;
-    ID3D12CommandSignature* draw_cmd_signature;
-    ID3D12CommandSignature* draw_indexed_cmd_signature;
-    ID3D12CommandSignature* dispatch_cmd_signature;
+    ID3D12Device*           device = nullptr;
+    ID3D12CommandSignature* draw_cmd_signature = nullptr;
+    ID3D12CommandSignature* draw_indexed_cmd_signature = nullptr;
+    ID3D12CommandSignature* dispatch_cmd_signature = nullptr;
+    GnQueueD3D12*           enabled_queues = nullptr;
 
     virtual ~GnDeviceD3D12();
+    GnResult CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept override;
     GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
+    GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
 };
 
 struct GnQueueD3D12 : public GnQueue_t
@@ -82,9 +111,23 @@ struct GnBufferD3D12 : public GnBuffer_t
     virtual ~GnBufferD3D12();
 };
 
+//typedef void (GN_FPTR* ID3D12GraphicsCommandList_IASetIndexBuffer)(ID3D12GraphicsCommandList* This, const D3D12_INDEX_BUFFER_VIEW* pView);
+//typedef void (GN_FPTR* ID3D12GraphicsCommandList_IASetVertexBuffers)(ID3D12GraphicsCommandList* This, UINT StartSlot, UINT NumViews, const D3D12_VERTEX_BUFFER_VIEW* pViews);
+//typedef void (GN_FPTR* ID3D12GraphicsCommandList_RSSetViewports)(ID3D12GraphicsCommandList* This, UINT NumViewports, const D3D12_VIEWPORT* pViewports);
+//typedef void (GN_FPTR* ID3D12GraphicsCommandList_RSSetScissorRects)(ID3D12GraphicsCommandList* This, UINT NumRects, const D3D12_RECT* pRects);
+//typedef void (GN_FPTR* ID3D12GraphicsCommandList_OMSetBlendFactor)(ID3D12GraphicsCommandList* This, const FLOAT BlendFactor[4]);
+//typedef void (GN_FPTR* ID3D12GraphicsCommandList_OMSetStencilRef)(ID3D12GraphicsCommandList* This, UINT StencilRef);
+
 struct GnCommandListD3D12 : public GnCommandList_t
 {
-    GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept;
+    //ID3D12GraphicsCommandList_IASetIndexBuffer      ia_set_index_buffer;
+    //ID3D12GraphicsCommandList_IASetVertexBuffers    ia_set_vertex_buffers;
+    //ID3D12GraphicsCommandList_RSSetViewports        rs_set_viewports;
+    //ID3D12GraphicsCommandList_RSSetScissorRects     rs_set_scissor_rects;
+    //ID3D12GraphicsCommandList_OMSetBlendFactor      om_set_blend_factor;
+    //ID3D12GraphicsCommandList_OMSetStencilRef       om_set_stencil_ref;
+
+    GnCommandListD3D12(GnQueueType queue_type, const GnCommandListDesc* desc, ID3D12GraphicsCommandList* cmd_list) noexcept;
 };
 
 // -------------------------------------------------------
@@ -166,10 +209,21 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, GN_OUT GnInstance* in
         return GnError_BackendNotAvailable;
     }
 
+    // We will always enable backend validation for the moment
+    if (desc->enable_backend_validation || true) {
+        ID3D12Debug* debug_interface;
+        
+        if (FAILED(g_d3d12_dispatcher->D3D12GetDebugInterface(IID_PPV_ARGS(&debug_interface)))) {
+            return GnError_InternalError;
+        }
+
+        debug_interface->EnableDebugLayer();
+    }
+
     IDXGIFactory1* factory = nullptr;
     
     if (FAILED(g_d3d12_dispatcher->CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
-        return GnError_InitializationFailed;
+        return GnError_InternalError;
 
     GnInstanceD3D12* new_instance = (GnInstanceD3D12*)std::malloc(sizeof(GnInstanceD3D12));
 
@@ -238,6 +292,7 @@ GnD3D12FunctionDispatcher::GnD3D12FunctionDispatcher(void* dxgi_dll_handle, void
 bool GnD3D12FunctionDispatcher::LoadFunctions() noexcept
 {
     this->CreateDXGIFactory1 = GnGetLibraryFunction<PFN_CREATE_DXGI_FACTORY_1>(dxgi_dll_handle, "CreateDXGIFactory1");
+    this->D3D12GetDebugInterface = GnGetLibraryFunction<PFN_D3D12_GET_DEBUG_INTERFACE>(d3d12_dll_handle, "D3D12GetDebugInterface");
     this->D3D12CreateDevice = GnGetLibraryFunction<PFN_D3D12_CREATE_DEVICE>(d3d12_dll_handle, "D3D12CreateDevice");
     this->D3D12SerializeRootSignature = GnGetLibraryFunction<PFN_D3D12_SERIALIZE_ROOT_SIGNATURE>(d3d12_dll_handle, "D3D12SerializeRootSignature");
     this->D3D12SerializeVersionedRootSignature = GnGetLibraryFunction<PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE>(d3d12_dll_handle, "D3D12SerializeVersionedRootSignature");
@@ -286,13 +341,24 @@ GnInstanceD3D12::~GnInstanceD3D12()
     GnSafeComRelease(factory);
 }
 
+GnResult GnInstanceD3D12::CreateSurface(const GnSurfaceDesc* desc, GN_OUT GnSurface* surface) noexcept
+{
+    if (desc->type != GnSurfaceType_Win32) return GnError_InvalidArgs;
+
+    GnSurfaceD3D12* new_surface = new(std::nothrow) GnSurfaceD3D12;
+    if (new_surface == nullptr) return GnError_OutOfHostMemory;
+    new_surface->hwnd = desc->hwnd;
+
+    *surface = new_surface;
+
+    return GnSuccess;
+}
+
 // -- [GnAdapterD3D12] --
 
 GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D12Device* device) noexcept :
     adapter(adapter)
 {
-    parent_instance = instance;
-
     DXGI_ADAPTER_DESC1 adapter_desc;
     adapter->GetDesc1(&adapter_desc);
 
@@ -406,7 +472,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
     // Prepare queue group properties
     for (uint32_t i = 0; i < num_queue_groups; i++) {
         GnQueueGroupProperties& queue_group = queue_group_properties[i];
-        queue_group.id = i;
+        queue_group.index = i;
         queue_group.type = (GnQueueType)i;
         queue_group.timestamp_query_supported = queue_group.type != GnQueueType_Copy ? GN_TRUE : is_copy_queue_timestamp_query_supported;
 
@@ -453,38 +519,136 @@ GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
     return (fmt.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER) == D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
 }
 
+GnBool GnAdapterD3D12::IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept
+{
+    return queue_group_index == 0; // D3D12 will always can do presentation in direct queue
+}
+
+void GnAdapterD3D12::GetSurfaceProperties(GnSurface surface, GN_OUT GnSurfaceProperties* properties) const noexcept
+{
+    GnSurfaceD3D12* impl_surface = (GnSurfaceD3D12*)surface;
+
+    RECT client_rect;
+    ::GetClientRect(impl_surface->hwnd, &client_rect);
+
+    properties->width = client_rect.right - client_rect.left;
+    properties->height = client_rect.bottom - client_rect.top;
+    properties->max_buffers = 4;
+    properties->min_buffers = 1;
+    properties->immediate_presentable = true;
+}
+
+static constexpr uint32_t d3d12_surface_format_support = D3D12_FORMAT_SUPPORT1_DISPLAY | D3D12_FORMAT_SUPPORT1_RENDER_TARGET;
+
+GnResult GnAdapterD3D12::GetSurfaceFormats(GnSurface surface, uint32_t* num_surface_formats, GN_OUT GnFormat* formats) const noexcept
+{
+    if (formats) {
+        uint32_t num_supported_formats = 0;
+
+        for (uint32_t i = 0; i < GnFormat_Count; i++) {
+            if (num_supported_formats >= *num_surface_formats)
+                break;
+
+            const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)i];
+            if (GnTestBitmask((uint32_t)fmt.Support1, d3d12_surface_format_support)) {
+                formats[num_supported_formats] = (GnFormat)i;
+                num_supported_formats++;
+            }
+        }
+    }
+    else {
+        for (uint32_t i = 0; i < GnFormat_Count; i++) {
+            const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)i];
+            if (GnTestBitmask((uint32_t)fmt.Support1, d3d12_surface_format_support))
+                (*num_surface_formats)++;
+        }
+    }
+
+    return GnSuccess;
+}
+
+GnResult GnAdapterD3D12::GnEnumerateSurfaceFormats(GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn) const noexcept
+{
+    for (uint32_t i = 0; i < GnFormat_Count; i++) {
+        const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)i];
+        if (GnTestBitmask((uint32_t)fmt.Support1, d3d12_surface_format_support))
+            callback_fn(userdata, (GnFormat)i);
+    }
+
+    return GnSuccess;
+}
+
 GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept
 {
-    ID3D12Device* d3d12_device;
-
-    if (FAILED(g_d3d12_dispatcher->D3D12CreateDevice(adapter, feature_level, IID_PPV_ARGS(&d3d12_device))))
-        return GnError_InternalError;
-
-    // Create draw, draw indexed, and dispatch indirect command signature
-    ID3D12CommandSignature* draw_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW);
-    ID3D12CommandSignature* draw_indexed_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED);
-    ID3D12CommandSignature* dispatch_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH);
-
-    if (draw_cmd_signature == nullptr || draw_indexed_cmd_signature == nullptr || dispatch_cmd_signature == nullptr) {
-        GnSafeComRelease(draw_cmd_signature);
-        GnSafeComRelease(draw_indexed_cmd_signature);
-        GnSafeComRelease(dispatch_cmd_signature);
-        GnSafeComRelease(d3d12_device);
-        return GnError_InternalError;
-    }
-    
-    GnDeviceD3D12* new_device = (GnDeviceD3D12*)std::malloc(sizeof(GnDeviceD3D12));
+    GnDeviceD3D12* new_device = new(std::nothrow) GnDeviceD3D12;
 
     if (new_device == nullptr) {
-        GnSafeComRelease(d3d12_device);
         return GnError_OutOfHostMemory;
     }
 
-    new(new_device) GnDeviceD3D12();
+    // Calculate total enabled queues
+    uint32_t total_enabled_queues = 0;
+    for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
+        new_device->num_enabled_queues[i] = desc->queue_group_descs[i].num_enabled_queues;
+        total_enabled_queues += new_device->num_enabled_queues[i];
+    }
+
+    GnQueueD3D12* queues = (GnQueueD3D12*)std::malloc(sizeof(GnQueueD3D12) * total_enabled_queues);
+    if (!queues) {
+        delete new_device;
+        return GnError_OutOfHostMemory;
+    }
+
+    new_device->enabled_queues = queues;
+
+    // Create device
+    ID3D12Device* d3d12_device;
+    if (FAILED(g_d3d12_dispatcher->D3D12CreateDevice(adapter, feature_level, IID_PPV_ARGS(&d3d12_device)))) {
+        delete new_device;
+        return GnError_InternalError;
+    }
+
+    new_device->parent_adapter = this;
     new_device->device = d3d12_device;
-    new_device->draw_cmd_signature = draw_cmd_signature;
-    new_device->draw_indexed_cmd_signature = draw_indexed_cmd_signature;
-    new_device->dispatch_cmd_signature = dispatch_cmd_signature;
+
+    // Initialize enabled queues
+    for (uint32_t i = 0; i < desc->num_enabled_queue_groups; ++i) {
+        const GnQueueGroupDesc& group_desc = desc->queue_group_descs[i];
+
+        for (uint32_t j = 0; j < group_desc.num_enabled_queues; ++j) {
+            D3D12_COMMAND_QUEUE_DESC cmd_queue_desc;
+
+            switch (group_desc.index) {
+                case 0: cmd_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT; break;
+                case 1: cmd_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE; break;
+                case 2: cmd_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY; break;
+            }
+
+            cmd_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+            cmd_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+            cmd_queue_desc.NodeMask = 0;
+
+            ID3D12CommandQueue* cmd_queue;
+            if (FAILED(d3d12_device->CreateCommandQueue(&cmd_queue_desc, IID_PPV_ARGS(&cmd_queue)))) {
+                delete new_device;
+                return GnError_InternalError;
+            }
+
+            auto queue = new(&queues[new_device->total_enabled_queues]) GnQueueD3D12();
+            queue->cmd_queue = cmd_queue;
+            ++new_device->total_enabled_queues;
+        }
+    }
+
+    // Create draw, draw indexed, and dispatch indirect command signature
+    new_device->draw_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW);
+    new_device->draw_indexed_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED);
+    new_device->dispatch_cmd_signature = GnCreateCommandSignatureD3D12(d3d12_device, D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH);
+
+    if (new_device->draw_cmd_signature == nullptr || new_device->draw_indexed_cmd_signature == nullptr || new_device->dispatch_cmd_signature == nullptr) {
+        delete new_device;
+        return GnError_InternalError;
+    }
 
     *device = new_device;
 
@@ -495,10 +659,21 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice*
 
 GnDeviceD3D12::~GnDeviceD3D12()
 {
+    if (enabled_queues) {
+        for (uint32_t i = 0; i < total_enabled_queues; i++)
+            enabled_queues[i].~GnQueueD3D12();
+        std::free(enabled_queues);
+    }
+
     GnSafeComRelease(draw_cmd_signature);
     GnSafeComRelease(draw_indexed_cmd_signature);
     GnSafeComRelease(dispatch_cmd_signature);
     GnSafeComRelease(device);
+}
+
+GnResult GnDeviceD3D12::CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept
+{
+    return GnResult();
 }
 
 GnResult GnDeviceD3D12::CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept
@@ -521,6 +696,11 @@ GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnComma
     return GnError_Unimplemented;
 }
 
+GnQueue GnDeviceD3D12::GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept
+{
+    return &enabled_queues[queue_group_index * num_enabled_queues[queue_group_index] + queue_index];
+}
+
 // -- [GnQueueD3D12] --
 
 GnQueueD3D12::~GnQueueD3D12()
@@ -537,15 +717,15 @@ GnBufferD3D12::~GnBufferD3D12()
 
 // -- [GnCommandListD3D12] --
 
-GnCommandListD3D12::GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept
+GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandListDesc* desc, ID3D12GraphicsCommandList* cmd_list) noexcept
 {
-    draw_cmd_private_data = (void*)cmd_list; // We use this to store ID3D12CommandList to save space
+    draw_cmd_private_data = (void*)cmd_list; // We use this to store ID3D12GraphicsCommandList to save space
     draw_indexed_cmd_private_data = (void*)cmd_list;
     dispatch_cmd_private_data = (void*)cmd_list;
 
     flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
         GnCommandListD3D12* impl_cmd_list = (GnCommandListD3D12*)command_list;
-        ID3D12GraphicsCommandList* gfx_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->draw_cmd_private_data;
+        ID3D12GraphicsCommandList* d3d12_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->draw_cmd_private_data;
 
         if (impl_cmd_list->state.update_flags.graphics_pipeline) {}
 
@@ -556,7 +736,7 @@ GnCommandListD3D12::GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept
             view.SizeInBytes = (UINT)impl_index_buffer->desc.size;
             view.Format = DXGI_FORMAT_R32_UINT;
 
-            gfx_cmd_list->IASetIndexBuffer(&view);
+            d3d12_cmd_list->IASetIndexBuffer(&view);
         }
 
         if (impl_cmd_list->state.update_flags.vertex_buffers) {
@@ -572,17 +752,20 @@ GnCommandListD3D12::GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept
                 view.SizeInBytes = (uint32_t)impl_vtx_buffer->desc.size;
             }
 
-            gfx_cmd_list->IASetVertexBuffers(update_range.first, count, vtx_buffer_views);
+            d3d12_cmd_list->IASetVertexBuffers(update_range.first, count, vtx_buffer_views);
+            impl_cmd_list->state.vertex_buffer_upd_range.Flush();
         }
 
         if (impl_cmd_list->state.update_flags.blend_constants)
-            gfx_cmd_list->OMSetBlendFactor(impl_cmd_list->state.blend_constants);
+            d3d12_cmd_list->OMSetBlendFactor(impl_cmd_list->state.blend_constants);
 
         if (impl_cmd_list->state.update_flags.stencil_ref)
-            gfx_cmd_list->OMSetStencilRef(impl_cmd_list->state.stencil_ref);
+            d3d12_cmd_list->OMSetStencilRef(impl_cmd_list->state.stencil_ref);
 
-        if (impl_cmd_list->state.update_flags.viewports)
-            gfx_cmd_list->RSSetViewports(impl_cmd_list->state.viewport_upd_range.last, (D3D12_VIEWPORT*)impl_cmd_list->state.viewports);
+        if (impl_cmd_list->state.update_flags.viewports) {
+            d3d12_cmd_list->RSSetViewports(impl_cmd_list->state.viewport_upd_range.last, (D3D12_VIEWPORT*)impl_cmd_list->state.viewports);
+            impl_cmd_list->state.viewport_upd_range.Flush();
+        }
 
         if (impl_cmd_list->state.update_flags.scissors) {
             D3D12_RECT rects[16];
@@ -597,7 +780,8 @@ GnCommandListD3D12::GnCommandListD3D12(ID3D12CommandList* cmd_list) noexcept
                 rect.bottom += rect.top;
             }
 
-            gfx_cmd_list->RSSetScissorRects(impl_cmd_list->state.scissor_upd_range.last, rects);
+            d3d12_cmd_list->RSSetScissorRects(impl_cmd_list->state.scissor_upd_range.last, rects);
+            impl_cmd_list->state.scissor_upd_range.Flush();
         }
 
         impl_cmd_list->state.update_flags.u32 = 0;

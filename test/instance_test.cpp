@@ -35,7 +35,7 @@ TEST_CASE("Adapter query", "[instance]")
         REQUIRE(adapter != nullptr);
 
     adapters.clear();
-    REQUIRE(GnGetAdaptersWithCallback(instance, [&adapters](GnAdapter adapter) { adapters.push_back(adapter); }) != 0);
+    REQUIRE(GnEnumerateAdapters(instance, [&adapters](GnAdapter adapter) { adapters.push_back(adapter); }) != 0);
 
     for (auto adapter : adapters)
         REQUIRE(adapter != nullptr);
@@ -59,14 +59,13 @@ TEST_CASE("Adapter feature", "[instance]")
     uint32_t num_features = GnGetAdapterFeatureCount(adapter);
     REQUIRE(num_features != 0);
 
+    // TODO(native-m): Validate the output
     std::vector<GnFeature> features;
     features.resize(num_features);
-    uint32_t num_reported_features = GnGetAdapterFeatures(adapter, num_features, features.data());
-    REQUIRE(num_features == num_reported_features);
+    GnGetAdapterFeatures(adapter, num_features, features.data());
 
     features.clear();
-    num_reported_features = GnGetAdapterFeaturesWithCallback(adapter, [&features](GnFeature feature) { features.push_back(feature); });
-    REQUIRE(num_features == num_reported_features);
+    GnEnumerateAdapterFeatures(adapter, [&features](GnFeature feature) { features.push_back(feature); });
 
     GnDestroyInstance(instance);
 }
@@ -101,16 +100,16 @@ TEST_CASE("Adapter queues", "[instance]")
     REQUIRE(GnCreateInstance(&instance_desc, &instance) == GnSuccess);
 
     GnAdapter adapter = GnGetDefaultAdapter(instance);
-    uint32_t num_queues = GnGetAdapterQueueCount(adapter);
+    uint32_t num_queues = GnGetAdapterQueueGroupCount(adapter);
     REQUIRE(num_queues != 0);
 
     std::vector<GnQueueGroupProperties> queue_properties;
     queue_properties.resize(num_queues);
-    uint32_t num_reported_queues = GnGetAdapterQueueProperties(adapter, num_queues, queue_properties.data());
+    uint32_t num_reported_queues = GnGetAdapterQueueGroupProperties(adapter, num_queues, queue_properties.data());
     REQUIRE(num_reported_queues == num_queues);
 
     queue_properties.clear();
-    num_reported_queues = GnGetAdapterQueuePropertiesWithCallback(adapter, [&queue_properties](const GnQueueGroupProperties& feature) { queue_properties.push_back(feature); });
+    num_reported_queues = GnEnumerateAdapterQueueGroupProperties(adapter, [&queue_properties](const GnQueueGroupProperties& feature) { queue_properties.push_back(feature); });
     REQUIRE(num_queues == num_reported_queues);
 
     GnDestroyInstance(instance);

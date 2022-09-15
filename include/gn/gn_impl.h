@@ -10,6 +10,7 @@
 #include <bitset>
 #include <optional>
 #include <algorithm>
+#include <new>
 
 #ifdef NDEBUG
 #define GN_DBG_ASSERT(x)
@@ -20,9 +21,6 @@
 #define GN_CHECK(x) GN_DBG_ASSERT(x)
 
 #if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
 #include <unknwn.h>
 #elif defined(__linux__)
 #include <dlfcn.h>
@@ -30,6 +28,8 @@
 
 #ifdef _WIN32
 #include <malloc.h>
+#include <crtdbg.h>
+#define _CRTDBG_MAP_ALLOC
 #define GN_ALLOCA(size) _alloca(size)
 #else
 #define GN_ALLOCA(size) alloca(size)
@@ -37,10 +37,118 @@
 
 #define GN_MAX_QUEUE 4
 
-// The maximum number of bound resources on resource table here to prevent resource table abuse
+// The maximum number of bound resources of each type on resource table here to prevent resource table abuse
 // We may change this number in the future
 #define GN_MAX_RESOURCE_TABLE_SAMPLERS 2048u
 #define GN_MAX_RESOURCE_TABLE_DESCRIPTORS 1048576u
+
+#undef min
+#undef max
+
+template<typename T, typename T2>
+static constexpr T GnMax(T a, T2 b) noexcept
+{
+    return (a > b) ? a : b;
+}
+
+template<typename T, typename T2, typename... Rest>
+static constexpr T GnMax(T a, T2 b, Rest... rest) noexcept
+{
+    return (a > b) ? a : GnMax<T2, Rest...>(b, rest...);
+}
+
+template<typename T, typename T2, typename... Rest>
+struct GnUnionStorage
+{
+    static constexpr std::size_t size = GnMax(sizeof(T), sizeof(T2), sizeof(Rest)...);
+    static constexpr std::size_t alignment = GnMax(alignof(T), alignof(T2), alignof(Rest)...);
+    alignas(alignment) uint8_t data[size];
+};
+
+struct GnPoolHeader
+{
+    GnPoolHeader* next_pool;
+};
+
+struct GnPoolChunk
+{
+    GnPoolChunk* next_chunk;
+};
+
+// Growable pool
+template<typename T>
+struct GnPool
+{
+    GnPoolHeader* pool_begin = nullptr;
+    GnPoolHeader* pool_end = nullptr;
+    GnPoolChunk* current_allocation = nullptr;
+    std::size_t chunks_per_block;
+    std::size_t num_reserved = 0;
+    std::size_t num_allocated = 0;
+    
+    GnPool(std::size_t chunks_per_block) :
+        chunks_per_block(chunks_per_block)
+    {
+    }
+
+    void* allocate() noexcept
+    {
+        ++num_allocated;
+
+        if (num_allocated > num_reserved) {
+            _reserve_new_block();
+        }
+
+        return nullptr;
+    }
+
+    void free(void* ptr) noexcept
+    {
+        --num_allocated;
+    }
+
+    void _reserve_new_block() noexcept
+    {
+        // Make sure we have the right size and alignment
+        static constexpr std::size_t block_size = GnMax(sizeof(T), sizeof(GnPoolHeader));
+        static constexpr std::size_t block_alignment = GnMax(alignof(T), alignof(GnPoolHeader));
+        
+        // Allocate the pool
+        // One extra storage is required for the pool header. It may waste some space
+        uint8_t* pool = (uint8_t*)::operator new(block_size * (chunks_per_block + 1), std::align_val_t{block_alignment}, std::nothrow);
+
+        // Initialize the pool header
+        GnPoolHeader* pool_header = reinterpret_cast<GnPoolHeader*>(pool);
+
+        if (pool_end)
+            pool_end->next_pool = pool_header;
+        else
+            pool_begin = pool_header;
+
+        pool_end = pool_header;
+        pool_header->next_pool = nullptr;
+
+        // Initialize free list. The list is stored inside the pool storage.
+        GnPoolChunk* current_chunk = reinterpret_cast<GnPoolChunk*>(pool + block_size);
+        current_allocation = current_chunk;
+
+        for (std::size_t i = 1; i < chunks_per_block; i++) {
+            current_chunk->next_chunk = reinterpret_cast<GnPoolChunk*>(reinterpret_cast<uint8_t*>(current_chunk) + block_size);
+            current_chunk = current_chunk->next_chunk;
+        }
+
+        num_reserved += chunks_per_block;
+    }
+};
+
+template<typename ObjectTypes>
+struct GnObjectPool
+{
+    std::optional<GnPool<typename ObjectTypes::Queue>>  queue;
+    std::optional<GnPool<typename ObjectTypes::Fence>>  fence;
+};
+
+struct GnUnimplementedType {};
 
 struct GnInstance_t
 {
@@ -48,12 +156,19 @@ struct GnInstance_t
     uint32_t                num_adapters = 0;
     GnAdapter               adapters = nullptr; // Linked-list
 
-    virtual ~GnInstance_t() { }
+    virtual ~GnInstance_t()
+    {
+        _CrtMemState s1;
+        _CrtMemCheckpoint(&s1);
+        _CrtMemDumpStatistics(&s1);
+        _CrtDumpMemoryLeaks();
+    }
+
+    virtual GnResult CreateSurface(const GnSurfaceDesc* desc, GN_OUT GnSurface* surface) noexcept = 0;
 };
 
 struct GnAdapter_t
 {
-    GnInstance                      parent_instance = nullptr;
     GnAdapter_t*                    next_adapter = nullptr;
     GnAdapterProperties             properties{};
     GnAdapterLimits                 limits{};
@@ -64,21 +179,38 @@ struct GnAdapter_t
     virtual ~GnAdapter_t() { }
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
     virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
+    virtual GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept = 0;
+    virtual void GetSurfaceProperties(GnSurface surface, GN_OUT GnSurfaceProperties* properties) const noexcept = 0;
+    virtual GnResult GetSurfaceFormats(GnSurface surface, uint32_t* num_surface_formats, GN_OUT GnFormat* formats) const noexcept = 0;
+    virtual GnResult GnEnumerateSurfaceFormats(GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn) const noexcept = 0;
     virtual GnResult CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept = 0;
+};
+
+struct GnSurface_t
+{
+    virtual ~GnSurface_t() { }
 };
 
 struct GnDevice_t
 {
-    GnAdapter               parent_adapter = nullptr;
-    uint32_t                num_enabled_queue_groups = 0;
-    uint32_t                enabled_queue_ids[4]{};
+    GnAdapter   parent_adapter = nullptr;
+    uint32_t    num_enabled_queue_groups = 0;
+    uint32_t    num_enabled_queues[4]{}; // Number of enabled queues for each queue group.
+    uint32_t    total_enabled_queues = 0;
 
     virtual ~GnDevice_t() { }
 
+    virtual GnResult CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept = 0;
     virtual GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept = 0;
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
     virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
+    virtual GnQueue GetQueue(uint32_t queue_group_id, uint32_t queue_index) noexcept = 0;
+};
+
+struct GnSwapchain_t
+{
+    virtual ~GnSwapchain_t() { }
 };
 
 struct GnQueue_t
@@ -106,9 +238,7 @@ struct GnTexture_t
 
 struct GnCommandPool_t
 {
-    
-    GnCommandList           command_lists; // linked-list
-
+    GnCommandList command_lists; // linked-list
 };
 
 struct GnUpdateRange
@@ -148,7 +278,7 @@ struct GnUpdateRange
     }
 };
 
-// We track state changes to reduce redundant state changes calls
+// We track and apply state changes later when drawing or dispatching to reduce redundant state changes calls
 struct GnCommandListState
 {
     enum
@@ -346,7 +476,7 @@ uint32_t GnGetAdapters(GnInstance instance, uint32_t num_adapters, GN_OUT GnAdap
     return i;
 }
 
-uint32_t GnGetAdaptersWithCallback(GnInstance instance, void* userdata, GnGetAdapterCallbackFn callback_fn)
+uint32_t GnEnumerateAdapters(GnInstance instance, void* userdata, GnGetAdapterCallbackFn callback_fn)
 {
     if (instance->adapters == nullptr)
         return 0;
@@ -392,7 +522,7 @@ uint32_t GnGetAdapterFeatureCount(GnAdapter adapter)
     return n;
 }
 
-uint32_t GnGetAdapterFeatures(GnAdapter adapter, uint32_t num_features, GnFeature* features)
+void GnGetAdapterFeatures(GnAdapter adapter, uint32_t num_features, GnFeature* features)
 {
     uint32_t n = 0;
 
@@ -404,21 +534,14 @@ uint32_t GnGetAdapterFeatures(GnAdapter adapter, uint32_t num_features, GnFeatur
 
         n++;
     }
-
-    return n;
 }
 
-uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterFeatureCallbackFn callback_fn)
+void GnEnumerateAdapterFeatures(GnAdapter adapter, void* userdata, GnGetAdapterFeatureCallbackFn callback_fn)
 {
-    uint32_t n = 0;
-
     for (uint32_t i = 0; i < GnFeature_Count; i++) {
         if (!adapter->features[i]) continue;
         callback_fn(userdata, (GnFeature)i);
-        n++;
     }
-
-    return n;
 }
 
 GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature)
@@ -445,25 +568,75 @@ GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format)
     return adapter->IsVertexFormatSupported(format);
 }
 
-uint32_t GnGetAdapterQueueCount(GnAdapter adapter)
+uint32_t GnGetAdapterQueueGroupCount(GnAdapter adapter)
 {
     return adapter->num_queue_groups;
 }
 
-uint32_t GnGetAdapterQueueProperties(GnAdapter adapter, uint32_t num_queues, GnQueueGroupProperties* queue_properties)
+void GnGetAdapterQueueGroupProperties(GnAdapter adapter, uint32_t num_queues, GnQueueGroupProperties* queue_properties)
 {
     uint32_t n = std::min(num_queues, adapter->num_queue_groups);
     std::memcpy(queue_properties, adapter->queue_group_properties, sizeof(GnQueueGroupProperties) * n);
-    return n;
 }
 
-uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterQueuePropertiesCallbackFn callback_fn)
+void GnEnumerateAdapterQueueGroupProperties(GnAdapter adapter, void* userdata, GnGetAdapterQueueGroupPropertiesCallbackFn callback_fn)
 {
     for (uint32_t i = 0; i < adapter->num_queue_groups; i++) {
         callback_fn(userdata, &adapter->queue_group_properties[i]);
     }
+}
 
-    return adapter->num_queue_groups;
+// -- [GnSurface] --
+
+GnResult GnCreateSurface(GnInstance instance, const GnSurfaceDesc* desc, GN_OUT GnSurface* surface)
+{
+    if (desc == nullptr) return GnError_InvalidArgs;
+    return instance->CreateSurface(desc, surface);
+}
+
+void GnDestroySurface(GnSurface surface)
+{
+    delete surface;
+}
+
+GnBool GnIsSurfacePresentationSupported(GnAdapter adapter, uint32_t queue_group_index, GnSurface surface)
+{
+    return adapter->IsSurfacePresentationSupported(queue_group_index, surface);
+}
+
+void GnEnumeratePresentationQueueGroup(GnAdapter adapter, GnSurface surface, void* userdata, GnGetAdapterQueueGroupPropertiesCallbackFn callback_fn)
+{
+    for (uint32_t i = 0; i < adapter->num_queue_groups; i++) {
+        if (adapter->IsSurfacePresentationSupported(i, surface)) {
+            callback_fn(userdata, &adapter->queue_group_properties[i]);
+        }
+    }
+}
+
+void GnGetSurfaceProperties(GnAdapter adapter, GnSurface surface, GN_OUT GnSurfaceProperties* properties)
+{
+    adapter->GetSurfaceProperties(surface, properties);
+}
+
+uint32_t GnGetSurfaceFormatCount(GnAdapter adapter, GnSurface surface)
+{
+    uint32_t num_surface_formats = 0;
+    adapter->GetSurfaceFormats(surface, &num_surface_formats, nullptr);
+    return num_surface_formats;
+}
+
+GnResult GnGetSurfaceFormats(GnAdapter adapter, GnSurface surface, uint32_t num_surface_formats, GN_OUT GnFormat* formats)
+{
+    return adapter->GetSurfaceFormats(surface, &num_surface_formats, formats);
+}
+
+GnResult GnEnumerateSurfaceFormats(GnAdapter adapter, GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn)
+{
+    if (adapter == nullptr || surface == nullptr || callback_fn == nullptr) {
+        return GnError_InvalidArgs;
+    }
+
+    return adapter->GnEnumerateSurfaceFormats(surface, userdata, callback_fn);
 }
 
 // -- [GnDevice] --
@@ -472,53 +645,59 @@ bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, GN
 {
     bool error = false;
 
-    if (adapter == nullptr) error = true;
+    if (adapter == nullptr) return true;
 
-    // Validate queue IDs
+    if (device == nullptr) return true;
+
+    // Validate enabled queue group desc.
     if (desc != nullptr && desc->num_enabled_queue_groups > 0 && desc->queue_group_descs != nullptr) {
-        if (desc->num_enabled_queue_groups > adapter->num_queue_groups)
-            error = true;
+        if (desc->num_enabled_queue_groups <= adapter->num_queue_groups)
+            return false;
 
-        uint32_t group_ids[GN_MAX_QUEUE];
+        uint32_t group_index[GN_MAX_QUEUE];
 
         for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
-            group_ids[i] = desc->queue_group_descs[i].id;
+            group_index[i] = desc->queue_group_descs[i].index;
         }
 
-        // check if each queue group id is valid
-        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++)
-            for (uint32_t j = 0; j < adapter->num_queue_groups; j++)
-                if (group_ids[i] == adapter->queue_group_properties[j].id)
+        // Check if each queue group index is valid
+        bool has_invalid_index = false;
+        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
+            if (group_index[i] > adapter->num_queue_groups - 1) {
+                has_invalid_index = true;
+                error = error || true;
+            }
+        }
+
+        // Check if each queue count is valid
+        if (!has_invalid_index) {
+            for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
+                GnQueueGroupProperties& queue_group_properties = adapter->queue_group_properties[group_index[i]];
+                if (desc->queue_group_descs[i].num_enabled_queues == 0 ||
+                    desc->queue_group_descs[i].num_enabled_queues > queue_group_properties.num_queues)
                 {
                     error = error || true;
                     break;
                 }
-
-        // check if each queue count is valid
-        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
-            GnQueueGroupProperties& queue_group_properties = adapter->queue_group_properties[group_ids[i]];
-            if (desc->queue_group_descs[i].num_enabled_queues <= queue_group_properties.num_queues) {
-                error = error || true;
-                break;
             }
         }
 
-        // check if each queue group ID is unique
-        auto begin_group_id = group_ids;
-        auto end_group_id = &group_ids[desc->num_enabled_queue_groups];
-        std::sort(begin_group_id, end_group_id);
-        if (std::unique(begin_group_id, end_group_id) != end_group_id)
-            error = true;
+        // Check if each queue group index is unique
+        if (desc->num_enabled_queue_groups > 1) {
+            auto begin_group_id = group_index;
+            auto end_group_id = &group_index[desc->num_enabled_queue_groups];
+            std::sort(begin_group_id, end_group_id);
+            if (std::unique(begin_group_id, end_group_id) != end_group_id)
+                error = true;
+        }
     }
-
-    if (device == nullptr) error = true;
 
     return error;
 }
 
 GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device)
 {
-    if (GnValidateCreateDeviceParam(adapter, desc, device)) return GnError_InitializationFailed;
+    if (GnValidateCreateDeviceParam(adapter, desc, device)) return GnError_InvalidArgs;
 
     GnDeviceDesc tmp_desc{};
     GnQueueGroupDesc queue_groups[4]{};
@@ -530,7 +709,7 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDe
         // enable all queues implicitly
         tmp_desc.num_enabled_queue_groups = adapter->num_queue_groups;
         for (uint32_t i = 0; i < adapter->num_queue_groups; i++) {
-            queue_groups[i].id = adapter->queue_group_properties[i].id;
+            queue_groups[i].index = adapter->queue_group_properties[i].index;
             queue_groups[i].num_enabled_queues = adapter->queue_group_properties[i].num_queues;
         }
         tmp_desc.queue_group_descs = queue_groups;
@@ -548,29 +727,34 @@ GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDe
 
 void GnDestroyDevice(GnDevice device)
 {
-    device->~GnDevice_t();
-    std::free(device);
+    delete device;
+}
+
+// -- [GnSwapchain] --
+
+GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain)
+{
+    return GnError_Unimplemented;
+}
+
+void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain)
+{
+
 }
 
 // -- [GnQueue] --
 
-bool GnValidateCreateQueueParam(GnDevice device, uint32_t queue_index, GN_OUT GnQueue* queue)
+GnQueue GnGetDeviceQueue(GnDevice device, uint32_t queue_group_index, uint32_t queue_index)
 {
-    bool error = false;
+    if (queue_group_index > device->num_enabled_queue_groups - 1) {
+        return nullptr;
+    }
 
-    if (device == nullptr) error = true;
+    if (queue_index > device->num_enabled_queues[queue_group_index]) {
+        return nullptr;
+    }
 
-    bool found = false;
-    for (uint32_t i = 0; i < device->num_enabled_queue_groups; i++)
-        if (queue_index == device->enabled_queue_ids[i]) {
-            found = true;
-            break;
-        }
-    error = !found;
-
-    if (queue == nullptr) error = true;
-
-    return error;
+    return device->GetQueue(queue_group_index, queue_index);
 }
 
 // -- [GnFence] --
@@ -585,14 +769,14 @@ bool GnValidateCreateFenceParam(GnDevice device, GnFenceType type, bool signaled
 
 GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence)
 {
-    if (GnValidateCreateFenceParam(device, type, signaled, fence)) return GnError_InitializationFailed;
+    if (GnValidateCreateFenceParam(device, type, signaled, fence)) return GnError_InvalidArgs;
     return device->CreateFence(type, signaled, fence);
 }
 
-void GnDestroyFence(GnFence fence)
+void GnDestroyFence(GnDevice device, GnFence fence)
 {
-    fence->~GnFence_t();
-    std::free(fence);
+    //fence->~GnFence_t();
+    //std::free(fence);
 }
 
 GnResult GnGetFenceStatus(GnFence fence)
@@ -688,6 +872,7 @@ void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t first_
 
 void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset)
 {
+    // Don't update if it's the same
     if (index_buffer == command_list->state.index_buffer || offset == command_list->state.index_buffer_offset) return;
     command_list->state.index_buffer = index_buffer;
     command_list->state.index_buffer_offset = offset;
@@ -696,13 +881,14 @@ void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDe
 
 void GnCmdSetVertexBuffer(GnCommandList command_list, uint32_t slot, GnBuffer vertex_buffer, GnDeviceSize offset)
 {
-    GnBuffer& target_vertex_buffer = command_list->state.vertex_buffers[slot];
-    GnDeviceSize& target_buffer_offset = command_list->state.vertex_buffer_offsets[slot];
+    GnBuffer& old_vertex_buffer = command_list->state.vertex_buffers[slot];
+    GnDeviceSize& old_buffer_offset = command_list->state.vertex_buffer_offsets[slot];
 
-    if (vertex_buffer == target_vertex_buffer || offset == target_buffer_offset) return;
+    // Don't update if it's the same
+    if (vertex_buffer == old_vertex_buffer || offset == old_buffer_offset) return;
 
-    target_vertex_buffer = vertex_buffer;
-    target_buffer_offset = offset;
+    old_vertex_buffer = vertex_buffer;
+    old_buffer_offset = offset;
     command_list->state.vertex_buffer_upd_range.Update(slot);
     command_list->state.update_flags.vertex_buffers = true;
 }

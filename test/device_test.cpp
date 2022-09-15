@@ -16,19 +16,19 @@ TEST_CASE("Create device", "[device]")
     GnAdapter adapter = GnGetDefaultAdapter(instance);
 
     std::vector<GnFeature> features;
-    GnGetAdapterFeaturesWithCallback(adapter, [&features](GnFeature feature) { features.push_back(feature); });
+    GnEnumerateAdapterFeatures(adapter, [&features](GnFeature feature) { features.push_back(feature); });
 
-    std::vector<uint32_t> enabled_queue_ids;
-    GnGetAdapterQueuePropertiesWithCallback(adapter,
-                                            [&enabled_queue_ids](const GnQueueGroupProperties& queue_properties) {
-                                                enabled_queue_ids.push_back(queue_properties.id);
-                                            });
+    std::vector<uint32_t> enabled_queue_index;
+    GnEnumerateAdapterQueueGroupProperties(adapter,
+                                           [&enabled_queue_index](const GnQueueGroupProperties& queue_properties) {
+                                               enabled_queue_index.push_back(queue_properties.index);
+                                           });
 
     SECTION("Create device")
     {
-        GnDeviceDesc desc;
-        desc.num_enabled_queues = (uint32_t)enabled_queue_ids.size();
-        desc.enabled_queue_ids = enabled_queue_ids.data();
+        GnDeviceDesc desc{};
+        //desc.num_enabled_queues = (uint32_t)enabled_queue_index.size();
+        //desc.enabled_queue_ids = enabled_queue_index.data();
         desc.num_enabled_features = (uint32_t)features.size();
         desc.enabled_features = features.data();
 
@@ -71,17 +71,13 @@ TEST_CASE("Create queue", "[device]")
     GnDevice device;
     REQUIRE(GnCreateDevice(adapter, nullptr, &device) == GnSuccess);
 
-    uint32_t queue_id = 0;
-    GnGetAdapterQueuePropertiesWithCallback(adapter,
-                                            [&queue_id](const GnQueueGroupProperties& queue_properties) {
+    uint32_t queue_index = 0;
+    GnEnumerateAdapterQueueGroupProperties(adapter,
+                                            [&queue_index](const GnQueueGroupProperties& queue_properties) {
                                                 if (queue_properties.type == GnQueueType_Direct)
-                                                    queue_id = queue_properties.id;
+                                                    queue_index = queue_properties.index;
                                             });
     
-    GnQueue queue;
-    REQUIRE(GnCreateQueue(device, queue_id, &queue) == GnSuccess);
-
-    GnDestroyQueue(queue);
     GnDestroyDevice(device);
     GnDestroyInstance(instance);
 }

@@ -20,6 +20,10 @@
 #define GN_FPTR
 #endif
 
+#if defined(_WIN32)
+#include <Windows.h>
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -27,11 +31,14 @@ extern "C"
 
 typedef struct GnInstance_t* GnInstance;
 typedef struct GnAdapter_t* GnAdapter;
+typedef struct GnSurface_t* GnSurface;
 typedef struct GnDevice_t* GnDevice;
 typedef struct GnQueue_t* GnQueue;
 typedef struct GnFence_t* GnFence;
 typedef struct GnBuffer_t* GnBuffer;
 typedef struct GnTexture_t* GnTexture;
+typedef struct GnTextureView_t* GnTextureView;
+typedef struct GnSwapchain_t* GnSwapchain;
 typedef struct GnRenderPass_t* GnRenderPass;
 typedef struct GnResourceTableLayout_t* GnResourceTableLayout;
 typedef struct GnPipelineLayout_t* GnPipelineLayout;
@@ -49,7 +56,7 @@ typedef enum
     GnSuccess,
     GnError_Unknown,
     GnError_Unimplemented,
-    GnError_InitializationFailed,
+    GnError_InvalidArgs,
     GnError_BackendNotAvailable,
     GnError_NoAdapterAvailable,
     GnError_UnsupportedFeature,
@@ -81,7 +88,7 @@ void GnDestroyInstance(GnInstance instance);
 GnAdapter GnGetDefaultAdapter(GnInstance instance);
 uint32_t GnGetAdapterCount(GnInstance instance);
 uint32_t GnGetAdapters(GnInstance instance, uint32_t num_adapters, GN_OUT GnAdapter* adapters);
-uint32_t GnGetAdaptersWithCallback(GnInstance instance, void* userdata, GnGetAdapterCallbackFn callback_fn);
+uint32_t GnEnumerateAdapters(GnInstance instance, void* userdata, GnGetAdapterCallbackFn callback_fn);
 GnBackend GnGetBackend(GnInstance instance);
 
 typedef enum
@@ -99,6 +106,7 @@ typedef enum
     GnFeature_TextureCubeArray,
     GnFeature_NativeMultiDrawIndirect,
     GnFeature_DrawIndirectFirstInstance,
+    GnFeature_IndependentBlend,
     GnFeature_Count,
 } GnFeature;
 
@@ -250,30 +258,123 @@ typedef struct
 
 typedef struct
 {
-    uint32_t    id;
+    uint32_t    index;
     GnQueueType type;
     uint32_t    num_queues;
     GnBool      timestamp_query_supported;
 } GnQueueGroupProperties;
 
 typedef void (*GnGetAdapterFeatureCallbackFn)(void* userdata, GnFeature feature);
-typedef void (*GnGetAdapterQueuePropertiesCallbackFn)(void* userdata, const GnQueueGroupProperties* queue_properties);
+typedef void (*GnGetAdapterQueueGroupPropertiesCallbackFn)(void* userdata, const GnQueueGroupProperties* queue_properties);
 
 void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties);
 void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits);
 uint32_t GnGetAdapterFeatureCount(GnAdapter adapter);
-uint32_t GnGetAdapterFeatures(GnAdapter adapter, uint32_t num_features, GnFeature* features);
-uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterFeatureCallbackFn callback_fn);
+void GnGetAdapterFeatures(GnAdapter adapter, uint32_t num_features, GnFeature* features);
+void GnEnumerateAdapterFeatures(GnAdapter adapter, void* userdata, GnGetAdapterFeatureCallbackFn callback_fn);
 GnBool GnIsAdapterFeaturePresent(GnAdapter adapter, GnFeature feature);
 GnTextureFormatFeatureFlags GnGetTextureFormatFeatureSupport(GnAdapter adapter, GnFormat format);
 GnBool GnIsVertexFormatSupported(GnAdapter adapter, GnFormat format);
-uint32_t GnGetAdapterQueueCount(GnAdapter adapter);
-uint32_t GnGetAdapterQueueProperties(GnAdapter adapter, uint32_t num_queues, GnQueueGroupProperties* queue_properties);
-uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, void* userdata, GnGetAdapterQueuePropertiesCallbackFn callback_fn);
+uint32_t GnGetAdapterQueueGroupCount(GnAdapter adapter);
+void GnGetAdapterQueueGroupProperties(GnAdapter adapter, uint32_t num_queues, GnQueueGroupProperties* queue_properties);
+void GnEnumerateAdapterQueueGroupProperties(GnAdapter adapter, void* userdata, GnGetAdapterQueueGroupPropertiesCallbackFn callback_fn);
+
+typedef enum
+{
+    GnSurfaceType_Win32,
+    GnSurfaceType_UWP,
+    GnSurfaceType_Android,
+    GnSurfaceType_SDL,
+} GnSurfaceType;
+
+typedef enum
+{
+    GnTextureUsage_CopySrc = 1 << 0,
+    GnTextureUsage_CopyDst = 1 << 1,
+    GnTextureUsage_BlitSrc = 1 << 2,
+    GnTextureUsage_BlitDst = 1 << 3,
+    GnTextureUsage_Sampled = 1 << 4,
+    GnTextureUsage_Storage = 1 << 5,
+    GnTextureUsage_ColorAttachment = 1 << 6,
+    GnTextureUsage_DepthStencilAttachment = 1 << 7,
+} GnTextureUsage;
+typedef uint32_t GnTextureUsageFlags;
 
 typedef struct
 {
-    uint32_t id;
+    GnSurfaceType   type;
+    union
+    {
+#if defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_DESKTOP_APP)
+        HWND                    hwnd;
+#endif
+#if defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_APP)
+        IUnknown*               core_window;
+#endif
+#if defined(__ANDROID__)
+        struct ANativeWindow*   a_native_window;
+#endif
+#ifdef __APPLE__
+        struct
+        {
+
+        } metal;
+#endif
+// Linux fuckery
+#ifdef GN_USE_DIRECTFB
+        struct
+        {
+            IDirectFB*          dfb;
+            IDirectFBSurface*   surface;
+        } directfb;
+#endif
+#ifdef GN_USE_XCB
+        struct
+        {
+            xcb_connection_t*   connection;
+            xcb_window_t        window;
+        } xcb;
+#endif
+#ifdef GN_USE_XLIB
+        struct
+        {
+            Display*            dpy;
+            Window              window;
+        } xlib;
+#endif
+#ifdef GN_USE_WAYLAND
+        struct
+        {
+            struct wl_display*  display;
+            struct wl_surface*  surface;
+        } wayland;
+#endif
+    };
+} GnSurfaceDesc;
+
+typedef struct
+{
+    uint32_t            width;
+    uint32_t            height;
+    uint32_t            max_buffers;
+    uint32_t            min_buffers;
+    bool                immediate_presentable;
+} GnSurfaceProperties;
+
+typedef void (*GnGetSurfaceFormatCallbackFn)(void* userdata, GnFormat format);
+
+GnResult GnCreateSurface(GnInstance instance, const GnSurfaceDesc* desc, GN_OUT GnSurface* surface);
+void GnDestroySurface(GnSurface surface);
+GnBool GnIsSurfacePresentationSupported(GnAdapter adapter, uint32_t queue_group_index, GnSurface surface);
+void GnEnumeratePresentationQueueGroup(GnAdapter adapter, GnSurface surface, void* userdata, GnGetAdapterQueueGroupPropertiesCallbackFn callback_fn);
+void GnGetSurfaceProperties(GnAdapter adapter, GnSurface surface, GN_OUT GnSurfaceProperties* properties);
+uint32_t GnGetSurfaceFormatCount(GnAdapter adapter, GnSurface surface);
+GnResult GnGetSurfaceFormats(GnAdapter adapter, GnSurface surface, uint32_t num_surface_formats, GN_OUT GnFormat* formats);
+GnResult GnEnumerateSurfaceFormats(GnAdapter adapter, GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn);
+
+typedef struct
+{
+    uint32_t index;
     uint32_t num_enabled_queues;
 } GnQueueGroupDesc;
 
@@ -287,21 +388,20 @@ typedef struct
 
 GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device);
 void GnDestroyDevice(GnDevice device);
+GnQueue GnGetDeviceQueue(GnDevice device, uint32_t queue_group_index, uint32_t queue_index);
 
 typedef struct
 {
-    uint32_t                num_wait_fences;
-    const GnFence*          wait_fences;
-    uint32_t                num_command_lists;
-    const GnCommandList*    command_lists;
-    uint32_t                num_signal_fences;
-    const GnFence*          signal_fences;
-} GnSubmission;
+    GnSurface   surface;
+    GnFormat    format;
+    uint32_t    width;
+    uint32_t    height;
+    uint32_t    num_buffers;
+    bool        vsync;
+} GnSwapchainDesc;
 
-GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions, GnFence signal_host_fence);
-GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions);
-GnResult GnQueuePresent(GnQueue queue);
-void GnWaitQueue(GnQueue queue);
+GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain);
+void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain);
 
 typedef enum
 {
@@ -310,7 +410,7 @@ typedef enum
 } GnFenceType;
 
 GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence);
-void GnDestroyFence(GnFence fence);
+void GnDestroyFence(GnDevice device, GnFence fence);
 GnResult GnGetFenceStatus(GnFence fence);
 GnResult GnWaitFence(GnFence fence, uint64_t timeout);
 void GnResetFence(GnFence fence);
@@ -335,7 +435,7 @@ typedef struct
 } GnBufferDesc;
 
 GnResult GnCreateBuffer(GnDevice device, const GnBufferDesc* desc, GN_OUT GnBuffer* buffer);
-void GnDestroyBuffer(GnBuffer buffer);
+void GnDestroyBuffer(GnDevice device, GnBuffer buffer);
 void GnGetBufferDesc(GnBuffer buffer, GN_OUT GnBufferDesc* texture_desc);
 
 typedef enum
@@ -344,19 +444,6 @@ typedef enum
     GnTextureType_2D,
     GnTextureType_3D,
 } GnTextureType;
-
-typedef enum
-{
-    GnTextureUsage_CopySrc = 1 << 0,
-    GnTextureUsage_CopyDst = 1 << 1,
-    GnTextureUsage_BlitSrc = 1 << 2,
-    GnTextureUsage_BlitDst = 1 << 3,
-    GnTextureUsage_Sampled = 1 << 4,
-    GnTextureUsage_Storage = 1 << 5,
-    GnTextureUsage_ColorAttachment = 1 << 6,
-    GnTextureUsage_DepthStencilAttachment = 1 << 7,
-} GnTextureUsage;
-typedef uint32_t GnTextureUsageFlags;
 
 typedef struct
 {
@@ -372,8 +459,17 @@ typedef struct
 } GnTextureDesc;
 
 GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GN_OUT GnTexture* texture);
-void GnDestroyTexture(GnTexture texture);
+void GnDestroyTexture(GnDevice device, GnTexture texture);
 void GnGetTextureDesc(GnTexture texture, GN_OUT GnTextureDesc* texture_desc);
+
+typedef struct
+{
+    GnTexture   texture;
+
+} GnTextureViewDesc;
+
+GnResult GnCreateTextureView(GnDevice device, const GnTextureViewDesc* desc, GN_OUT GnTextureView* texture_view);
+void GnDestroyTextureView(GnDevice device, GnTextureView texture);
 
 typedef struct
 {
@@ -381,12 +477,222 @@ typedef struct
 } GnRenderPassDesc;
 
 GnResult GnCreateRenderPass(GnDevice device, const GnRenderPassDesc* desc, GN_OUT GnRenderPass* render_pass);
-void GnDestroyRenderPass(GnRenderPass render_pass);
+void GnDestroyRenderPass(GnDevice device, GnRenderPass render_pass);
+
+typedef enum
+{
+    GnPrimitiveTopology_PointList,
+    GnPrimitiveTopology_LineList,
+    GnPrimitiveTopology_LineStrip,
+    GnPrimitiveTopology_TriangleList,
+    GnPrimitiveTopology_TriangleStrip,
+    GnPrimitiveTopology_LineListAdj,
+    GnPrimitiveTopology_LineStripAdj,
+    GnPrimitiveTopology_TriangleListAdj,
+    GnPrimitiveTopology_TriangleStripAdj,
+} GnPrimitiveTopology;
+
+typedef enum
+{
+    GnPolygonMode_Fill,
+    GnPolygonMode_Line,
+    GnPolygonMode_Point,
+} GnPolygonMode;
+
+typedef enum
+{
+    GnCullMode_None,
+    GnCullMode_Front,
+    GnCullMode_Back,
+} GnCullMode;
+
+typedef enum
+{
+    GnCompareOp_Never,
+    GnCompareOp_Less,
+    GnCompareOp_Equal,
+    GnCompareOp_LessOrEqual,
+    GnCompareOp_Greater,
+    GnCompareOp_GreaterOrEqual,
+    GnCompareOp_Always,
+} GnCompareOp;
+
+typedef enum
+{
+    GnStencilOp_Keep,
+    GnStencilOp_Zero,
+    GnStencilOp_Replace,
+    GnStencilOp_IncrementClamp,
+    GnStencilOp_DecrementClamp,
+    GnStencilOp_Invert,
+    GnStencilOp_Increment,
+    GnStencilOp_Decrement,
+} GnStencilOp;
+
+typedef enum
+{
+    GnBlendFactor_Zero,
+    GnBlendFactor_One,
+    GnBlendFactor_SrcColor,
+    GnBlendFactor_InvSrcColor,
+    GnBlendFactor_DstColor,
+    GnBlendFactor_InvDstColor,
+    GnBlendFactor_SrcAlpha,
+    GnBlendFactor_InvSrcAlpha,
+    GnBlendFactor_DstAlpha,
+    GnBlendFactor_InvDstAlpha,
+    GnBlendFactor_SrcAlphaSaturate,
+    GnBlendFactor_BlendConstant,
+    GnBlendFactor_InvBlendConstant,
+} GnBlendFactor;
+
+typedef enum
+{
+    GnBlendOp_Add,
+    GnBlendOp_Subtract,
+    GnBlendOp_RevSubtract,
+    GnBlendOp_Max,
+    GnBlendOp_Min,
+} GnBlendOp;
+
+typedef enum
+{
+    GnColorComponent_Red        = 1 << 0,
+    GnColorComponent_Green      = 1 << 1,
+    GnColorComponent_Blue       = 1 << 2,
+    GnColorComponent_Alpha      = 1 << 3,
+    GnColorComponent_ColorOnly  = GnColorComponent_Red | GnColorComponent_Green | GnColorComponent_Blue,
+    GnColorComponent_All        = GnColorComponent_ColorOnly | GnColorComponent_Alpha,
+} GnColorComponent;
+typedef uint32_t GnColorComponentFlags;
+
+typedef enum
+{
+    GnPipelineStreamTokenType_VS,
+    GnPipelineStreamTokenType_FS,
+    GnPipelineStreamTokenType_VertexAttribute,
+    GnPipelineStreamTokenType_InputAssembly,
+    GnPipelineStreamTokenType_RasterizationState,
+    GnPipelineStreamTokenType_DepthStencilState,
+    GnPipelineStreamTokenType_MultisampleState,
+    GnPipelineStreamTokenType_AttachmentBlendState,
+    GnPipelineStreamTokenType_EnableIndependentBlend,
+} GnPipelineStreamTokenType;
 
 typedef struct
 {
-    // TODO
+    size_t      size;
+    const void* bytecode;
+} GnShaderBytecode;
+
+typedef struct
+{
+
+} GnVertexAttributeDesc;
+
+typedef struct
+{
+    uint32_t                        num_attributes;
+    const GnVertexAttributeDesc*    attributes;
+} GnPipelineVertexInputDesc;
+
+typedef struct
+{
+    GnPrimitiveTopology topology;
+    GnBool              primitive_restart_enable;
+} GnPipelineInputAssemblyDesc;
+
+typedef struct
+{
+    GnPolygonMode   polygon_mode;
+    GnCullMode      cull_mode;
+    GnBool          frontface_ccw;
+    GnBool          unclipped_depth;
+    int             depth_bias;
+    float           depth_bias_clamp;
+    float           depth_bias_slope_scale;
+} GnPipelineRasterizationStateDesc;
+
+typedef struct
+{
+    GnStencilOp fail_op;
+    GnStencilOp pass_op;
+    GnStencilOp depth_fail_op;
+    GnCompareOp compare_op;
+} GnStencilFaceDesc;
+
+typedef struct
+{
+    GnBool              depth_write;
+    GnBool              depth_test;
+    GnCompareOp         depth_compare_op;
+    GnBool              stencil_test;
+    uint32_t            stencil_read_mask;
+    uint32_t            stencil_write_mask;
+    GnStencilFaceDesc   front;
+    GnStencilFaceDesc   back;
+} GnPipelineDepthStencilStateDesc;
+
+typedef struct
+{
+    uint32_t    num_samples;
+    uint32_t    sample_mask;
+    GnBool      alpha_to_coverage;
+} GnPipelineMultisampleDesc;
+
+typedef struct
+{
+    GnBool                  blend_enable;
+    GnBlendFactor           src_color_blend_factor;
+    GnBlendFactor           dst_color_blend_factor;
+    GnBlendOp               color_blend_op;
+    GnBlendFactor           src_alpha_blend_factor;
+    GnBlendFactor           dst_alpha_blend_factor;
+    GnBlendOp               alpha_blend_op;
+    GnColorComponentFlags   color_write_mask;
+} GnColorAttachmentBlendStateDesc;
+
+typedef struct
+{
+    GnBool                              independent_blend;
+    uint32_t                            num_color_attachments;
+    GnColorAttachmentBlendStateDesc*    color_attachments;
+} GnPipelineBlendStateDesc;
+
+typedef struct
+{
+    const GnShaderBytecode*                 vs;
+    const GnShaderBytecode*                 fs;
+    const GnPipelineVertexInputDesc*        vertex_input;
+    const GnPipelineInputAssemblyDesc*      input_assembly;
+    const GnPipelineRasterizationStateDesc* rasterization;
+    const GnPipelineDepthStencilStateDesc*  depth_stencil;
+    const GnPipelineMultisampleDesc*        multisample;
+    const GnPipelineBlendStateDesc*         blend;
 } GnGraphicsPipelineDesc;
+
+typedef struct
+{
+    GnPipelineStreamTokenType type;
+    union
+    {
+        GnShaderBytecode                    vs;
+        GnShaderBytecode                    fs;
+        GnVertexAttributeDesc               vertex_attribute;
+        GnPipelineInputAssemblyDesc         input_assembly;
+        GnPipelineRasterizationStateDesc    rasterization;
+        GnPipelineDepthStencilStateDesc     depth_stencil;
+        GnPipelineMultisampleDesc           multisample;
+        GnColorAttachmentBlendStateDesc     attachment_blend;
+    } token;
+} GnPipelineStreamToken;
+
+typedef struct
+{
+    size_t      stream_size;
+    const void* stream_data;
+    bool        tight_stream;
+} GnPipelineStreamDesc;
 
 typedef struct
 {
@@ -394,8 +700,10 @@ typedef struct
 } GnComputePipelineDesc;
 
 GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GN_OUT GnPipeline* graphics_pipeline);
+GnResult GnCreateGraphicsPipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GN_OUT GnPipeline* graphics_pipeline);
 GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* desc, GN_OUT GnPipeline* compute_pipeline);
-void GnDestroyPipeline(GnPipeline pipeline);
+GnResult GnCreateComputePipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GN_OUT GnPipeline* compute_pipeline);
+void GnDestroyPipeline(GnDevice device, GnPipeline pipeline);
 
 typedef enum
 {
@@ -428,7 +736,7 @@ typedef struct
 } GnCommandListDesc;
 
 GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GN_OUT GnCommandPool* command_pool);
-void GnDestroyCommandPool(GnCommandPool command_pool);
+void GnDestroyCommandPool(GnDevice device, GnCommandPool command_pool);
 void GnTrimCommandPool(GnCommandPool command_pool);
 
 typedef enum
@@ -451,7 +759,7 @@ typedef struct
 } GnCommandListBeginDesc;
 
 GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GN_OUT GnCommandList* command_lists);
-void GnDestroyCommandList(GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
+void GnDestroyCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
 GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc);
 GnResult GnEndCommandList(GnCommandList command_list);
 GnBool GnIsRecordingCommandList(GnCommandList command_list);
@@ -552,6 +860,21 @@ void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTextu
 void GnCmdBarrier(GnCommandList command_list);
 void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles);
 
+typedef struct
+{
+    uint32_t                num_wait_fences;
+    const GnFence*          wait_fences;
+    uint32_t                num_command_lists;
+    const GnCommandList*    command_lists;
+    uint32_t                num_signal_fences;
+    const GnFence*          signal_fences;
+} GnSubmission;
+
+GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions, GnFence signal_host_fence);
+GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions); // Perform blocking operation.
+GnResult GnQueuePresent(GnQueue queue);
+void GnWaitQueue(GnQueue queue);
+
 // [HELPERS]
 
 typedef struct
@@ -578,37 +901,58 @@ GnAdapter GnFirstAdapter(const GnAdapterQuery* query);
 #endif
 
 #ifdef __cplusplus
-// C++ std::function wrapper for GnGetAdaptersWithCallback
-static uint32_t GnGetAdaptersWithCallback(GnInstance instance, std::function<void(GnAdapter)> callback_fn) noexcept
+// C++ std::function wrapper for GnEnumerateAdapters
+static void GnEnumerateAdapters(GnInstance instance, std::function<void(GnAdapter)> callback_fn) noexcept
 {
     auto wrapper_fn = [](void* userdata, GnAdapter adapter) {
         const auto& fn = *static_cast<std::function<void(GnAdapter)>*>(userdata);
         fn(adapter);
     };
 
-    return GnGetAdaptersWithCallback(instance, static_cast<void*>(&callback_fn), wrapper_fn);
+    GnEnumerateAdapters(instance, static_cast<void*>(&callback_fn), wrapper_fn);
 }
 
-// C++ std::function wrapper for GnGetAdapterFeaturesWithCallback
-static uint32_t GnGetAdapterFeaturesWithCallback(GnAdapter adapter, std::function<void(GnFeature)> callback_fn) noexcept
+// C++ std::function wrapper for GnEnumerateAdapterFeatures
+static void GnEnumerateAdapterFeatures(GnAdapter adapter, std::function<void(GnFeature)> callback_fn) noexcept
 {
     auto wrapper_fn = [](void* userdata, GnFeature feature) {
         const auto& fn = *static_cast<std::function<void(GnFeature)>*>(userdata);
         fn(feature);
     };
 
-    return GnGetAdapterFeaturesWithCallback(adapter, static_cast<void*>(&callback_fn), wrapper_fn);
+    GnEnumerateAdapterFeatures(adapter, static_cast<void*>(&callback_fn), wrapper_fn);
 }
 
-static uint32_t GnGetAdapterQueuePropertiesWithCallback(GnAdapter adapter, std::function<void(const GnQueueGroupProperties&)> callback_fn) noexcept
+static void GnEnumerateAdapterQueueGroupProperties(GnAdapter adapter, std::function<void(const GnQueueGroupProperties&)> callback_fn) noexcept
 {
     auto wrapper_fn = [](void* userdata, const GnQueueGroupProperties* queue_properties) {
         const auto& fn = *static_cast<std::function<void(const GnQueueGroupProperties&)>*>(userdata);
         fn(*queue_properties);
     };
 
-    return GnGetAdapterQueuePropertiesWithCallback(adapter, static_cast<void*>(&callback_fn), wrapper_fn);
+    GnEnumerateAdapterQueueGroupProperties(adapter, static_cast<void*>(&callback_fn), wrapper_fn);
 }
+
+static void GnEnumeratePresentationQueueGroup(GnAdapter adapter, GnSurface surface, std::function<void(const GnQueueGroupProperties&)> callback_fn) noexcept
+{
+    auto wrapper_fn = [](void* userdata, const GnQueueGroupProperties* queue_properties) {
+        const auto& fn = *static_cast<std::function<void(const GnQueueGroupProperties&)>*>(userdata);
+        fn(*queue_properties);
+    };
+
+    GnEnumeratePresentationQueueGroup(adapter, surface, static_cast<void*>(&callback_fn), wrapper_fn);
+}
+
+static GnResult GnEnumerateSurfaceFormats(GnAdapter adapter, GnSurface surface, std::function<void(GnFormat)> callback_fn) noexcept
+{
+    auto wrapper_fn = [](void* userdata, GnFormat format) {
+        const auto& fn = *static_cast<std::function<void(GnFormat)>*>(userdata);
+        fn(format);
+    };
+
+    return GnEnumerateSurfaceFormats(adapter, surface, static_cast<void*>(&callback_fn), wrapper_fn);
+}
+
 #endif
 
 #endif // GN_H_
