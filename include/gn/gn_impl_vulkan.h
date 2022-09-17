@@ -1444,13 +1444,16 @@ GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer 
     draw_indexed_cmd_private_data = (void*)cmd_buffer;
     dispatch_cmd_private_data = (void*)cmd_buffer;
 
+    // When draw calls are called, flush the graphics state.
     flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
-        GnCommandListVK* impl_cmd_list = static_cast<GnCommandListVK*>(command_list);
+        GnCommandListVK* impl_cmd_list = GN_TO_VULKAN(GnCommandList, command_list);
         VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->draw_cmd_private_data;
 
         // Update index buffer
         if (impl_cmd_list->state.update_flags.index_buffer)
-            impl_cmd_list->cmd_bind_index_buffer(cmd_buf, static_cast<GnBufferVK*>(impl_cmd_list->state.index_buffer)->buffer, impl_cmd_list->state.index_buffer_offset, VK_INDEX_TYPE_UINT32);
+            impl_cmd_list->cmd_bind_index_buffer(cmd_buf, GN_TO_VULKAN(GnBuffer, impl_cmd_list->state.index_buffer)->buffer,
+                                                 impl_cmd_list->state.index_buffer_offset,
+                                                 VK_INDEX_TYPE_UINT32);
 
         // Update vertex buffer
         if (impl_cmd_list->state.update_flags.vertex_buffers) {
@@ -1459,9 +1462,11 @@ GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer 
             uint32_t count = update_range.last - update_range.first;
 
             for (uint32_t i = 0; i < count; i++)
-                vtx_buffers[i] = static_cast<GnBufferVK*>(impl_cmd_list->state.vertex_buffers[update_range.first + i])->buffer;
+                vtx_buffers[i] = GN_TO_VULKAN(GnBuffer, impl_cmd_list->state.vertex_buffers[update_range.first + i])->buffer;
 
-            impl_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers, &impl_cmd_list->state.vertex_buffer_offsets[update_range.first]);
+            impl_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers,
+                                                   &impl_cmd_list->state.vertex_buffer_offsets[update_range.first]);
+
             impl_cmd_list->state.vertex_buffer_upd_range.Flush();
         }
 
@@ -1555,7 +1560,7 @@ void GnCommandListVK::EndRenderPass() noexcept
 
 GnResult GnCommandListVK::End() noexcept
 {
-    return GnConvertFromVkResult(fn.vkEndCommandBuffer((VkCommandBuffer)draw_cmd_private_data));
+    return GnConvertFromVkResult(fn.vkEndCommandBuffer(static_cast<VkCommandBuffer>(draw_cmd_private_data)));
 }
 
 #endif

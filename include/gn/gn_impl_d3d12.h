@@ -25,6 +25,8 @@ struct GnResourceTableD3D12;
 struct GnCommandPoolD3D12;
 struct GnCommandListD3D12;
 
+#define GN_TO_D3D12(type, x) static_cast<type##D3D12*>(x)
+
 typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY_1)(REFIID riid, _COM_Outptr_ void** ppFactory);
 
 struct GnD3D12FunctionDispatcher
@@ -132,6 +134,11 @@ struct GnCommandListD3D12 : public GnCommandList_t
     //ID3D12GraphicsCommandList_OMSetStencilRef       om_set_stencil_ref;
 
     GnCommandListD3D12(GnQueueType queue_type, const GnCommandListDesc* desc, ID3D12GraphicsCommandList* cmd_list) noexcept;
+
+    GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
+    void BeginRenderPass() noexcept override;
+    void EndRenderPass() noexcept override;
+    GnResult End() noexcept override;
 };
 
 // -------------------------------------------------------
@@ -747,13 +754,13 @@ GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandLi
     dispatch_cmd_private_data = (void*)cmd_list;
 
     flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
-        GnCommandListD3D12* impl_cmd_list = (GnCommandListD3D12*)command_list;
+        GnCommandListD3D12* impl_cmd_list = GN_TO_D3D12(GnCommandList, command_list);
         ID3D12GraphicsCommandList* d3d12_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->draw_cmd_private_data;
 
         if (impl_cmd_list->state.update_flags.graphics_pipeline) {}
 
         if (impl_cmd_list->state.update_flags.index_buffer) {
-            GnBufferD3D12* impl_index_buffer = (GnBufferD3D12*)impl_cmd_list->state.index_buffer;
+            GnBufferD3D12* impl_index_buffer = GN_TO_D3D12(GnBuffer, impl_cmd_list->state.index_buffer);
             D3D12_INDEX_BUFFER_VIEW view;
             view.BufferLocation = impl_index_buffer->buffer_va;
             view.SizeInBytes = (UINT)impl_index_buffer->desc.size;
@@ -769,7 +776,7 @@ GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandLi
 
             for (uint32_t i = 0; i < count; i++) {
                 D3D12_VERTEX_BUFFER_VIEW& view = vtx_buffer_views[i];
-                GnBufferD3D12* impl_vtx_buffer = (GnBufferD3D12*)impl_cmd_list->state.vertex_buffers[i];
+                GnBufferD3D12* impl_vtx_buffer = GN_TO_D3D12(GnBuffer, impl_cmd_list->state.vertex_buffers[i]);
 
                 view.BufferLocation = impl_vtx_buffer->buffer_va;
                 view.SizeInBytes = (uint32_t)impl_vtx_buffer->desc.size;
@@ -813,6 +820,24 @@ GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandLi
     flush_compute_state_fn = [](GnCommandList command_list) noexcept {
 
     };
+}
+
+GnResult GnCommandListD3D12::Begin(const GnCommandListBeginDesc* desc) noexcept
+{
+    return GnResult();
+}
+
+void GnCommandListD3D12::BeginRenderPass() noexcept
+{
+}
+
+void GnCommandListD3D12::EndRenderPass() noexcept
+{
+}
+
+GnResult GnCommandListD3D12::End() noexcept
+{
+    return GnResult();
 }
 
 #endif

@@ -284,7 +284,7 @@ struct GnUpdateRange
     }
 };
 
-// We track and apply state changes later when drawing or dispatching to reduce redundant state changes calls
+// We track and apply state changes later when drawing or dispatching to reduce redundant state changes calls.
 struct GnCommandListState
 {
     enum
