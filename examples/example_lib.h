@@ -4,7 +4,7 @@
 #include <memory>
 #include <cassert>
 
-#define EX_THROW_ERROR(x) \
+#define EX_ERROR(x) \
     if ((x)) { \
         std::cout << x "\n"; \
         assert(false); \
@@ -111,6 +111,9 @@ struct GnExampleWindowWin32 : public GnExampleWindow
 
 struct GnExampleApp
 {
+    static constexpr uint32_t window_width = 640;
+    static constexpr uint32_t window_height = 480;
+
     static GnExampleApp* g_app;
     std::unique_ptr<GnExampleWindow> window;
     GnInstance instance = nullptr;
@@ -118,6 +121,7 @@ struct GnExampleApp
     GnDevice device = nullptr;
     GnSurface surface = nullptr;
     GnQueue queue = nullptr;
+    GnSwapchain swapchain = nullptr;
 
     GnFormat surface_format{};
     int32_t direct_queue_group = -1;
@@ -131,6 +135,9 @@ struct GnExampleApp
 
     ~GnExampleApp()
     {
+        GnDeviceWaitIdle(device);
+
+        if (swapchain) GnDestroySwapchain(device, swapchain);
         if (device) GnDestroyDevice(device);
         if (surface) GnDestroySurface(surface);
         if (instance) GnDestroyInstance(instance);
@@ -142,7 +149,7 @@ struct GnExampleApp
         instance_desc.backend = GnBackend_Vulkan;
 
         if (GnCreateInstance(&instance_desc, &instance) != GnSuccess) {
-            EX_THROW_ERROR("Cannot create instance");
+            EX_ERROR("Cannot create instance");
             return false;
         }
 
@@ -158,8 +165,8 @@ struct GnExampleApp
                                 }
                             });
 
-        if (!window->Init(640, 480)) {
-            EX_THROW_ERROR("Cannot initialize window");
+        if (!window->Init(window_width, window_height)) {
+            EX_ERROR("Cannot initialize window");
             return false;
         }
 
@@ -168,7 +175,7 @@ struct GnExampleApp
         desc.hwnd = (HWND)window->GetNativeHandle();
 
         if (GnCreateSurface(instance, &desc, &surface) != GnSuccess) {
-            EX_THROW_ERROR("Cannot create surface");
+            EX_ERROR("Cannot create surface");
             return false;
         }
 
@@ -192,7 +199,7 @@ struct GnExampleApp
         }
 
         if (GnCreateDevice(adapter, nullptr, &device) != GnSuccess) {
-            EX_THROW_ERROR("Cannot create device");
+            EX_ERROR("Cannot create device");
             return false;
         }
 
@@ -206,6 +213,19 @@ struct GnExampleApp
                                       }
                                   });
 
+        GnSwapchainDesc swapchain_desc{};
+        swapchain_desc.surface = surface;
+        swapchain_desc.format = GnFormat_BGRA8Unorm;
+        swapchain_desc.width = window_width;
+        swapchain_desc.height = window_height;
+        swapchain_desc.num_buffers = 2;
+        swapchain_desc.vsync = true;
+
+        if (GnCreateSwapchain(device, &swapchain_desc, &swapchain)) {
+            EX_ERROR("Cannot create swapchain");
+            return false;
+        }
+
         return true;
     }
 
@@ -213,6 +233,7 @@ struct GnExampleApp
     {
         while (window->open) {
             window->ProcessEvent();
+            GnQueuePresent(queue, swapchain);
         }
 
         return 0;

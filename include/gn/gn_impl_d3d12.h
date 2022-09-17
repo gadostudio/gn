@@ -89,11 +89,14 @@ struct GnDeviceD3D12 : public GnDevice_t
 
     virtual ~GnDeviceD3D12();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept override;
-    GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept override;
+    GnResult CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
+    GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
+    void DestroySwapchain(GnSwapchain swapchain) noexcept override;
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
+    GnResult DeviceWaitIdle() noexcept;
 };
 
 struct GnQueueD3D12 : public GnQueue_t
@@ -101,6 +104,7 @@ struct GnQueueD3D12 : public GnQueue_t
     ID3D12CommandQueue* cmd_queue;
 
     virtual ~GnQueueD3D12();
+    GnResult QueuePresent(GnSwapchain swapchain) noexcept override;
 };
 
 struct GnBufferD3D12 : public GnBuffer_t
@@ -673,10 +677,10 @@ GnDeviceD3D12::~GnDeviceD3D12()
 
 GnResult GnDeviceD3D12::CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept
 {
-    return GnResult();
+    return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept
+GnResult GnDeviceD3D12::CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept
 {
     return GnError_Unimplemented;
 }
@@ -691,9 +695,18 @@ GnResult GnDeviceD3D12::CreateTexture(const GnTextureDesc* desc, GnTexture* text
     return GnError_Unimplemented;
 }
 
+GnResult GnDeviceD3D12::CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept
+{
+    return GnResult();
+}
+
 GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept
 {
     return GnError_Unimplemented;
+}
+
+void GnDeviceD3D12::DestroySwapchain(GnSwapchain swapchain) noexcept
+{
 }
 
 GnQueue GnDeviceD3D12::GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept
@@ -701,11 +714,21 @@ GnQueue GnDeviceD3D12::GetQueue(uint32_t queue_group_index, uint32_t queue_index
     return &enabled_queues[queue_group_index * num_enabled_queues[queue_group_index] + queue_index];
 }
 
+GnResult GnDeviceD3D12::DeviceWaitIdle() noexcept
+{
+    return GnResult();
+}
+
 // -- [GnQueueD3D12] --
 
 GnQueueD3D12::~GnQueueD3D12()
 {
     GnSafeComRelease(cmd_queue);
+}
+
+GnResult GnQueueD3D12::QueuePresent(GnSwapchain swapchain) noexcept
+{
+    return GnResult();
 }
 
 // -- [GnBufferD3D12] --

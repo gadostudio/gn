@@ -7,10 +7,12 @@
 
 #define GN_OUT
 #define GN_MAX_CHARS 256
-#define GN_ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 #define GN_TRUE 1
 #define GN_FALSE 0
 #define GN_FAILED(x) ((x) < GnSuccess)
+#define GN_ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+
+#define GN_MAX_SWAPCHAIN_BUFFERS 16
 
 #if defined(_WIN32)
 #define GN_FPTR __stdcall
@@ -35,6 +37,7 @@ typedef struct GnSurface_t* GnSurface;
 typedef struct GnDevice_t* GnDevice;
 typedef struct GnQueue_t* GnQueue;
 typedef struct GnFence_t* GnFence;
+typedef struct GnSemaphore_t* GnSemaphore;
 typedef struct GnBuffer_t* GnBuffer;
 typedef struct GnTexture_t* GnTexture;
 typedef struct GnTextureView_t* GnTextureView;
@@ -62,6 +65,8 @@ typedef enum
     GnError_UnsupportedFeature,
     GnError_InternalError,
     GnError_OutOfHostMemory,
+    GnError_OutOfDeviceMemory,
+    GnError_DeviceLost,
 } GnResult;
 
 typedef enum
@@ -104,9 +109,10 @@ typedef enum
 {
     GnFeature_FullDrawIndexRange32Bit,
     GnFeature_TextureCubeArray,
+    GnFeature_IndependentBlend,
     GnFeature_NativeMultiDrawIndirect,
     GnFeature_DrawIndirectFirstInstance,
-    GnFeature_IndependentBlend,
+    GnFeature_TextureViewFormatSwizzle,
     GnFeature_Count,
 } GnFeature;
 
@@ -114,8 +120,8 @@ typedef enum
 {
     GnFormat_Unknown,
 
-    // [Texture Format]
-    // 8-bpc texture formats
+    // [Color Format]
+    // 8-bpc formats
     GnFormat_R8Unorm,
     GnFormat_R8Snorm,
     GnFormat_R8Uint,
@@ -132,7 +138,7 @@ typedef enum
     GnFormat_BGRA8Unorm,
     GnFormat_BGRA8Srgb,
 
-    // 16-bpc texture formats
+    // 16-bpc formats
     GnFormat_R16Uint,
     GnFormat_R16Sint,
     GnFormat_R16Float,
@@ -143,7 +149,7 @@ typedef enum
     GnFormat_RGBA16Sint,
     GnFormat_RGBA16Float,
 
-    // 32-bpc texture formats
+    // 32-bpc formats
     GnFormat_R32Uint,
     GnFormat_R32Sint,
     GnFormat_R32Float,
@@ -157,6 +163,12 @@ typedef enum
     GnFormat_RGBA32Sint,
     GnFormat_RGBA32Float,
     GnFormat_Count,
+
+    // Depth formats
+    GnFormat_D16Unorm,
+    GnFormat_D16Unorm_S8Uint,
+    GnFormat_D32Float,
+    GnFormat_D32Float_S8Uint,
 
     // Vertex Formats
     // 8-bpc vertex formats
@@ -389,6 +401,22 @@ typedef struct
 GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device);
 void GnDestroyDevice(GnDevice device);
 GnQueue GnGetDeviceQueue(GnDevice device, uint32_t queue_group_index, uint32_t queue_index);
+GnResult GnDeviceWaitIdle(GnDevice device);
+
+typedef struct
+{
+    uint32_t                num_wait_semaphores;
+    const GnSemaphore*      wait_semaphores;
+    uint32_t                num_command_lists;
+    const GnCommandList*    command_lists;
+    uint32_t                num_signal_semaphores;
+    const GnSemaphore*      signal_semaphores;
+} GnSubmitDesc;
+
+GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions, GnFence signal_fence);
+GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions);
+GnResult GnQueuePresent(GnQueue queue, GnSwapchain swapchain);
+GnResult GnWaitQueue(GnQueue queue);
 
 typedef struct
 {
@@ -405,16 +433,18 @@ void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain);
 
 typedef enum
 {
-    GnFence_DeviceToDeviceSync,
-    GnFence_DeviceToHostSync,
+    GnFence_DeviceSideSync,
+    GnFence_HostSideSync,
 } GnFenceType;
 
-GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence);
+GnResult GnCreateSemaphore(GnDevice device, GN_OUT GnSemaphore* semaphore);
+void GnDestroySemaphore(GnDevice device, GnSemaphore semaphore);
+
+GnResult GnCreateFence(GnDevice device, bool signaled, GN_OUT GnFence* fence);
 void GnDestroyFence(GnDevice device, GnFence fence);
 GnResult GnGetFenceStatus(GnFence fence);
 GnResult GnWaitFence(GnFence fence, uint64_t timeout);
 void GnResetFence(GnFence fence);
-GnFenceType GnGetFenceType(GnFence fence);
 
 typedef enum
 {
@@ -462,10 +492,48 @@ GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GN_OUT GnTe
 void GnDestroyTexture(GnDevice device, GnTexture texture);
 void GnGetTextureDesc(GnTexture texture, GN_OUT GnTextureDesc* texture_desc);
 
+typedef enum
+{
+    GnTextureViewType_1D,
+    GnTextureViewType_2D,
+    GnTextureViewType_3D,
+    GnTextureViewType_Cube,
+    GnTextureViewType_Array1D,
+    GnTextureViewType_Array2D,
+    GnTextureViewType_CubeArray,
+} GnTextureViewType;
+
+typedef enum
+{
+    GnComponentSwizzle_Identity,
+    GnComponentSwizzle_One,
+    GnComponentSwizzle_Zero,
+    GnComponentSwizzle_R,
+    GnComponentSwizzle_G,
+    GnComponentSwizzle_B,
+    GnComponentSwizzle_A,
+} GnComponentSwizzle;
+
 typedef struct
 {
-    GnTexture   texture;
+    GnComponentSwizzle  r;
+    GnComponentSwizzle  g;
+    GnComponentSwizzle  b;
+    GnComponentSwizzle  a;
+} GnComponentMapping;
 
+typedef struct
+{
+
+} GnTextureSubresourceRange;
+
+typedef struct
+{
+    GnTexture                   texture;
+    GnTextureViewType           type;
+    GnFormat                    format;
+    GnComponentMapping          mapping;
+    GnTextureSubresourceRange   subresource_range;
 } GnTextureViewDesc;
 
 GnResult GnCreateTextureView(GnDevice device, const GnTextureViewDesc* desc, GN_OUT GnTextureView* texture_view);
@@ -859,21 +927,6 @@ void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture,
 void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture);
 void GnCmdBarrier(GnCommandList command_list);
 void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles);
-
-typedef struct
-{
-    uint32_t                num_wait_fences;
-    const GnFence*          wait_fences;
-    uint32_t                num_command_lists;
-    const GnCommandList*    command_lists;
-    uint32_t                num_signal_fences;
-    const GnFence*          signal_fences;
-} GnSubmission;
-
-GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions, GnFence signal_host_fence);
-GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submissions, GnSubmission* submissions); // Perform blocking operation.
-GnResult GnQueuePresent(GnQueue queue);
-void GnWaitQueue(GnQueue queue);
 
 // [HELPERS]
 

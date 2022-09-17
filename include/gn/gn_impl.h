@@ -114,7 +114,7 @@ struct GnPool
         static constexpr std::size_t block_alignment = GnMax(alignof(T), alignof(GnPoolHeader));
         
         // Allocate the pool
-        // One extra storage is required for the pool header. It may waste some space
+        // One extra storage is required for the pool header. It may waste space a bit.
         uint8_t* pool = (uint8_t*)::operator new(block_size * (chunks_per_block + 1), std::align_val_t{block_alignment}, std::nothrow);
 
         // Initialize the pool header
@@ -201,21 +201,27 @@ struct GnDevice_t
     virtual ~GnDevice_t() { }
 
     virtual GnResult CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept = 0;
-    virtual GnResult CreateFence(GnFenceType type, bool signaled, GN_OUT GnFence* fence) noexcept = 0;
+    virtual GnResult CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept = 0;
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
+    virtual GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept = 0;
     virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
+    virtual void DestroySwapchain(GnSwapchain swapchain) noexcept = 0;
     virtual GnQueue GetQueue(uint32_t queue_group_id, uint32_t queue_index) noexcept = 0;
+    virtual GnResult DeviceWaitIdle() noexcept = 0;
 };
 
 struct GnSwapchain_t
 {
+    GnSwapchainDesc swapchain_desc;
+
     virtual ~GnSwapchain_t() { }
 };
 
 struct GnQueue_t
 {
     virtual ~GnQueue_t() { }
+    virtual GnResult QueuePresent(GnSwapchain swapchain) noexcept = 0;
 };
 
 struct GnFence_t
@@ -734,15 +740,14 @@ void GnDestroyDevice(GnDevice device)
 
 GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain)
 {
-    return GnError_Unimplemented;
+    return device->CreateSwapchain(desc, swapchain);
 }
 
 void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain)
 {
-
+    device->DestroySwapchain(swapchain);
 }
 
-// -- [GnQueue] --
 
 GnQueue GnGetDeviceQueue(GnDevice device, uint32_t queue_group_index, uint32_t queue_index)
 {
@@ -757,9 +762,47 @@ GnQueue GnGetDeviceQueue(GnDevice device, uint32_t queue_group_index, uint32_t q
     return device->GetQueue(queue_group_index, queue_index);
 }
 
+GnResult GnDeviceWaitIdle(GnDevice device)
+{
+    return device->DeviceWaitIdle();
+}
+
+// -- [GnQueue] --
+
+GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions, GnFence signal_fence)
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions)
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnQueuePresent(GnQueue queue, GnSwapchain swapchain)
+{
+    return queue->QueuePresent(swapchain);
+}
+
+GnResult GnWaitQueue(GnQueue queue)
+{
+    return GnError_Unimplemented;
+}
+
+// -- [GnSemaphore] --
+
+GnResult GnCreateSemaphore(GnDevice device, GN_OUT GnSemaphore* semaphore)
+{
+    return GnResult();
+}
+
+void GnDestroySemaphore(GnDevice device, GnSemaphore semaphore)
+{
+}
+
 // -- [GnFence] --
 
-bool GnValidateCreateFenceParam(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence)
+bool GnValidateCreateFenceParam(GnDevice device, bool signaled, GN_OUT GnFence* fence)
 {
     bool error = false;
     if (device == nullptr) error = true;
@@ -767,10 +810,10 @@ bool GnValidateCreateFenceParam(GnDevice device, GnFenceType type, bool signaled
     return error;
 }
 
-GnResult GnCreateFence(GnDevice device, GnFenceType type, bool signaled, GN_OUT GnFence* fence)
+GnResult GnCreateFence(GnDevice device, bool signaled, GN_OUT GnFence* fence)
 {
-    if (GnValidateCreateFenceParam(device, type, signaled, fence)) return GnError_InvalidArgs;
-    return device->CreateFence(type, signaled, fence);
+    if (GnValidateCreateFenceParam(device, signaled, fence)) return GnError_InvalidArgs;
+    return device->CreateFence(signaled, fence);
 }
 
 void GnDestroyFence(GnDevice device, GnFence fence)
@@ -794,9 +837,22 @@ void GnResetFence(GnFence fence)
 
 }
 
-GnFenceType GnGetFenceType(GnFence fence)
+// -- [GnTextureView] --
+
+bool GnValidateCreateTextureViewParam(GnDevice device, const GnTextureViewDesc* desc, GN_OUT GnTextureView* texture_view)
 {
-    return fence->type;
+    return true;
+}
+
+GnResult GnCreateTextureView(GnDevice device, const GnTextureViewDesc* desc, GN_OUT GnTextureView* texture_view)
+{
+    if (GnValidateCreateTextureViewParam(device, desc, texture_view)) return GnError_InvalidArgs;
+    return GnSuccess;
+}
+
+void GnDestroyTextureView(GnDevice device, GnTextureView texture)
+{
+
 }
 
 // -- [GnCommandPool] --
