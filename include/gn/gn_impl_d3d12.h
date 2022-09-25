@@ -91,12 +91,15 @@ struct GnDeviceD3D12 : public GnDevice_t
 
     virtual ~GnDeviceD3D12();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept override;
-    GnResult CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept override;
+    GnResult CreateFence(GnBool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
     void DestroySwapchain(GnSwapchain swapchain) noexcept override;
+    void DestroyBuffer(GnBuffer buffer) noexcept override;
+    void DestroyTexture(GnTexture texture) noexcept override;
+    void DestroyTextureView(GnTextureView texture_view) noexcept;
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
     GnResult DeviceWaitIdle() noexcept;
 };
@@ -115,6 +118,13 @@ struct GnBufferD3D12 : public GnBuffer_t
     D3D12_GPU_VIRTUAL_ADDRESS buffer_va;
 
     virtual ~GnBufferD3D12();
+};
+
+struct GnTextureD3D12 : public GnTexture_t
+{
+    ID3D12Resource* texture;
+
+    virtual ~GnTextureD3D12();
 };
 
 //typedef void (GN_FPTR* ID3D12GraphicsCommandList_IASetIndexBuffer)(ID3D12GraphicsCommandList* This, const D3D12_INDEX_BUFFER_VIEW* pView);
@@ -508,10 +518,10 @@ GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFor
         return 0; // returns nothing if this format does not support any type of texture
 
     GnTextureFormatFeatureFlags ret = GnTextureFormatFeature_CopySrc | GnTextureFormatFeature_CopyDst | GnTextureFormatFeature_BlitSrc | GnTextureFormatFeature_Sampled;
-    if (GnTestBitmask(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)) ret |= GnTextureFormatFeature_StorageRead;
-    if (GnTestBitmask(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) ret |= GnTextureFormatFeature_StorageWrite;
-    if (GnTestBitmask(fmt.Support1, D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) ret |= GnTextureFormatFeature_ColorAttachment | GnTextureFormatFeature_BlitDst;
-    if (GnTestBitmask(fmt.Support1, D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
+    if (GnContainsBit(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)) ret |= GnTextureFormatFeature_StorageRead;
+    if (GnContainsBit(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) ret |= GnTextureFormatFeature_StorageWrite;
+    if (GnContainsBit(fmt.Support1, D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) ret |= GnTextureFormatFeature_ColorAttachment | GnTextureFormatFeature_BlitDst;
+    if (GnContainsBit(fmt.Support1, D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
 
     /*
         https://docs.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1
@@ -519,7 +529,7 @@ GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFor
         "If the device supports the format as a resource (1D, 2D, 3D, or cube map) but doesn't support this option,
         the resource can still use the Sample method but must use only the point filtering sampler state to perform the sample."
     */
-    if (GnTestBitmask(fmt.Support1, D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) ret |= GnTextureFormatFeature_LinearFilterable;
+    if (GnContainsBit(fmt.Support1, D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) ret |= GnTextureFormatFeature_LinearFilterable;
 
     return ret;
 }
@@ -561,7 +571,7 @@ GnResult GnAdapterD3D12::GetSurfaceFormats(GnSurface surface, uint32_t* num_surf
                 break;
 
             const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)i];
-            if (GnTestBitmask((uint32_t)fmt.Support1, d3d12_surface_format_support)) {
+            if (GnContainsBit((uint32_t)fmt.Support1, d3d12_surface_format_support)) {
                 formats[num_supported_formats] = (GnFormat)i;
                 num_supported_formats++;
             }
@@ -570,7 +580,7 @@ GnResult GnAdapterD3D12::GetSurfaceFormats(GnSurface surface, uint32_t* num_surf
     else {
         for (uint32_t i = 0; i < GnFormat_Count; i++) {
             const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)i];
-            if (GnTestBitmask((uint32_t)fmt.Support1, d3d12_surface_format_support))
+            if (GnContainsBit((uint32_t)fmt.Support1, d3d12_surface_format_support))
                 (*num_surface_formats)++;
         }
     }
@@ -582,7 +592,7 @@ GnResult GnAdapterD3D12::GnEnumerateSurfaceFormats(GnSurface surface, void* user
 {
     for (uint32_t i = 0; i < GnFormat_Count; i++) {
         const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[(GnFormat)i];
-        if (GnTestBitmask((uint32_t)fmt.Support1, d3d12_surface_format_support))
+        if (GnContainsBit((uint32_t)fmt.Support1, d3d12_surface_format_support))
             callback_fn(userdata, (GnFormat)i);
     }
 
@@ -687,7 +697,7 @@ GnResult GnDeviceD3D12::CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSw
     return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept
+GnResult GnDeviceD3D12::CreateFence(GnBool signaled, GN_OUT GnFence* fence) noexcept
 {
     return GnError_Unimplemented;
 }
@@ -713,6 +723,20 @@ GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnComma
 }
 
 void GnDeviceD3D12::DestroySwapchain(GnSwapchain swapchain) noexcept
+{
+}
+
+void GnDeviceD3D12::DestroyBuffer(GnBuffer buffer) noexcept
+{
+    GnSafeComRelease(GN_TO_D3D12(GnBuffer, buffer)->buffer);
+}
+
+void GnDeviceD3D12::DestroyTexture(GnTexture texture) noexcept
+{
+    GnSafeComRelease(GN_TO_D3D12(GnTexture, texture)->texture);
+}
+
+void GnDeviceD3D12::DestroyTextureView(GnTextureView texture_view) noexcept
 {
 }
 
@@ -743,6 +767,13 @@ GnResult GnQueueD3D12::QueuePresent(GnSwapchain swapchain) noexcept
 GnBufferD3D12::~GnBufferD3D12()
 {
     GnSafeComRelease(buffer);
+}
+
+// -- [GnTextureD3D12] --
+
+GnTextureD3D12::~GnTextureD3D12()
+{
+    GnSafeComRelease(texture);
 }
 
 // -- [GnCommandListD3D12] --

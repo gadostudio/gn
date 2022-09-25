@@ -31,6 +31,7 @@ struct GnFenceVK;
 struct GnSemaphoreVK;
 struct GnBufferVK;
 struct GnTextureVK;
+struct GnTextureViewVK;
 struct GnRenderPassVK;
 struct GnResourceTableLayoutVK;
 struct GnPipelineLayoutVK;
@@ -77,8 +78,12 @@ struct GnVulkanDeviceFunctions
     PFN_vkDestroyFence vkDestroyFence;
     PFN_vkCreateSemaphore vkCreateSemaphore;
     PFN_vkDestroySemaphore vkDestroySemaphore;
+    PFN_vkCreateBuffer vkCreateBuffer;
+    PFN_vkDestroyBuffer vkDestroyBuffer;
     PFN_vkCreateImage vkCreateImage;
     PFN_vkDestroyImage vkDestroyImage;
+    PFN_vkCreateImageView vkCreateImageView;
+    PFN_vkDestroyImageView vkDestroyImageView;
     PFN_vkCreateCommandPool vkCreateCommandPool;
     PFN_vkDestroyCommandPool vkDestroyCommandPool;
     PFN_vkResetCommandPool vkResetCommandPool;
@@ -145,7 +150,7 @@ struct GnAdapterVK : public GnAdapter_t
     VkPhysicalDevice                    physical_device = VK_NULL_HANDLE;
     uint32_t                            api_version = 0;
     VkPhysicalDeviceFeatures            supported_features{};
-    VkPhysicalDeviceMemoryProperties    memory_properties{};
+    VkPhysicalDeviceMemoryProperties    vk_memory_properties{};
 
     GnAdapterVK(GnInstanceVK* instance,
                 const GnVulkanInstanceFunctions& fn,
@@ -176,6 +181,15 @@ struct GnSurfaceVK : public GnSurface_t
     {
         parent_instance->fn.vkDestroySurfaceKHR(parent_instance->instance, surface, nullptr);
     }
+};
+
+struct GnQueueVK : public GnQueue_t
+{
+    GnDeviceVK* parent_device;
+    VkQueue     queue;
+
+    ~GnQueueVK();
+    GnResult QueuePresent(GnSwapchain swapchain) noexcept override;
 };
 
 struct GnSwapchainVK : public GnSwapchain_t
@@ -218,18 +232,19 @@ struct GnFenceVK : public GnFence_t
     VkFence     fence;
 };
 
-struct GnQueueVK : public GnQueue_t
-{
-    GnDeviceVK* parent_device;
-    VkQueue     queue;
-
-    ~GnQueueVK();
-    GnResult QueuePresent(GnSwapchain swapchain) noexcept override;
-};
-
 struct GnBufferVK : public GnBuffer_t
 {
-    VkBuffer    buffer;
+    VkBuffer buffer;
+};
+
+struct GnTextureVK : public GnTexture_t
+{
+    VkImage image;
+};
+
+struct GnTextureViewVK : public GnTextureView_t
+{
+    VkImageView view;
 };
 
 struct GnObjectTypesVK
@@ -257,12 +272,15 @@ struct GnDeviceVK : public GnDevice_t
 
     ~GnDeviceVK();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept override;
-    GnResult CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept override;
+    GnResult CreateFence(GnBool signaled, GN_OUT GnFence* fence) noexcept override;
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
     void DestroySwapchain(GnSwapchain swapchain) noexcept override;
+    void DestroyBuffer(GnBuffer buffer) noexcept override;
+    void DestroyTexture(GnTexture texture) noexcept override;
+    void DestroyTextureView(GnTextureView texture_view) noexcept override;
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
     GnResult DeviceWaitIdle() noexcept override;
 };
@@ -431,7 +449,7 @@ inline static bool GnConvertAndCheckDeviceFeatures(const uint32_t num_requested_
             case GnFeature_IndependentBlend:            GN_CHECK_VULKAN_FEATURE(independentBlend); break;
             case GnFeature_NativeMultiDrawIndirect:     GN_CHECK_VULKAN_FEATURE(multiDrawIndirect); break;
             case GnFeature_DrawIndirectFirstInstance:   GN_CHECK_VULKAN_FEATURE(drawIndirectFirstInstance); break;
-            case GnFeature_TextureViewFormatSwizzle:    break;
+            case GnFeature_TextureViewComponentSwizzle: break;
             default:                                    GN_DBG_ASSERT(false && "Unreachable");
         }
     }
@@ -439,15 +457,57 @@ inline static bool GnConvertAndCheckDeviceFeatures(const uint32_t num_requested_
     return true;
 }
 
+inline static VkImageType GnConvertToVkImageType(GnTextureType type)
+{
+    switch (type) {
+        case GnTextureType_1D: return VK_IMAGE_TYPE_1D;
+        case GnTextureType_2D: return VK_IMAGE_TYPE_2D;
+        case GnTextureType_3D: return VK_IMAGE_TYPE_3D;
+        default:
+            GN_DBG_ASSERT(false && "Unreachable");
+    }
+
+    return VK_IMAGE_TYPE_MAX_ENUM;
+}
+
+inline static VkBufferUsageFlags GnConvertToVkBufferUsageFlags(GnBufferUsageFlags usage)
+{
+    VkBufferUsageFlags ret = 0;
+
+    if (GnContainsBit(usage, GnBufferUsage_CopySrc)) ret |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (GnContainsBit(usage, GnBufferUsage_CopyDst)) ret |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (GnContainsBit(usage, GnBufferUsage_Uniform)) ret |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if (GnContainsBit(usage, GnBufferUsage_Index)) ret |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (GnContainsBit(usage, GnBufferUsage_Vertex)) ret |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if (GnContainsBit(usage, GnBufferUsage_Storage)) ret |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (GnContainsBit(usage, GnBufferUsage_Indirect)) ret |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+
+    return ret;
+}
+
+inline static VkImageUsageFlags GnConvertToVkImageUsageFlags(GnTextureUsageFlags usage)
+{
+    VkImageUsageFlags ret = 0;
+
+    if (GnContainsBit(usage, GnTextureUsage_CopySrc, GnTextureUsage_BlitSrc)) ret |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (GnContainsBit(usage, GnTextureUsage_CopyDst, GnTextureUsage_BlitDst)) ret |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (GnContainsBit(usage, GnTextureUsage_Sampled)) ret |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (GnContainsBit(usage, GnTextureUsage_Storage)) ret |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (GnContainsBit(usage, GnTextureUsage_ColorAttachment)) ret |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (GnContainsBit(usage, GnTextureUsage_DepthStencilAttachment)) ret |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+    return ret;
+}
+
 // Taken from https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkPhysicalDeviceMemoryProperties.html
-static int32_t GnFindMemoryTypeVk(const VkPhysicalDeviceMemoryProperties& memory_properties,
+static int32_t GnFindMemoryTypeVk(const VkPhysicalDeviceMemoryProperties& vk_memory_properties,
                                   uint32_t memory_type_bits_req,
                                   VkMemoryPropertyFlags required_properties)
 {
-    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
-        const bool is_required_memory_types = memory_type_bits_req & (1 << i);
+    for (uint32_t i = 0; i < vk_memory_properties.memoryTypeCount; ++i) {
+        const bool is_required_memory_types = (memory_type_bits_req & (1 << i)) != 0;
 
-        const VkMemoryPropertyFlags properties = memory_properties.memoryTypes[i].propertyFlags;
+        const VkMemoryPropertyFlags properties = vk_memory_properties.memoryTypes[i].propertyFlags;
         const bool has_required_properties = (properties & required_properties) == required_properties;
 
         if (is_required_memory_types && has_required_properties)
@@ -514,8 +574,12 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkDestroyFence);
     GN_LOAD_DEVICE_FN(vkCreateSemaphore);
     GN_LOAD_DEVICE_FN(vkDestroySemaphore);
+    GN_LOAD_DEVICE_FN(vkCreateBuffer);
+    GN_LOAD_DEVICE_FN(vkDestroyBuffer);
     GN_LOAD_DEVICE_FN(vkCreateImage);
     GN_LOAD_DEVICE_FN(vkDestroyImage);
+    GN_LOAD_DEVICE_FN(vkCreateImageView);
+    GN_LOAD_DEVICE_FN(vkDestroyImageView);
     GN_LOAD_DEVICE_FN(vkCreateCommandPool);
     GN_LOAD_DEVICE_FN(vkDestroyCommandPool);
     GN_LOAD_DEVICE_FN(vkResetCommandPool);
@@ -800,7 +864,7 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, const GnVulkanInstanceFunctions
     features[GnFeature_IndependentBlend]            = vk_features.independentBlend;
     features[GnFeature_NativeMultiDrawIndirect]     = vk_features.multiDrawIndirect;
     features[GnFeature_DrawIndirectFirstInstance]   = vk_features.drawIndirectFirstInstance;
-    features[GnFeature_TextureViewFormatSwizzle]    = true;
+    features[GnFeature_TextureViewComponentSwizzle] = true; // Will always be supported by Vulkan*
 
     // Get the available queues
     VkQueueFamilyProperties queue_families[4]{};
@@ -813,15 +877,53 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance, const GnVulkanInstanceFunctions
 
         queue_group.index = i;
 
-        if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_COMPUTE_BIT)) queue_group.type = GnQueueType_Direct;
-        else if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_COMPUTE_BIT)) queue_group.type = GnQueueType_Compute;
-        else if (GnTestBitmask(queue_family.queueFlags, VK_QUEUE_TRANSFER_BIT)) queue_group.type = GnQueueType_Copy;
+        if (GnContainsBit(queue_family.queueFlags, VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_COMPUTE_BIT)) queue_group.type = GnQueueType_Direct;
+        else if (GnContainsBit(queue_family.queueFlags, VK_QUEUE_COMPUTE_BIT)) queue_group.type = GnQueueType_Compute;
+        else if (GnContainsBit(queue_family.queueFlags, VK_QUEUE_TRANSFER_BIT)) queue_group.type = GnQueueType_Copy;
 
         queue_group.timestamp_query_supported = queue_family.timestampValidBits != 0;
         queue_group.num_queues = queue_family.queueCount;
     }
 
-    fn.vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+    // VkPhysicalDeviceMemoryProperties can be trivially converted into GnMemoryProperties
+    fn.vkGetPhysicalDeviceMemoryProperties(physical_device, &vk_memory_properties);
+
+    for (uint32_t i = 0; i < vk_memory_properties.memoryHeapCount; i++) {
+        const VkMemoryHeap& heap = vk_memory_properties.memoryHeaps[i];
+        memory_properties.memory_pools[i].size = heap.size;
+
+        if (GnContainsBit(heap.flags, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) {
+            memory_properties.memory_pools[i].type = GnMemoryPoolType_Device;
+        }
+        else {
+            memory_properties.memory_pools[i].type = GnMemoryPoolType_Host;
+        }
+
+        memory_properties.num_memory_pools++;
+    }
+
+    for (uint32_t i = 0; i < vk_memory_properties.memoryTypeCount; i++) {
+        const VkMemoryType& type = vk_memory_properties.memoryTypes[i];
+
+        if (!GnHasBit(type.propertyFlags,
+                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+        {
+            continue;
+        }
+
+        constexpr VkMemoryPropertyFlags required_property =
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+            VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
+        memory_properties.memory_types[i].pool_index = type.heapIndex;
+        memory_properties.memory_types[i].attribute = type.propertyFlags & required_property;
+        memory_properties.num_memory_types++;
+    }
 }
 
 GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat format) const noexcept
@@ -832,15 +934,15 @@ GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat
     VkFormatFeatureFlags features = fmt.optimalTilingFeatures & fmt.linearTilingFeatures; // intersect
     GnTextureFormatFeatureFlags ret = 0;
     
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)) ret |= GnTextureFormatFeature_CopySrc;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) ret |= GnTextureFormatFeature_CopyDst;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_SRC_BIT)) ret |= GnTextureFormatFeature_BlitSrc;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_BLIT_DST_BIT)) ret |= GnTextureFormatFeature_BlitSrc;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) ret |= GnTextureFormatFeature_Sampled;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) ret |= GnTextureFormatFeature_LinearFilterable;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) ret |= GnTextureFormatFeature_StorageRead | GnTextureFormatFeature_StorageWrite;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_ColorAttachment;
-    if (GnTestBitmask(features, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)) ret |= GnTextureFormatFeature_CopySrc;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) ret |= GnTextureFormatFeature_CopyDst;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_BLIT_SRC_BIT)) ret |= GnTextureFormatFeature_BlitSrc;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_BLIT_DST_BIT)) ret |= GnTextureFormatFeature_BlitSrc;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) ret |= GnTextureFormatFeature_Sampled;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) ret |= GnTextureFormatFeature_LinearFilterable;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) ret |= GnTextureFormatFeature_StorageRead | GnTextureFormatFeature_StorageWrite;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_ColorAttachment;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
 
     return ret;
 }
@@ -849,7 +951,7 @@ GnBool GnAdapterVK::IsVertexFormatSupported(GnFormat format) const noexcept
 {
     VkFormatProperties fmt;
     parent_instance->fn.vkGetPhysicalDeviceFormatProperties(physical_device, GnConvertToVkFormat(format), &fmt);
-    return GnTestBitmask(fmt.bufferFeatures, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+    return GnContainsBit(fmt.bufferFeatures, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
 }
 
 GnBool GnAdapterVK::IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept
@@ -869,8 +971,8 @@ void GnAdapterVK::GetSurfaceProperties(GnSurface surface, GN_OUT GnSurfaceProper
 
     VkSurfaceCapabilitiesKHR surf_caps;
     parent_instance->fn.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, vk_surface, &surf_caps);
-    properties->width       = surf_caps.currentExtent.width;
-    properties->height      = surf_caps.currentExtent.height;
+    properties->width = surf_caps.currentExtent.width;
+    properties->height = surf_caps.currentExtent.height;
     properties->max_buffers = std::min(surf_caps.maxImageCount, (uint32_t)GN_MAX_SWAPCHAIN_BUFFERS);
     properties->min_buffers = surf_caps.minImageCount;
 
@@ -1078,7 +1180,7 @@ GnResult GnDeviceVK::CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapc
     return GnSuccess;
 }
 
-GnResult GnDeviceVK::CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept
+GnResult GnDeviceVK::CreateFence(GnBool signaled, GN_OUT GnFence* fence) noexcept
 {
     GnAdapterVK* vk_parent_adapter = GN_TO_VULKAN(GnAdapter, parent_adapter);
 
@@ -1103,21 +1205,116 @@ GnResult GnDeviceVK::CreateFence(bool signaled, GN_OUT GnFence* fence) noexcept
 
 GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept
 {
+    VkBufferCreateInfo buffer_info;
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.pNext = nullptr;
+    buffer_info.flags = 0;
+    buffer_info.size = desc->size;
+    buffer_info.usage = GnConvertToVkBufferUsageFlags(desc->usage);
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    buffer_info.queueFamilyIndexCount = 0;
+    buffer_info.pQueueFamilyIndices = nullptr;
+
+    VkBuffer vk_buffer;
+    if (GN_VULKAN_FAILED(fn.vkCreateBuffer(device, &buffer_info, nullptr, &vk_buffer))) {
+        return GnError_InternalError;
+    }
+
     return GnError_Unimplemented;
 }
 
 GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept
 {
+    VkImageCreateInfo image_info;
+
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.pNext = nullptr;
+    image_info.flags = 0;
+    image_info.imageType = GnConvertToVkImageType(desc->type);
+    image_info.format = GnConvertToVkFormat(desc->format);
+    image_info.extent = { desc->width, desc->height, desc->depth };
+    image_info.mipLevels = desc->mip_levels;
+    image_info.arrayLayers = desc->array_layers;
+    image_info.samples = (VkSampleCountFlagBits)desc->samples;  
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = GnConvertToVkImageUsageFlags(desc->usage);
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.queueFamilyIndexCount = 0;
+    image_info.pQueueFamilyIndices = nullptr;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image;
+    if (GN_VULKAN_FAILED(fn.vkCreateImage(device, &image_info, nullptr, &image))) {
+        return GnError_InternalError;
+    }
+
     return GnError_Unimplemented;
 }
 
 GnResult GnDeviceVK::CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept
 {
+    VkImageViewCreateInfo view_info;
+
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.pNext = nullptr;
+    view_info.flags = 0;
+    view_info.image = GN_TO_VULKAN(GnTexture, desc->texture)->image;
+
+    switch (desc->type) {
+        case GnTextureViewType_1D:
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_1D;
+            break;
+        case GnTextureViewType_2D:
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            break;
+        case GnTextureViewType_3D:
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_3D;
+            break;
+        case GnTextureViewType_Cube:
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+            break;
+        case GnTextureViewType_Array2D:
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            break;
+        case GnTextureViewType_ArrayCube:
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+            break;
+        default:
+            GN_DBG_ASSERT(false && "Unreachable");
+    }
+    
+    view_info.format = GnConvertToVkFormat(desc->format);
+    view_info.components.r = (VkComponentSwizzle)desc->mapping.r;
+    view_info.components.g = (VkComponentSwizzle)desc->mapping.g;
+    view_info.components.b = (VkComponentSwizzle)desc->mapping.b;
+    view_info.components.a = (VkComponentSwizzle)desc->mapping.a;
+    view_info.subresourceRange.aspectMask = desc->subresource_range.aspect;
+    view_info.subresourceRange.baseMipLevel = desc->subresource_range.base_mip_level;
+    view_info.subresourceRange.levelCount = desc->subresource_range.num_mip_levels;
+    view_info.subresourceRange.baseArrayLayer = desc->subresource_range.base_array_layer;
+    view_info.subresourceRange.layerCount = desc->subresource_range.num_array_layers;
+
+    VkImageView view;
+    if (GN_VULKAN_FAILED(fn.vkCreateImageView(device, &view_info, nullptr, &view))) {
+        return GnError_InternalError;
+    }
+
     return GnResult();
 }
 
 GnResult GnDeviceVK::CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept
 {
+    VkCommandPoolCreateInfo info;
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    info.pNext = nullptr;
+    info.flags = 0;
+    info.queueFamilyIndex = desc->queue_group_index;
+
+    VkCommandPool vk_command_pool;
+    if (fn.vkCreateCommandPool(device, &info, nullptr, &vk_command_pool)) {
+        return GnError_InternalError;
+    }
+
     return GnError_Unimplemented;
 }
 
@@ -1125,6 +1322,21 @@ void GnDeviceVK::DestroySwapchain(GnSwapchain swapchain) noexcept
 {
     GN_TO_VULKAN(GnSwapchain, swapchain)->Destroy(this);
     delete swapchain;
+}
+
+void GnDeviceVK::DestroyBuffer(GnBuffer buffer) noexcept
+{
+    fn.vkDestroyBuffer(device, GN_TO_VULKAN(GnBuffer, buffer)->buffer, nullptr);
+}
+
+void GnDeviceVK::DestroyTexture(GnTexture texture) noexcept
+{
+    fn.vkDestroyImage(device, GN_TO_VULKAN(GnTexture, texture)->image, nullptr);
+}
+
+void GnDeviceVK::DestroyTextureView(GnTextureView texture_view) noexcept
+{
+    fn.vkDestroyImageView(device, GN_TO_VULKAN(GnTextureView, texture_view)->view, nullptr);
 }
 
 GnQueue GnDeviceVK::GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept
@@ -1135,6 +1347,108 @@ GnQueue GnDeviceVK::GetQueue(uint32_t queue_group_index, uint32_t queue_index) n
 GnResult GnDeviceVK::DeviceWaitIdle() noexcept
 {
     return GnConvertFromVkResult(fn.vkDeviceWaitIdle(device));
+}
+
+// -- [GnQueueVK] --
+
+GnQueueVK::~GnQueueVK()
+{
+}
+
+GnResult GnQueueVK::QueuePresent(GnSwapchain swapchain) noexcept
+{
+    GnSwapchainVK* impl_swapchain = GN_TO_VULKAN(GnSwapchain, swapchain);
+    uint32_t current_frame = impl_swapchain->current_frame;
+    const GnSwapchainVK::FrameData& frame = impl_swapchain->frame_data[current_frame];
+    VkImage present_image = impl_swapchain->swapchain_buffers[impl_swapchain->current_acquired_image];
+
+    parent_device->fn.vkQueueWaitIdle(queue);
+
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    VkClearColorValue color_value;
+    color_value.float32[0] = 1.0f;
+    color_value.float32[1] = 0.0f;
+    color_value.float32[2] = 0.0f;
+    color_value.float32[3] = 0.0f;
+
+    VkImageSubresourceRange subresource_range;
+    subresource_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    subresource_range.baseMipLevel = 0;
+    subresource_range.levelCount = 1;
+    subresource_range.baseArrayLayer = 0;
+    subresource_range.layerCount = 1;
+
+    VkImageMemoryBarrier barrier;
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.pNext = nullptr;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = present_image;
+    barrier.subresourceRange = subresource_range;
+
+    parent_device->fn.vkResetCommandPool(parent_device->device, frame.cmd_pool, 0);
+    parent_device->fn.vkBeginCommandBuffer(frame.cmd_buffer, &begin_info);
+
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    parent_device->fn.vkCmdPipelineBarrier(frame.cmd_buffer,
+                                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                           0, 0, nullptr, 0, nullptr,
+                                           1, &barrier);
+
+    parent_device->fn.vkCmdClearColorImage(frame.cmd_buffer, present_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color_value, 1, &subresource_range);
+
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = 0;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    parent_device->fn.vkCmdPipelineBarrier(frame.cmd_buffer,
+                                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                           VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                           0, 0, nullptr, 0, nullptr,
+                                           1, &barrier);
+
+    parent_device->fn.vkEndCommandBuffer(frame.cmd_buffer);
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.pNext = nullptr;
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = &frame.acquire_image_semaphore;
+    submit_info.pWaitDstStageMask = &wait_stage;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &frame.cmd_buffer;
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &frame.blit_finished_semaphore;
+
+    parent_device->fn.vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
+
+    VkPresentInfoKHR present_info;
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.pNext = nullptr;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &frame.blit_finished_semaphore;
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &impl_swapchain->swapchain;
+    present_info.pImageIndices = &impl_swapchain->current_acquired_image;
+    present_info.pResults = nullptr;
+
+    parent_device->fn.vkQueuePresentKHR(queue, &present_info);
+
+    impl_swapchain->current_frame = (current_frame + 1) % impl_swapchain->swapchain_desc.num_buffers;
+    impl_swapchain->AcquireNextImage();
+
+    return GnResult();
 }
 
 // -- [GnSwapchainVK] --
@@ -1151,30 +1465,30 @@ GnResult GnSwapchainVK::Init(GnDeviceVK* impl_device, const GnSwapchainDesc* des
     }
 
     VkSwapchainCreateInfoKHR swapchain_info;
-    swapchain_info.sType                    = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    swapchain_info.pNext                    = nullptr;
-    swapchain_info.flags                    = 0;
-    swapchain_info.surface                  = GN_TO_VULKAN(GnSurface, desc->surface)->surface;
-    swapchain_info.minImageCount            = desc->num_buffers;
-    swapchain_info.imageFormat              = GnConvertToVkFormat(desc->format);
-    swapchain_info.imageColorSpace          = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-    swapchain_info.imageExtent              = { desc->width, desc->height };
-    swapchain_info.imageArrayLayers         = 1;
-    swapchain_info.imageUsage               = VK_IMAGE_USAGE_TRANSFER_DST_BIT; // 99.1% drivers & hardware supports this flag. No need to validate :)
-    swapchain_info.imageSharingMode         = VK_SHARING_MODE_EXCLUSIVE;
-    swapchain_info.queueFamilyIndexCount    = 0;
-    swapchain_info.pQueueFamilyIndices      = nullptr;
-    swapchain_info.preTransform             = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    swapchain_info.compositeAlpha           = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    swapchain_info.presentMode              = desc->vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
-    swapchain_info.clipped                  = VK_TRUE;
-    swapchain_info.oldSwapchain             = old_swapchain;
+    swapchain_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapchain_info.pNext = nullptr;
+    swapchain_info.flags = 0;
+    swapchain_info.surface = GN_TO_VULKAN(GnSurface, desc->surface)->surface;
+    swapchain_info.minImageCount = desc->num_buffers;
+    swapchain_info.imageFormat = GnConvertToVkFormat(desc->format);
+    swapchain_info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    swapchain_info.imageExtent = { desc->width, desc->height };
+    swapchain_info.imageArrayLayers = 1;
+    swapchain_info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT; // 99.1% drivers & hardware supports this flag. No need to validate :)
+    swapchain_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapchain_info.queueFamilyIndexCount = 0;
+    swapchain_info.pQueueFamilyIndices = nullptr;
+    swapchain_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    swapchain_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapchain_info.presentMode = desc->vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
+    swapchain_info.clipped = VK_TRUE;
+    swapchain_info.oldSwapchain = old_swapchain;
 
     // Check what has changed
-    bool size_changed           = desc->width != swapchain_desc.width || desc->height != swapchain_desc.height;
-    bool num_buffers_changed    = desc->num_buffers > swapchain_desc.num_buffers;
-    bool format_changed         = desc->format != swapchain_desc.format;
-    bool config_changed         = size_changed || num_buffers_changed || format_changed;
+    bool size_changed = desc->width != swapchain_desc.width || desc->height != swapchain_desc.height;
+    bool num_buffers_changed = desc->num_buffers > swapchain_desc.num_buffers;
+    bool format_changed = desc->format != swapchain_desc.format;
+    bool config_changed = size_changed || num_buffers_changed || format_changed;
 
     if (frame_data == nullptr || config_changed) {
         DestroyFrameData(impl_device);
@@ -1188,21 +1502,21 @@ GnResult GnSwapchainVK::Init(GnDeviceVK* impl_device, const GnSwapchainDesc* des
         }
 
         VkImageCreateInfo image_info;
-        image_info.sType                    = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_info.pNext                    = nullptr;
-        image_info.flags                    = 0;
-        image_info.imageType                = VK_IMAGE_TYPE_2D;
-        image_info.format                   = swapchain_info.imageFormat;
-        image_info.extent                   = { desc->width, desc->height, 1 };
-        image_info.mipLevels                = 1;
-        image_info.arrayLayers              = 1;
-        image_info.samples                  = VK_SAMPLE_COUNT_1_BIT;
-        image_info.tiling                   = VK_IMAGE_TILING_OPTIMAL;
-        image_info.usage                    = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        image_info.sharingMode              = VK_SHARING_MODE_EXCLUSIVE;
-        image_info.queueFamilyIndexCount    = 0;
-        image_info.pQueueFamilyIndices      = nullptr;
-        image_info.initialLayout            = VK_IMAGE_LAYOUT_UNDEFINED;
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.pNext = nullptr;
+        image_info.flags = 0;
+        image_info.imageType = VK_IMAGE_TYPE_2D;
+        image_info.format = swapchain_info.imageFormat;
+        image_info.extent = { desc->width, desc->height, 1 };
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        image_info.queueFamilyIndexCount = 0;
+        image_info.pQueueFamilyIndices = nullptr;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
         VkSemaphoreCreateInfo semaphore_info;
         semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -1210,13 +1524,13 @@ GnResult GnSwapchainVK::Init(GnDeviceVK* impl_device, const GnSwapchainDesc* des
         semaphore_info.flags = 0;
 
         VkCommandPoolCreateInfo pool_info{};
-        pool_info.sType             = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        pool_info.queueFamilyIndex  = 0;
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.queueFamilyIndex = 0;
 
         VkCommandBufferAllocateInfo cmd_buf_alloc_info{};
-        cmd_buf_alloc_info.sType                = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        cmd_buf_alloc_info.level                = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cmd_buf_alloc_info.commandBufferCount   = 1;
+        cmd_buf_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmd_buf_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmd_buf_alloc_info.commandBufferCount = 1;
 
         for (uint32_t i = 0; i < desc->num_buffers; i++) {
             FrameData& data = frame_data[i];
@@ -1229,7 +1543,7 @@ GnResult GnSwapchainVK::Init(GnDeviceVK* impl_device, const GnSwapchainDesc* des
             // Find supported memory type. We only do this once.
             if (swapchain_memtype_index == -1) {
                 fn.vkGetImageMemoryRequirements(device, data.blit_image, &image_mem_requirements);
-                swapchain_memtype_index = GnFindMemoryTypeVk(GN_TO_VULKAN(GnAdapter, impl_device->parent_adapter)->memory_properties,
+                swapchain_memtype_index = GnFindMemoryTypeVk(GN_TO_VULKAN(GnAdapter, impl_device->parent_adapter)->vk_memory_properties,
                                                              image_mem_requirements.memoryTypeBits,
                                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
@@ -1256,10 +1570,10 @@ GnResult GnSwapchainVK::Init(GnDeviceVK* impl_device, const GnSwapchainDesc* des
         }
 
         VkMemoryAllocateInfo image_alloc_info;
-        image_alloc_info.sType              = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        image_alloc_info.pNext              = nullptr;
-        image_alloc_info.allocationSize     = image_mem_requirements.size * desc->num_buffers; // Total size of required to store blit images
-        image_alloc_info.memoryTypeIndex    = (uint32_t)swapchain_memtype_index;
+        image_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        image_alloc_info.pNext = nullptr;
+        image_alloc_info.allocationSize = image_mem_requirements.size * desc->num_buffers; // Total size of required to store blit images
+        image_alloc_info.memoryTypeIndex = (uint32_t)swapchain_memtype_index;
         
         GnResult result = GnAllocateMemoryVk(impl_device, &image_alloc_info, &image_memory);
         if (GN_FAILED(result)) {
@@ -1332,115 +1646,13 @@ void GnSwapchainVK::DestroyFrameData(GnDeviceVK* impl_device)
     }
 }
 
-// -- [GnQueueVK] --
-
-GnQueueVK::~GnQueueVK()
-{
-}
-
-GnResult GnQueueVK::QueuePresent(GnSwapchain swapchain) noexcept
-{
-    GnSwapchainVK* impl_swapchain = GN_TO_VULKAN(GnSwapchain, swapchain);
-    uint32_t current_frame = impl_swapchain->current_frame;
-    const GnSwapchainVK::FrameData& frame = impl_swapchain->frame_data[current_frame];
-    VkImage present_image = impl_swapchain->swapchain_buffers[impl_swapchain->current_acquired_image];
-
-    parent_device->fn.vkQueueWaitIdle(queue);
-
-    VkCommandBufferBeginInfo begin_info{};
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    VkClearColorValue color_value;
-    color_value.float32[0] = 1.0f;
-    color_value.float32[1] = 0.0f;
-    color_value.float32[2] = 0.0f;
-    color_value.float32[3] = 0.0f;
-
-    VkImageSubresourceRange subresource_range;
-    subresource_range.aspectMask        = VK_IMAGE_ASPECT_COLOR_BIT;
-    subresource_range.baseMipLevel      = 0;
-    subresource_range.levelCount        = 1;
-    subresource_range.baseArrayLayer    = 0;
-    subresource_range.layerCount        = 1;
-
-    VkImageMemoryBarrier barrier;
-    barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.pNext               = nullptr;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image               = present_image;
-    barrier.subresourceRange    = subresource_range;
-
-    parent_device->fn.vkResetCommandPool(parent_device->device, frame.cmd_pool, 0);
-    parent_device->fn.vkBeginCommandBuffer(frame.cmd_buffer, &begin_info);
-    
-    barrier.srcAccessMask   = 0;
-    barrier.dstAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.oldLayout       = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout       = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-
-    parent_device->fn.vkCmdPipelineBarrier(frame.cmd_buffer,
-                                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                           VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                           0, 0, nullptr, 0, nullptr,
-                                           1, &barrier);
-
-    parent_device->fn.vkCmdClearColorImage(frame.cmd_buffer, present_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color_value, 1, &subresource_range);
-
-    barrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask   = 0;
-    barrier.oldLayout       = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout       = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    parent_device->fn.vkCmdPipelineBarrier(frame.cmd_buffer,
-                                           VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                           VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                           0, 0, nullptr, 0, nullptr,
-                                           1, &barrier);
-
-    parent_device->fn.vkEndCommandBuffer(frame.cmd_buffer);
-
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-    VkSubmitInfo submit_info{};
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit_info.pNext = nullptr;
-    submit_info.waitSemaphoreCount = 1;
-    submit_info.pWaitSemaphores = &frame.acquire_image_semaphore;
-    submit_info.pWaitDstStageMask = &wait_stage;
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &frame.cmd_buffer;
-    submit_info.signalSemaphoreCount = 1;
-    submit_info.pSignalSemaphores = &frame.blit_finished_semaphore;
-
-    parent_device->fn.vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
-
-    VkPresentInfoKHR present_info;
-    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    present_info.pNext = nullptr;
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &frame.blit_finished_semaphore;
-    present_info.swapchainCount = 1;
-    present_info.pSwapchains = &impl_swapchain->swapchain;
-    present_info.pImageIndices = &impl_swapchain->current_acquired_image;
-    present_info.pResults = nullptr;
-
-    parent_device->fn.vkQueuePresentKHR(queue, &present_info);
-
-    impl_swapchain->current_frame = (current_frame + 1) % impl_swapchain->swapchain_desc.num_buffers;
-    impl_swapchain->AcquireNextImage();
-
-    return GnResult();
-}
-
 // -- [GnCommandListVK] --
 
 GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) noexcept :
     parent_cmd_pool((GnCommandPoolVK*)parent_cmd_pool),
     fn(this->parent_cmd_pool->parent_device->fn)
 {
-    draw_cmd_private_data = (void*)cmd_buffer; // We use this to store VkCommandBuffer to save space
+    draw_cmd_private_data = (void*)cmd_buffer; // We use this to store VkCommandBuffer to save space :P
     draw_indexed_cmd_private_data = (void*)cmd_buffer;
     dispatch_cmd_private_data = (void*)cmd_buffer;
 
@@ -1449,9 +1661,15 @@ GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer 
         GnCommandListVK* impl_cmd_list = GN_TO_VULKAN(GnCommandList, command_list);
         VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->draw_cmd_private_data;
 
+        // Update graphics pipeline
+        if (impl_cmd_list->state.update_flags.graphics_pipeline) {
+            // TODO
+        }
+
         // Update index buffer
         if (impl_cmd_list->state.update_flags.index_buffer)
-            impl_cmd_list->cmd_bind_index_buffer(cmd_buf, GN_TO_VULKAN(GnBuffer, impl_cmd_list->state.index_buffer)->buffer,
+            impl_cmd_list->cmd_bind_index_buffer(cmd_buf,
+                                                 GN_TO_VULKAN(GnBuffer, impl_cmd_list->state.index_buffer)->buffer,
                                                  impl_cmd_list->state.index_buffer_offset,
                                                  VK_INDEX_TYPE_UINT32);
 
@@ -1468,11 +1686,6 @@ GnCommandListVK::GnCommandListVK(GnCommandPool parent_cmd_pool, VkCommandBuffer 
                                                    &impl_cmd_list->state.vertex_buffer_offsets[update_range.first]);
 
             impl_cmd_list->state.vertex_buffer_upd_range.Flush();
-        }
-
-        // Update graphics pipeline
-        if (impl_cmd_list->state.update_flags.graphics_pipeline) {
-            // TODO
         }
 
         // Update blend constants
