@@ -71,6 +71,10 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
 
         add_executable(gn-test-vulkan ${GN_TEST_SOURCES})
         target_compile_definitions(gn-test-vulkan PUBLIC GN_TEST_BACKEND_VULKAN)
-        target_link_libraries(gn-test-vulkan PRIVATE gn-static)
+        target_link_libraries(gn-test-vulkan PRIVATE gn-static ${GN_STATIC_DEPS})
+
+        add_executable(gn-barrier-test-vulkan test/barrier_conv_test.cpp)
+        target_compile_definitions(gn-barrier-test-vulkan PUBLIC GN_TEST_BACKEND_VULKAN)
+        target_link_libraries(gn-barrier-test-vulkan PRIVATE gn-static ${GN_STATIC_DEPS})
     endif()
 endif()

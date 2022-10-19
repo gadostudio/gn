@@ -160,7 +160,7 @@ struct GnExampleApp
                                 GnAdapterProperties properties;
                                 GnGetAdapterProperties(candidate_adapter, &properties);
 
-                                if (properties.type == GnAdapterType_Discrete) {
+                                if (properties.type == GnAdapterType_Integrated) {
                                     adapter = candidate_adapter;
                                 }
                             });
@@ -198,7 +198,15 @@ struct GnExampleApp
             return false;
         }
 
-        if (GnCreateDevice(adapter, nullptr, &device) != GnSuccess) {
+        GnQueueGroupDesc direct_queue_group_desc{};
+        direct_queue_group_desc.index = direct_queue_group;
+        direct_queue_group_desc.num_enabled_queues = 1;
+
+        GnDeviceDesc device_desc{};
+        device_desc.num_enabled_queue_groups = 1;
+        device_desc.queue_group_descs = &direct_queue_group_desc;
+
+        if (GnCreateDevice(adapter, &device_desc, &device) != GnSuccess) {
             EX_ERROR("Cannot create device");
             return false;
         }

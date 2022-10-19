@@ -57,6 +57,20 @@ static constexpr T GnMax(T a, T2 b, Rest... rest) noexcept
     return (a > b) ? a : GnMax<T2, Rest...>(b, rest...);
 }
 
+template<typename T, typename... Args>
+inline static constexpr bool GnContainsBit(T op, Args... args) noexcept
+{
+    T mask = (args | ...);
+    return (op & mask) == mask;
+}
+
+template<typename T, typename... Args>
+inline static constexpr bool GnHasBit(T op, Args... args) noexcept
+{
+    T mask = (args | ...);
+    return (op & mask) != 0;
+}
+
 template<typename T, typename T2, typename... Rest>
 struct GnUnionStorage
 {
@@ -79,73 +93,173 @@ struct GnPoolChunk
 template<typename T>
 struct GnPool
 {
-    GnPoolHeader* pool_begin = nullptr;
-    GnPoolHeader* pool_end = nullptr;
+    static constexpr std::size_t alloc_size = GnMax(sizeof(T), sizeof(GnPoolHeader));
+    static constexpr std::size_t alloc_alignment = GnMax(alignof(T), alignof(GnPoolHeader));
+
+    GnPoolHeader* first_pool = nullptr;
+    GnPoolHeader* current_pool = nullptr;
     GnPoolChunk* current_allocation = nullptr;
-    std::size_t chunks_per_block;
+    GnPoolChunk* last_allocation = nullptr;
+    std::size_t objects_per_block;
     std::size_t num_reserved = 0;
     std::size_t num_allocated = 0;
     
-    GnPool(std::size_t chunks_per_block) :
-        chunks_per_block(chunks_per_block)
+    GnPool(std::size_t objects_per_block) noexcept :
+        objects_per_block(objects_per_block)
     {
+    }
+
+    ~GnPool()
+    {
+        GnPoolHeader* pool = first_pool;
+        while (pool != nullptr) {
+            GnPoolHeader* next_pool = pool->next_pool;
+            ::operator delete(pool, std::align_val_t{alloc_alignment}, std::nothrow);
+            pool = next_pool;
+        }
     }
 
     void* allocate() noexcept
     {
-        ++num_allocated;
-
-        if (num_allocated > num_reserved) {
-            _reserve_new_block();
+        if (num_allocated >= num_reserved) {
+            if (!_reserve_new_block()) {
+                return nullptr;
+            }
         }
 
-        return nullptr;
+        GnPoolChunk* free_chunk = current_allocation;
+        last_allocation = current_allocation;
+        current_allocation = current_allocation->next_chunk;
+        ++num_allocated;
+
+        return free_chunk;
     }
 
     void free(void* ptr) noexcept
     {
+        GnPoolChunk* chunk = reinterpret_cast<GnPoolChunk*>(ptr);
+        chunk->next_chunk = current_allocation;
+        current_allocation = chunk;
         --num_allocated;
     }
 
-    void _reserve_new_block() noexcept
+    bool _reserve_new_block() noexcept
     {
-        // Make sure we have the right size and alignment
-        static constexpr std::size_t block_size = GnMax(sizeof(T), sizeof(GnPoolHeader));
-        static constexpr std::size_t block_alignment = GnMax(alignof(T), alignof(GnPoolHeader));
-        
         // Allocate the pool
-        // One extra storage is required for the pool header. It may waste space a bit.
-        uint8_t* pool = (uint8_t*)::operator new(block_size * (chunks_per_block + 1), std::align_val_t{block_alignment}, std::nothrow);
+        // One extra storage is required for the pool header. It may waste space a bit if the object is too large.
+        std::size_t size = alloc_size * (objects_per_block + 1);
+        uint8_t* pool = (uint8_t*)::operator new[](size, std::align_val_t{alloc_alignment}, std::nothrow);
+
+        if (pool == nullptr)
+            return false;
+
+        std::memset(pool, 0, size);
 
         // Initialize the pool header
         GnPoolHeader* pool_header = reinterpret_cast<GnPoolHeader*>(pool);
 
-        if (pool_end)
-            pool_end->next_pool = pool_header;
+        if (current_pool)
+            current_pool->next_pool = pool_header;
         else
-            pool_begin = pool_header;
+            first_pool = pool_header;
 
-        pool_end = pool_header;
+        current_pool = pool_header;
         pool_header->next_pool = nullptr;
 
         // Initialize free list. The list is stored inside the pool storage.
-        GnPoolChunk* current_chunk = reinterpret_cast<GnPoolChunk*>(pool + block_size);
+        GnPoolChunk* current_chunk = reinterpret_cast<GnPoolChunk*>(pool + alloc_size);
         current_allocation = current_chunk;
 
-        for (std::size_t i = 1; i < chunks_per_block; i++) {
-            current_chunk->next_chunk = reinterpret_cast<GnPoolChunk*>(reinterpret_cast<uint8_t*>(current_chunk) + block_size);
+        for (std::size_t i = 1; i < objects_per_block; i++) {
+            current_chunk->next_chunk = reinterpret_cast<GnPoolChunk*>(reinterpret_cast<uint8_t*>(current_chunk) + alloc_size);
             current_chunk = current_chunk->next_chunk;
         }
 
-        num_reserved += chunks_per_block;
+        num_reserved += objects_per_block;
+
+        return true;
+    }
+};
+
+// Only use this for POD structs!!
+template<typename PODType, size_t Size, std::enable_if_t<std::is_pod_v<PODType>, bool> = true>
+struct GnSmallPODVector
+{
+    PODType local_storage[Size]{};
+    PODType* storage = nullptr;
+    size_t size = 0;
+    size_t capacity = Size;
+
+    GnSmallPODVector() noexcept :
+        storage(local_storage)
+    {
+    }
+
+    ~GnSmallPODVector()
+    {
+        if (storage != local_storage) {
+            std::free(storage);
+        }
+    }
+
+    PODType& operator[](size_t n) noexcept
+    {
+        return storage[n];
+    }
+
+    const PODType& operator[](size_t n) const noexcept
+    {
+        return storage[n];
+    }
+
+    bool push_back(const PODType& value) noexcept
+    {
+        if (size == capacity)
+            if (!reserve(capacity + 1))
+                return false;
+
+        storage[size++] = value;
+        return true;
+    }
+
+    bool resize(size_t n) noexcept
+    {
+        size = n;
+        return reserve(n);
+    }
+
+    bool reserve(size_t n) noexcept
+    {
+        if (n > capacity) {
+            PODType* new_storage = (PODType*)std::malloc(n * sizeof(PODType));
+
+            if (new_storage == nullptr)
+                return false;
+
+            std::memcpy(new_storage, storage, size * sizeof(PODType));
+
+            if (storage != local_storage) {
+                std::free(storage);
+            }
+
+            storage = new_storage;
+            capacity = n;
+        }
+
+        return true;
     }
 };
 
 template<typename ObjectTypes>
 struct GnObjectPool
 {
-    std::optional<GnPool<typename ObjectTypes::Queue>>  queue;
-    std::optional<GnPool<typename ObjectTypes::Fence>>  fence;
+    std::optional<GnPool<typename ObjectTypes::Queue>>                  queue;
+    std::optional<GnPool<typename ObjectTypes::Fence>>                  fence;
+    std::optional<GnPool<typename ObjectTypes::Memory>>                 memory;
+    std::optional<GnPool<typename ObjectTypes::Buffer>>                 buffer;
+    std::optional<GnPool<typename ObjectTypes::Texture>>                texture;
+    std::optional<GnPool<typename ObjectTypes::TextureView>>            texture_view;
+    std::optional<GnPool<typename ObjectTypes::ResourceTableLayout>>    resource_table_layout;
 };
 
 struct GnUnimplementedType {};
@@ -156,15 +270,9 @@ struct GnInstance_t
     uint32_t                num_adapters = 0;
     GnAdapter               adapters = nullptr; // Linked-list
 
-    virtual ~GnInstance_t()
-    {
-        _CrtMemState s1;
-        _CrtMemCheckpoint(&s1);
-        _CrtMemDumpStatistics(&s1);
-        _CrtDumpMemoryLeaks();
-    }
+    virtual ~GnInstance_t() {}
 
-    virtual GnResult CreateSurface(const GnSurfaceDesc* desc, GN_OUT GnSurface* surface) noexcept = 0;
+    virtual GnResult CreateSurface(const GnSurfaceDesc* desc, GnSurface* surface) noexcept = 0;
 };
 
 struct GnAdapter_t
@@ -181,10 +289,10 @@ struct GnAdapter_t
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
     virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
     virtual GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept = 0;
-    virtual void GetSurfaceProperties(GnSurface surface, GN_OUT GnSurfaceProperties* properties) const noexcept = 0;
-    virtual GnResult GetSurfaceFormats(GnSurface surface, uint32_t* num_surface_formats, GN_OUT GnFormat* formats) const noexcept = 0;
+    virtual void GetSurfaceProperties(GnSurface surface, GnSurfaceProperties* properties) const noexcept = 0;
+    virtual GnResult GetSurfaceFormats(GnSurface surface, uint32_t* num_surface_formats, GnFormat* formats) const noexcept = 0;
     virtual GnResult GnEnumerateSurfaceFormats(GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn) const noexcept = 0;
-    virtual GnResult CreateDevice(const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept = 0;
+    virtual GnResult CreateDevice(const GnDeviceDesc* desc, GnDevice* device) noexcept = 0;
 };
 
 struct GnSurface_t
@@ -201,16 +309,29 @@ struct GnDevice_t
 
     virtual ~GnDevice_t() { }
 
-    virtual GnResult CreateSwapchain(const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain) noexcept = 0;
-    virtual GnResult CreateFence(GnBool signaled, GN_OUT GnFence* fence) noexcept = 0;
+    virtual GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept = 0;
+    virtual GnResult CreateFence(GnBool signaled, GnFence* fence) noexcept = 0;
+    virtual GnResult CreateMemory(const GnMemoryDesc* desc, GnMemory* buffer) noexcept = 0;
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
     virtual GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept = 0;
+    virtual GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept = 0;
+    virtual GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept = 0;
+    virtual GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept = 0;
     virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
     virtual void DestroySwapchain(GnSwapchain swapchain) noexcept = 0;
+    virtual void DestroyMemory(GnMemory memory) noexcept = 0;
     virtual void DestroyBuffer(GnBuffer buffer) noexcept = 0;
     virtual void DestroyTexture(GnTexture texture) noexcept = 0;
     virtual void DestroyTextureView(GnTextureView texture_view) noexcept = 0;
+    virtual void DestroyRenderPass(GnRenderPass render_pass) noexcept = 0;
+    virtual void DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept = 0;
+    virtual void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept = 0;
+    virtual void DestroyCommandPool(GnCommandPool command_pool) noexcept = 0;
+    virtual GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept = 0;
+    virtual GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept = 0;
+    virtual void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept = 0;
+    virtual void WriteBuffer(GnBuffer buffer, GnDeviceSize size, const void* data) noexcept = 0;
     virtual GnQueue GetQueue(uint32_t queue_group_id, uint32_t queue_index) noexcept = 0;
     virtual GnResult DeviceWaitIdle() noexcept = 0;
 };
@@ -235,6 +356,16 @@ struct GnFence_t
     virtual ~GnFence_t() { }
 };
 
+struct GnMemory_t
+{
+    GnMemoryDesc desc;
+
+    inline bool IsAlwaysMapped() const noexcept
+    {
+        return GnHasBit(desc.flags, GnMemoryUsage_AlwaysMapped);
+    }
+};
+
 struct GnBuffer_t
 {
     GnBufferDesc desc;
@@ -250,6 +381,19 @@ struct GnTextureView_t
     GnTextureViewDesc desc;
 };
 
+struct GnRenderPass_t
+{
+
+};
+
+struct GnResourceTableLayout_t
+{
+};
+
+struct GnPipelineLayout_t
+{
+};
+
 struct GnCommandPool_t
 {
     GnCommandList command_lists; // linked-list
@@ -261,7 +405,7 @@ struct GnUpdateRange
     uint16_t first = UINT16_MAX;
     uint16_t last = UINT16_MAX;
 
-    inline void Update(uint32_t idx)
+    inline void Update(uint32_t idx) noexcept
     {
         if (first == 0xFFFF) {
             first = (uint32_t)idx;
@@ -273,7 +417,7 @@ struct GnUpdateRange
         if (idx > last) last = idx + 1;
     }
 
-    inline void Update(uint32_t first_idx, uint32_t last_idx)
+    inline void Update(uint32_t first_idx, uint32_t last_idx) noexcept
     {
         if (first == 0xFFFF) {
             first = (uint32_t)first_idx;
@@ -285,7 +429,7 @@ struct GnUpdateRange
         if (last_idx > last) last = (uint32_t)last_idx + 1;
     }
 
-    inline void Flush()
+    inline void Flush() noexcept
     {
         first = UINT16_MAX;
         last = UINT16_MAX;
@@ -389,7 +533,7 @@ struct GnCommandPoolFallback : public GnCommandPool_t
 
 struct GnCommandListFallback : public GnCommandList_t
 {
-    GnCommandListFallback();
+    GnCommandListFallback() noexcept;
     ~GnCommandListFallback();
     
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
@@ -423,20 +567,6 @@ static void GnWstrToStr(char* dst, const wchar_t* src, size_t len)
     std::wcsrtombs(dst, &src, len, &state); // C4996
 }
 
-template<typename T, typename... Args>
-inline static constexpr bool GnContainsBit(T op, Args... args) noexcept
-{
-    T mask = (args | ...);
-    return (op & mask) == mask;
-}
-
-template<typename T, typename... Args>
-inline static constexpr bool GnHasBit(T op, Args... args) noexcept
-{
-    T mask = (args | ...);
-    return (op & mask) != 0;
-}
-
 #ifdef _WIN32
 template<typename T, std::enable_if_t<std::is_base_of_v<IUnknown, T>, bool> = true>
 inline static void GnSafeComRelease(T*& ptr) noexcept
@@ -449,11 +579,11 @@ inline static void GnSafeComRelease(T*& ptr) noexcept
 
 // -- [GnInstance] --
 
-GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, GN_OUT GnInstance* instance) noexcept;
-GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GN_OUT GnInstance* instance) noexcept;
+GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, GnInstance* instance) noexcept;
+GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance) noexcept;
 
 GnResult GnCreateInstance(const GnInstanceDesc* desc,
-                          GN_OUT GnInstance* instance)
+                          GnInstance* instance)
 {
     switch (desc->backend) {
 #ifdef _WIN32
@@ -485,7 +615,7 @@ uint32_t GnGetAdapterCount(GnInstance instance)
     return instance->num_adapters;
 }
 
-uint32_t GnGetAdapters(GnInstance instance, uint32_t num_adapters, GN_OUT GnAdapter* adapters)
+uint32_t GnGetAdapters(GnInstance instance, uint32_t num_adapters, GnAdapter* adapters)
 {
     if (instance->adapters == nullptr)
         return 0;
@@ -526,12 +656,12 @@ GnBackend GnGetBackend(GnInstance instance)
 
 // -- [GnAdapter] --
 
-void GnGetAdapterProperties(GnAdapter adapter, GN_OUT GnAdapterProperties* properties)
+void GnGetAdapterProperties(GnAdapter adapter, GnAdapterProperties* properties)
 {
     *properties = adapter->properties;
 }
 
-void GnGetAdapterLimits(GnAdapter adapter, GN_OUT GnAdapterLimits* limits)
+void GnGetAdapterLimits(GnAdapter adapter, GnAdapterLimits* limits)
 {
     *limits = adapter->limits;
 }
@@ -662,7 +792,7 @@ uint32_t GnFindSupportedMemoryType(GnAdapter adapter, uint32_t memory_type_bits,
 
 // -- [GnSurface] --
 
-GnResult GnCreateSurface(GnInstance instance, const GnSurfaceDesc* desc, GN_OUT GnSurface* surface)
+GnResult GnCreateSurface(GnInstance instance, const GnSurfaceDesc* desc, GnSurface* surface)
 {
     if (desc == nullptr) return GnError_InvalidArgs;
     return instance->CreateSurface(desc, surface);
@@ -687,7 +817,7 @@ void GnEnumeratePresentationQueueGroup(GnAdapter adapter, GnSurface surface, voi
     }
 }
 
-void GnGetSurfaceProperties(GnAdapter adapter, GnSurface surface, GN_OUT GnSurfaceProperties* properties)
+void GnGetSurfaceProperties(GnAdapter adapter, GnSurface surface, GnSurfaceProperties* properties)
 {
     adapter->GetSurfaceProperties(surface, properties);
 }
@@ -699,7 +829,7 @@ uint32_t GnGetSurfaceFormatCount(GnAdapter adapter, GnSurface surface)
     return num_surface_formats;
 }
 
-GnResult GnGetSurfaceFormats(GnAdapter adapter, GnSurface surface, uint32_t num_surface_formats, GN_OUT GnFormat* formats)
+GnResult GnGetSurfaceFormats(GnAdapter adapter, GnSurface surface, uint32_t num_surface_formats, GnFormat* formats)
 {
     return adapter->GetSurfaceFormats(surface, &num_surface_formats, formats);
 }
@@ -715,7 +845,7 @@ GnResult GnEnumerateSurfaceFormats(GnAdapter adapter, GnSurface surface, void* u
 
 // -- [GnDevice] --
 
-bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device) noexcept
+bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, GnDevice* device) noexcept
 {
     bool error = false;
 
@@ -769,7 +899,7 @@ bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, GN
     return error;
 }
 
-GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GN_OUT GnDevice* device)
+GnResult GnCreateDevice(GnAdapter adapter, const GnDeviceDesc* desc, GnDevice* device)
 {
     if (GnValidateCreateDeviceParam(adapter, desc, device)) return GnError_InvalidArgs;
 
@@ -824,7 +954,7 @@ GnResult GnDeviceWaitIdle(GnDevice device)
 
 // -- [GnSwapchain] --
 
-GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GN_OUT GnSwapchain* swapchain)
+GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GnSwapchain* swapchain)
 {
     return device->CreateSwapchain(desc, swapchain);
 }
@@ -858,7 +988,7 @@ GnResult GnWaitQueue(GnQueue queue)
 
 // -- [GnSemaphore] --
 
-GnResult GnCreateSemaphore(GnDevice device, GN_OUT GnSemaphore* semaphore)
+GnResult GnCreateSemaphore(GnDevice device, GnSemaphore* semaphore)
 {
     return GnResult();
 }
@@ -869,7 +999,7 @@ void GnDestroySemaphore(GnDevice device, GnSemaphore semaphore)
 
 // -- [GnFence] --
 
-bool GnValidateCreateFenceParam(GnDevice device, bool signaled, GN_OUT GnFence* fence)
+bool GnValidateCreateFenceParam(GnDevice device, bool signaled, GnFence* fence)
 {
     bool error = false;
     if (device == nullptr) error = true;
@@ -877,7 +1007,7 @@ bool GnValidateCreateFenceParam(GnDevice device, bool signaled, GN_OUT GnFence* 
     return error;
 }
 
-GnResult GnCreateFence(GnDevice device, GnBool signaled, GN_OUT GnFence* fence)
+GnResult GnCreateFence(GnDevice device, GnBool signaled, GnFence* fence)
 {
     if (GnValidateCreateFenceParam(device, signaled, fence)) return GnError_InvalidArgs;
     return device->CreateFence(signaled, fence);
@@ -906,40 +1036,64 @@ void GnResetFence(GnFence fence)
 
 // -- [GnMemory] --
 
-GnResult GnAllocateMemory(GnDevice device, const GnMemoryDesc* desc, GN_OUT GnMemory* memory)
+GnResult GnCreateMemory(GnDevice device, const GnMemoryDesc* desc, GnMemory* memory)
 {
-    return GnResult();
+    return device->CreateMemory(desc, memory);
 }
 
-void GnFreeMemory(GnDevice device, GnMemory memory)
+void GnDestroyMemory(GnDevice device, GnMemory memory)
 {
+    device->DestroyMemory(memory);
 }
 
 // -- [GnBuffer] --
 
-GnResult GnCreateBuffer(GnDevice device, const GnBufferDesc* desc, GN_OUT GnBuffer* buffer)
+GnResult GnCreateBuffer(GnDevice device, const GnBufferDesc* desc, GnBuffer* buffer)
 {
-    return GnError_Unimplemented;
-
+    return device->CreateBuffer(desc, buffer);
 }
 
 void GnDestroyBuffer(GnDevice device, GnBuffer buffer)
 {
-
+    device->DestroyBuffer(buffer);
 }
 
-void GnGetBufferDesc(GnBuffer buffer, GN_OUT GnBufferDesc* texture_desc)
+void GnGetBufferDesc(GnBuffer buffer, GnBufferDesc* texture_desc)
 {
-
+    *texture_desc = buffer->desc;
 }
 
 void GnGetBufferMemoryRequirements(GnDevice device, GnBuffer buffer, GnMemoryRequirements* memory_requirements)
 {
 }
 
+inline GnResult GnBindBufferMemory(GnDevice device, GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset)
+{
+    return GnResult();
+}
+
+inline GnResult GnBindBufferDedicatedMemory(GnDevice device, GnBuffer buffer, uint32_t memory_type_index)
+{
+    return GnResult();
+}
+
+inline GnResult GnMapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory)
+{
+    return GnResult();
+}
+
+inline void GnUnmapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range)
+{
+}
+
+inline GnResult GnWriteBuffer(GnDevice device, GnBuffer buffer, GnDeviceSize size, const void* data)
+{
+    return GnResult();
+}
+
 // -- [GnTexture] --
 
-GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GN_OUT GnTexture* texture)
+GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GnTexture* texture)
 {
     return GnError_Unimplemented;
 }
@@ -949,7 +1103,7 @@ void GnDestroyTexture(GnDevice device, GnTexture texture)
 
 }
 
-void GnGetTextureDesc(GnTexture texture, GN_OUT GnTextureDesc* texture_desc)
+void GnGetTextureDesc(GnTexture texture, GnTextureDesc* texture_desc)
 {
 
 }
@@ -960,30 +1114,64 @@ void GnGetTextureMemoryRequirements(GnDevice device, GnTexture texture, GnMemory
 
 // -- [GnTextureView] --
 
-bool GnValidateCreateTextureViewParam(GnDevice device, const GnTextureViewDesc* desc, GN_OUT GnTextureView* texture_view)
+bool GnValidateCreateTextureViewParam(GnDevice device, const GnTextureViewDesc* desc, GnTextureView* texture_view)
 {
     return true;
 }
 
-GnResult GnCreateTextureView(GnDevice device, const GnTextureViewDesc* desc, GN_OUT GnTextureView* texture_view)
+GnResult GnCreateTextureView(GnDevice device, const GnTextureViewDesc* desc, GnTextureView* texture_view)
 {
     if (GnValidateCreateTextureViewParam(device, desc, texture_view)) return GnError_InvalidArgs;
-    return GnSuccess;
+    return device->CreateTextureView(desc, texture_view);
 }
 
-void GnDestroyTextureView(GnDevice device, GnTextureView texture)
+void GnDestroyTextureView(GnDevice device, GnTextureView texture_view)
 {
-
+    device->DestroyTextureView(texture_view);
 }
 
-void GnGetTextureViewDesc(GnTextureView texture_view, GN_OUT GnTextureViewDesc* desc)
+void GnGetTextureViewDesc(GnTextureView texture_view, GnTextureViewDesc* desc)
 {
     *desc = texture_view->desc;
 }
 
+// -- [GnRenderPass] --
+
+GnResult GnCreateRenderPass(GnDevice device, const GnRenderPassDesc* desc, GnRenderPass* render_pass)
+{
+    return device->CreateRenderPass(desc, render_pass);
+}
+
+void GnDestroyRenderPass(GnDevice device, GnRenderPass render_pass)
+{
+    device->DestroyRenderPass(render_pass);
+}
+
+// -- [GnResourceTableLayout] --
+
+GnResult GnCreateResourceTableLayout(GnDevice device, const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table)
+{
+    return GnError_Unimplemented;
+}
+
+void GnDestoryResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table)
+{
+}
+
+// -- [GnPipelineLayout] --
+
+GnResult GnCreatePipelineLayout(GnDevice device, const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout)
+{
+    return GnError_Unimplemented;
+}
+
+void GnDestroyPipelineLayout(GnDevice device, GnPipelineLayout pipeline_layout)
+{
+}
+
 // -- [GnCommandPool] --
 
-GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GN_OUT GnCommandPool* command_pool)
+GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GnCommandPool* command_pool)
 {
     return GnError_Unimplemented;
 }
@@ -993,9 +1181,14 @@ void GnDestroyCommandPool(GnCommandPool command_pool)
 
 }
 
+void GnTrimCommandPool(GnCommandPool command_pool)
+{
+}
+
+
 // -- [GnCommandList] --
 
-GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GN_OUT GnCommandList* command_lists)
+GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists)
 {
     return GnError_Unimplemented;
 }
@@ -1276,15 +1469,11 @@ void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTextu
 {
 }
 
-void GnCmdBarrier(GnCommandList command_list)
-{
-}
-
 void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles)
 {
 }
 
-GnCommandListFallback::GnCommandListFallback()
+GnCommandListFallback::GnCommandListFallback() noexcept
 {
     draw_cmd_private_data = this;
     draw_indexed_cmd_private_data = this;
@@ -1306,19 +1495,19 @@ GnCommandListFallback::GnCommandListFallback()
         if (command_list->state.update_flags.scissors) {}
     };
 
-    flush_compute_state_fn = [](GnCommandList command_list) {
+    flush_compute_state_fn = [](GnCommandList command_list) noexcept {
         if (command_list->state.update_flags.compute_pipeline) {}
     };
 
-    draw_cmd_fn = [](void* cmd_data, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance) {
+    draw_cmd_fn = [](void* cmd_data, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance) noexcept {
 
     };
 
-    draw_indexed_cmd_fn = [](void* cmd_data, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance) {
+    draw_indexed_cmd_fn = [](void* cmd_data, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance) noexcept {
 
     };
 
-    dispatch_cmd_fn = [](void* cmd_data, uint32_t num_threadgroup_x, uint32_t num_threadgroup_y, uint32_t num_threadgroup_z) {
+    dispatch_cmd_fn = [](void* cmd_data, uint32_t num_threadgroup_x, uint32_t num_threadgroup_y, uint32_t num_threadgroup_z) noexcept {
 
     };
 }

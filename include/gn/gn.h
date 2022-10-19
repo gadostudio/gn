@@ -5,7 +5,6 @@
 #include <functional>
 #endif
 
-#define GN_OUT
 #define GN_TRUE 1
 #define GN_FALSE 0
 #define GN_FAILED(x) ((x) < GnSuccess)
@@ -70,6 +69,7 @@ typedef enum
     GnError_InternalError,
     GnError_OutOfHostMemory,
     GnError_OutOfDeviceMemory,
+    GnError_MemoryMapFailed,
     GnError_DeviceLost,
 } GnResult;
 
@@ -521,8 +521,8 @@ typedef struct
     GnDeviceSize        size;
 } GnMemoryDesc;
 
-GnResult GnAllocateMemory(GnDevice device, const GnMemoryDesc* desc, GnMemory* memory);
-void GnFreeMemory(GnDevice device, GnMemory memory);
+GnResult GnCreateMemory(GnDevice device, const GnMemoryDesc* desc, GnMemory* memory);
+void GnDestroyMemory(GnDevice device, GnMemory memory);
 
 typedef enum
 {
@@ -664,10 +664,85 @@ void GnGetTextureViewDesc(GnTextureView texture_view, GnTextureViewDesc* desc);
 typedef struct
 {
 
+} GnRenderPassAttachment;
+
+typedef struct
+{
+
+} GnSubpassDesc;
+
+typedef struct
+{
+    uint32_t                num_attachments;
+    GnRenderPassAttachment* attachments;
+    uint32_t                num_subpasses;
+    GnSubpassDesc*          subpasses;
 } GnRenderPassDesc;
 
 GnResult GnCreateRenderPass(GnDevice device, const GnRenderPassDesc* desc, GnRenderPass* render_pass);
 void GnDestroyRenderPass(GnDevice device, GnRenderPass render_pass);
+
+typedef enum
+{
+    GnShaderStage_VertexShader      = 1 << 0,
+    GnShaderStage_FragmentShader    = 1 << 1,
+    GnShaderStage_ComputeShader     = 1 << 2,
+    GnShaderStage_AllStage          = GnShaderStage_VertexShader | GnShaderStage_FragmentShader | GnShaderStage_ComputeShader
+} GnShaderStage;
+typedef uint32_t GnShaderStageFlags;
+
+typedef enum
+{
+    GnResourceType_Sampler,
+    GnResourceType_UniformBuffer,
+    GnResourceType_StorageBuffer,
+    GnResourceType_SampledTexture,
+    GnResourceType_StorageTexture,
+} GnResourceType;
+
+typedef struct
+{
+    uint32_t            binding;
+    GnResourceType      type;
+    uint32_t            num_resources;
+    GnShaderStageFlags  shader_visibility;
+} GnResourceTableBinding;
+
+typedef struct
+{
+    uint32_t                num_bindings;
+    GnResourceTableBinding* bindings;
+} GnResourceTableLayoutDesc;
+
+GnResult GnCreateResourceTableLayout(GnDevice device, const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table);
+void GnDestoryResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table);
+
+typedef struct
+{
+    uint32_t            binding;
+    GnResourceType      resource_type;
+    GnShaderStageFlags  shader_visibility;
+} GnShaderResource;
+
+typedef struct
+{
+    uint32_t            offset;
+    uint32_t            size;
+    GnShaderStageFlags  shader_visibility;
+} GnShaderConstantRange;
+
+typedef struct
+{
+    uint32_t                        num_resource_tables;
+    const GnResourceTableLayout*    resource_tables;
+    uint32_t                        num_resources;
+    const GnShaderResource*         resources;
+    uint32_t                        num_constant_ranges;
+    const GnShaderConstantRange*    constant_ranges;
+} GnPipelineLayoutDesc;
+
+GnResult GnCreatePipelineLayout(GnDevice device, const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout);
+void GnDestroyPipelineLayout(GnDevice device, GnPipelineLayout pipeline_layout);
 
 typedef enum
 {
@@ -760,6 +835,7 @@ typedef enum
 {
     GnPipelineStreamTokenType_VS,
     GnPipelineStreamTokenType_FS,
+    GnPipelineStreamTokenType_CS,
     GnPipelineStreamTokenType_VertexAttribute,
     GnPipelineStreamTokenType_InputAssembly,
     GnPipelineStreamTokenType_RasterizationState,
@@ -767,6 +843,7 @@ typedef enum
     GnPipelineStreamTokenType_MultisampleState,
     GnPipelineStreamTokenType_AttachmentBlendState,
     GnPipelineStreamTokenType_EnableIndependentBlend,
+    GnPipelineStreamTokenType_Layout,
 } GnPipelineStreamTokenType;
 
 typedef struct
@@ -863,17 +940,23 @@ typedef struct
 
 typedef struct
 {
+    GnShaderBytecode cs;
+    GnPipelineLayout layout;
+} GnComputePipelineDesc;
+
+typedef struct
+{
     GnPipelineStreamTokenType type;
     union
     {
-        GnShaderBytecode                    vs;
-        GnShaderBytecode                    fs;
+        GnShaderBytecode                    shader;
         GnVertexAttributeDesc               vertex_attribute;
         GnPipelineInputAssemblyDesc         input_assembly;
         GnPipelineRasterizationStateDesc    rasterization;
         GnPipelineDepthStencilStateDesc     depth_stencil;
         GnPipelineMultisampleDesc           multisample;
         GnColorAttachmentBlendStateDesc     attachment_blend;
+        GnPipelineLayout                    layout;
     } token;
 } GnPipelineStreamToken;
 
@@ -884,15 +967,10 @@ typedef struct
     bool        tight_stream;
 } GnPipelineStreamDesc;
 
-typedef struct
-{
-    // TODO
-} GnComputePipelineDesc;
-
-GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GN_OUT GnPipeline* graphics_pipeline);
-GnResult GnCreateGraphicsPipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GN_OUT GnPipeline* graphics_pipeline);
-GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* desc, GN_OUT GnPipeline* compute_pipeline);
-GnResult GnCreateComputePipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GN_OUT GnPipeline* compute_pipeline);
+GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GnPipeline* graphics_pipeline);
+GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* desc, GnPipeline* compute_pipeline);
+GnResult GnCreateGraphicsPipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GnPipeline* graphics_pipeline);
+GnResult GnCreateComputePipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GnPipeline* compute_pipeline);
 void GnDestroyPipeline(GnDevice device, GnPipeline pipeline);
 
 typedef enum
@@ -925,7 +1003,7 @@ typedef struct
     uint32_t                    num_cmd_lists;
 } GnCommandListDesc;
 
-GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GN_OUT GnCommandPool* command_pool);
+GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GnCommandPool* command_pool);
 void GnDestroyCommandPool(GnDevice device, GnCommandPool command_pool);
 void GnTrimCommandPool(GnCommandPool command_pool);
 
@@ -948,25 +1026,12 @@ typedef struct
     const GnCommandListInheritance* inheritance;
 } GnCommandListBeginDesc;
 
-GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GN_OUT GnCommandList* command_lists);
+GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists);
 void GnDestroyCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
 GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc);
 GnResult GnEndCommandList(GnCommandList command_list);
 GnBool GnIsRecordingCommandList(GnCommandList command_list);
 GnBool GnIsInsideRenderPass(GnCommandList command_list);
-
-typedef enum
-{
-    GnPipelineStage_DrawIndirect,
-    GnPipelineStage_VertexInput,
-    GnPipelineStage_VertexShader,
-    GnPipelineStage_FragmentShader,
-    GnPipelineStage_EarlyFragmentTest,
-    GnPipelineStage_LateFragmentTest,
-    GnPipelineStage_ColorAttachmentOutput,
-    GnPipelineStage_ComputeShader,
-} GnPipelineStage;
-typedef uint32_t GnPipelineStageFlags;
 
 typedef enum
 {
@@ -1005,6 +1070,40 @@ typedef enum
     GnTextureLayout_Present                 = 10,
 } GnTextureLayout;
 
+typedef enum
+{
+    GnResourceState_Undefined                   = 1 << 0,
+    GnResourceState_IndirectBuffer              = 1 << 1,
+    GnResourceState_IndexBuffer                 = 1 << 2,
+    GnResourceState_VertexBuffer                = 1 << 3,
+    GnResourceState_VSSampled                   = 1 << 4,
+    GnResourceState_FSSampled                   = 1 << 5,
+    GnResourceState_CSSampled                   = 1 << 6,
+    GnResourceState_VSUniformRead               = 1 << 7,
+    GnResourceState_FSUniformRead               = 1 << 8,
+    GnResourceState_CSUniformRead               = 1 << 9,
+    GnResourceState_VSStorageRead               = 1 << 10,
+    GnResourceState_FSStorageRead               = 1 << 11,
+    GnResourceState_CSStorageRead               = 1 << 12,
+    GnResourceState_VSStorageWrite              = 1 << 13,
+    GnResourceState_FSStorageWrite              = 1 << 14,
+    GnResourceState_CSStorageWrite              = 1 << 15,
+    GnResourceState_ColorAttachmentRead         = 1 << 16,
+    GnResourceState_ColorAttachmentWrite        = 1 << 17,
+    GnResourceState_DepthStencilAttachmentRead  = 1 << 18,
+    GnResourceState_DepthStencilAttachmentWrite = 1 << 19,
+    GnResourceState_CopySrc                     = 1 << 20,
+    GnResourceState_CopyDst                     = 1 << 21,
+    GnResourceState_BlitSrc                     = 1 << 22,
+    GnResourceState_BlitDst                     = 1 << 23,
+    GnResourceState_ClearSrc                    = 1 << 24,
+    GnResourceState_ClearDst                    = 1 << 25,
+    GnResourceState_Presentable                 = 1 << 26,
+    GnResourceState_HostRead                    = 1 << 27,
+    GnResourceState_HostWrite                   = 1 << 28
+} GnResourceState;
+typedef uint32_t GnResourceStateFlags;
+
 typedef struct
 {
     float x;
@@ -1025,44 +1124,32 @@ typedef struct
 
 typedef struct
 {
-    GnResourceAccessFlags   access_before;
-    GnResourceAccessFlags   access_after;
+    GnResourceStateFlags    state_before;
+    GnResourceStateFlags    state_after;
     uint32_t                queue_group_index_before;
     uint32_t                queue_group_index_after;
+} GnGlobalBarrier;
+
+typedef struct
+{
     GnBuffer                buffer;
     GnDeviceSize            offset;
     GnDeviceSize            size;
+    GnResourceStateFlags    state_before;
+    GnResourceStateFlags    state_after;
+    uint32_t                queue_group_index_before;
+    uint32_t                queue_group_index_after;
 } GnBufferBarrier;
 
 typedef struct
 {
-    GnResourceAccessFlags       access_before;
-    GnResourceAccessFlags       access_after;
-    GnTextureLayout             layout_before;
-    GnTextureLayout             layout_after;
-    uint32_t                    queue_group_index_before;
-    uint32_t                    queue_group_index_after;
     GnTexture                   texture;
     GnTextureSubresourceRange   subresource_range;
+    GnResourceStateFlags        state_before;
+    GnResourceStateFlags        state_after;
+    uint32_t                    queue_group_index_before;
+    uint32_t                    queue_group_index_after;
 } GnTextureBarrier;
-
-typedef struct
-{
-    GnResourceAccessFlags   access_before;
-    GnResourceAccessFlags   access_after;
-
-    union
-    {
-        GnBuffer            buffer;
-        GnTexture           texture;
-    } resource_before;
-
-    union
-    {
-        GnBuffer            buffer;
-        GnTexture           texture;
-    } resource_after;
-} GnAliasingBarrier;
 
 void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pipeline);
 void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
@@ -1109,11 +1196,9 @@ void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnTextu
 void GnCmdCopyBufferToTexture(GnCommandList command_list, GnBuffer src_buffer, GnTexture dst_texture);
 void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture, GnBuffer dst_buffer);
 void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture);
-void GnCmdGlobalBarrier(GnCommandList command_list, GnPipelineStageFlags stage_before, GnPipelineStageFlags stage_after);
-void GnCmdBufferBarrier(GnCommandList command_list, GnPipelineStageFlags stage_before, GnPipelineStageFlags stage_after, uint32_t num_barriers, const GnBufferBarrier* barriers);
-void GnCmdTextureBarrier(GnCommandList command_list, GnPipelineStageFlags stage_before, GnPipelineStageFlags stage_after, uint32_t num_barriers, const GnTextureBarrier* barriers);
-void GnCmdAliasingBarrier(GnCommandList command_list, GnPipelineStageFlags stage_before, GnPipelineStageFlags stage_after, uint32_t num_barriers, const GnAliasingBarrier* barriers);
-void GnCmdBarrier(GnCommandList command_list);
+void GnCmdBufferBarrier(GnCommandList command_list, uint32_t num_barriers, const GnBufferBarrier* barriers);
+void GnCmdTextureBarrier(GnCommandList command_list, uint32_t num_barriers, const GnTextureBarrier* barriers);
+void GnCmdBarrier(GnCommandList command_list, uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers);
 void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles);
 
 // [HELPERS]
@@ -1127,14 +1212,14 @@ typedef struct
 
 typedef GnBool (*GnAdapterQueryLimitConstraintsFn)(const GnAdapterLimits* limits);
 
-void GnInitAdapterQuery(GnInstance instance, GN_OUT GnAdapterQuery* adapter_query);
+void GnInitAdapterQuery(GnInstance instance, GnAdapterQuery* adapter_query);
 void GnQueryAdapterWithType(GnAdapterQuery* query, GnAdapterType type);
 void GnQueryAdapterWithVendorID(GnAdapterQuery* query, uint32_t vendor_id);
 void GnQueryAdapterWithFeature(GnAdapterQuery* query, GnFeature feature);
 void GnQueryAdapterWithFeatures(GnAdapterQuery* query, uint32_t num_features, GnFeature* features);
 void GnQueryAdapterWithLimitConstraints(GnAdapterQuery* query, GnAdapterQueryLimitConstraintsFn limit_constraints_fn);
 void GnFetchAdapters(const GnAdapterQuery* query, void* userdata, GnGetAdapterCallbackFn callback_fn);
-GnBool GnFetchNextAdapter(GnAdapterQuery* query, GN_OUT GnAdapter* adapter);
+GnBool GnFetchNextAdapter(GnAdapterQuery* query, GnAdapter* adapter);
 GnAdapter GnFirstAdapter(const GnAdapterQuery* query);
 
 #ifdef __cplusplus
