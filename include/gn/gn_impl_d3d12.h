@@ -88,6 +88,10 @@ struct GnDeviceD3D12 : public GnDevice_t
     ID3D12CommandSignature* draw_indexed_cmd_signature = nullptr;
     ID3D12CommandSignature* dispatch_cmd_signature = nullptr;
     GnQueueD3D12*           enabled_queues = nullptr;
+    uint32_t                shader_resource_descriptor_size;
+    uint32_t                sampler_descriptor_size;
+    uint32_t                render_target_descriptor_size;
+    uint32_t                depth_stencil_target_descriptor_size;
 
     virtual ~GnDeviceD3D12();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
@@ -99,6 +103,8 @@ struct GnDeviceD3D12 : public GnDevice_t
     GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept override;
     GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept override;
     GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept override;
+    GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept override;
+    GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
     void DestroySwapchain(GnSwapchain swapchain) noexcept override;
     void DestroyMemory(GnMemory memory) noexcept override;
@@ -108,6 +114,8 @@ struct GnDeviceD3D12 : public GnDevice_t
     void DestroyRenderPass(GnRenderPass render_pass) noexcept override;
     void DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept override;
     void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
+    void DestroyPipeline(GnPipeline pipeline) noexcept override;
+    void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept override;
     void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
     GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept;
     GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept;
@@ -208,10 +216,37 @@ inline static DXGI_FORMAT GnConvertToDxgiFormat(GnFormat format) noexcept
         case GnFormat_RGBA32Uint:   return DXGI_FORMAT_R32G32B32A32_UINT;
         case GnFormat_RGBA32Sint:   return DXGI_FORMAT_R32G32B32A32_SINT;
         case GnFormat_RGBA32Float:  return DXGI_FORMAT_R32G32B32A32_FLOAT;
-        default:                    break;
+        default:                    GN_UNREACHABLE();
     }
 
     return DXGI_FORMAT_UNKNOWN;
+}
+
+inline D3D12_COMMAND_LIST_TYPE GnConvertToD3D12CommandListType(uint32_t queue_index)
+{
+    switch (queue_index) {
+        case 0:     return D3D12_COMMAND_LIST_TYPE_DIRECT;
+        case 1:     return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        case 2:     return D3D12_COMMAND_LIST_TYPE_COPY;
+        default:    GN_UNREACHABLE();
+    }
+
+    return D3D12_COMMAND_LIST_TYPE_DIRECT;
+}
+
+inline D3D12_ROOT_PARAMETER_TYPE GnConvertToD3D12RootParameterType(GnResourceType type, bool read_only)
+{
+    switch (type) {
+        case GnResourceType_UniformBuffer:
+            return D3D12_ROOT_PARAMETER_TYPE_CBV;
+        case GnResourceType_StorageBuffer:
+            return read_only ? D3D12_ROOT_PARAMETER_TYPE_SRV : D3D12_ROOT_PARAMETER_TYPE_UAV;
+        default:
+            GN_UNREACHABLE();
+            break;
+    }
+
+    return D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 }
 
 inline UINT GnCalcSubresourceD3D12(uint32_t mip_slice, uint32_t array_slice, uint32_t plane_slice, uint32_t mip_levels, uint32_t array_size) noexcept
@@ -401,6 +436,8 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
     GnWstrToStr(properties.name, adapter_desc.Description, sizeof(adapter_desc.Description));
     properties.vendor_id = adapter_desc.VendorId;
 
+    bool cache_coherent_uma = false;
+
     // Check adapter type
     if (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
         properties.type = GnAdapterType_Software;
@@ -410,6 +447,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         architecture.NodeIndex = 0;
         device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture));
         properties.type = architecture.UMA ? GnAdapterType_Integrated : GnAdapterType_Discrete;
+        cache_coherent_uma = architecture.CacheCoherentUMA;
     }
 
     D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
@@ -496,9 +534,10 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support[format], sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT));
     }
 
-    num_queue_groups = 3; // Since we can't get the number of queues in D3D12, we have to assume most GPUs supports multiple queues.
+    // Since we can't get the number of queues in D3D12, we have to assume most GPUs supports multiple queues.
+    num_queue_groups = 3;
 
-    // Check if timestamp can be queried in copy queue
+    // Check if timestamps can be queried on copy queue
     bool is_copy_queue_timestamp_query_supported = false;
     D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3;
     if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3))))
@@ -517,6 +556,31 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
             case GnQueueType_Copy:      queue_group.num_queues = 1; break;
         }
     }
+
+    memory_properties.memory_pools[0].type = GnMemoryPoolType_Device;
+    memory_properties.memory_pools[1].type = GnMemoryPoolType_Host;
+
+    D3D12_HEAP_PROPERTIES default_heap_properties = device->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_DEFAULT);
+    GnMemoryType& device_memory_type = memory_properties.memory_types[0];
+    device_memory_type.pool_index = 0;
+
+    switch (default_heap_properties.MemoryPoolPreference) {
+        case D3D12_MEMORY_POOL_L0:
+        {
+            device_memory_type.attribute = GnMemoryAttribute_DeviceLocal | GnMemoryAttribute_HostVisible;
+            if (cache_coherent_uma)
+                device_memory_type.attribute |= GnMemoryAttribute_HostCoherent;
+            break;
+        }
+        case D3D12_MEMORY_POOL_L1:
+            device_memory_type.attribute = GnMemoryAttribute_DeviceLocal;
+            break;
+    }
+
+    memory_properties.memory_types[1].pool_index = 1;
+    memory_properties.memory_types[1].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent;
+    memory_properties.memory_types[2].pool_index = 1;
+    memory_properties.memory_types[2].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent | GnMemoryAttribute_HostCached;
 }
 
 GnAdapterD3D12::~GnAdapterD3D12()
@@ -685,6 +749,11 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, GnDevice* device
         return GnError_InternalError;
     }
 
+    new_device->shader_resource_descriptor_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    new_device->sampler_descriptor_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    new_device->render_target_descriptor_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    new_device->depth_stencil_target_descriptor_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
     *device = new_device;
 
     return GnSuccess;
@@ -751,11 +820,78 @@ GnResult GnDeviceD3D12::CreateResourceTableLayout(const GnResourceTableLayoutDes
 
 GnResult GnDeviceD3D12::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept
 {
+    GN_DBG_ASSERT(desc->num_resources <= 8);
+    GN_DBG_ASSERT(desc->num_resource_tables <= 16);
+
+    GnSmallPODVector<D3D12_ROOT_PARAMETER, 32> root_parameters;
+
+    if (!root_parameters.resize(desc->num_resources + desc->num_resource_tables))
+        return GnError_OutOfHostMemory;
+
+    // Add global resource binidng
+    for (uint32_t i = 0; i < desc->num_resources; i++) {
+        const GnShaderResource& global_resource_binding = desc->resources[i];
+        D3D12_ROOT_PARAMETER& root_param = root_parameters[i];
+        root_param.ParameterType = GnConvertToD3D12RootParameterType(global_resource_binding.resource_type, global_resource_binding.read_only_storage);
+        root_param.Descriptor.RegisterSpace = i;
+        root_param.Descriptor.ShaderRegister = 0;
+    }
+
+    // Add resource table
+    for (uint32_t i = 0; i < desc->num_resource_tables; i++) {
+        
+    }
+
+    return GnResult();
+}
+
+GnResult GnDeviceD3D12::CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept
+{
+    return GnError_Unimplemented;
+}
+
+GnResult GnDeviceD3D12::CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept
+{
+    D3D12_DESCRIPTOR_HEAP_DESC heap_desc;
+    heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    heap_desc.NodeMask = 0;
+
+    switch (desc->type) {
+        case GnResourceTableType_ShaderResource:
+        {
+            heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            heap_desc.NumDescriptors =
+                desc->pool_limits.max_uniform_buffers +
+                desc->pool_limits.max_storage_buffers +
+                desc->pool_limits.max_sampled_textures +
+                desc->pool_limits.max_storage_textures;
+            break;
+        }
+        case GnResourceTableType_Sampler:
+        {
+            heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+            heap_desc.NumDescriptors = desc->pool_limits.max_samplers;
+            break;
+        }
+    }
+
+    ID3D12DescriptorHeap* descriptor_heap;
+    HRESULT result = device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&descriptor_heap));
+
+    if (result == E_OUTOFMEMORY)
+        return GnError_OutOfDeviceMemory;
+    else if (FAILED(result))
+        return GnError_InternalError;
+
     return GnResult();
 }
 
 GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept
 {
+    ID3D12CommandAllocator* cmd_allocator;
+    
+    device->CreateCommandAllocator(GnConvertToD3D12CommandListType(desc->queue_group_index), IID_PPV_ARGS(&cmd_allocator));
+
     return GnError_Unimplemented;
 }
 
@@ -791,6 +927,14 @@ void GnDeviceD3D12::DestroyResourceTableLayout(GnResourceTableLayout resource_ta
 }
 
 void GnDeviceD3D12::DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept
+{
+}
+
+void GnDeviceD3D12::DestroyPipeline(GnPipeline pipeline) noexcept
+{
+}
+
+void GnDeviceD3D12::DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept
 {
 }
 

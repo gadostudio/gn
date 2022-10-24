@@ -35,7 +35,7 @@ TEST_CASE("Adapter query", "[instance]")
         REQUIRE(adapter != nullptr);
 
     adapters.clear();
-    REQUIRE(GnEnumerateAdapters(instance, [&adapters](GnAdapter adapter) { adapters.push_back(adapter); }) != 0);
+    GnEnumerateAdapters(instance, [&adapters](GnAdapter adapter) { adapters.push_back(adapter); });
 
     for (auto adapter : adapters)
         REQUIRE(adapter != nullptr);
@@ -105,12 +105,10 @@ TEST_CASE("Adapter queues", "[instance]")
 
     std::vector<GnQueueGroupProperties> queue_properties;
     queue_properties.resize(num_queues);
-    uint32_t num_reported_queues = GnGetAdapterQueueGroupProperties(adapter, num_queues, queue_properties.data());
-    REQUIRE(num_reported_queues == num_queues);
+    GnGetAdapterQueueGroupProperties(adapter, num_queues, queue_properties.data());
 
     queue_properties.clear();
-    num_reported_queues = GnEnumerateAdapterQueueGroupProperties(adapter, [&queue_properties](const GnQueueGroupProperties& feature) { queue_properties.push_back(feature); });
-    REQUIRE(num_queues == num_reported_queues);
+    GnEnumerateAdapterQueueGroupProperties(adapter, [&queue_properties](const GnQueueGroupProperties& feature) { queue_properties.push_back(feature); });
 
     GnDestroyInstance(instance);
 }

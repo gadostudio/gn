@@ -2,267 +2,7 @@
 #define GN_IMPL_H_
 
 #include <gn/gn.h>
-
-#include <cassert>
-#include <cstdlib>
-#include <cstring>
-#include <memory>
-#include <bitset>
-#include <optional>
-#include <algorithm>
-#include <new>
-
-#ifdef NDEBUG
-#define GN_DBG_ASSERT(x)
-#else
-#define GN_DBG_ASSERT(x) assert(x)
-#endif
-
-#define GN_CHECK(x) GN_DBG_ASSERT(x)
-
-#if defined(_WIN32)
-#include <unknwn.h>
-#elif defined(__linux__)
-#include <dlfcn.h>
-#endif
-
-#ifdef _WIN32
-#include <malloc.h>
-#include <crtdbg.h>
-#define _CRTDBG_MAP_ALLOC
-#define GN_ALLOCA(size) _alloca(size)
-#else
-#define GN_ALLOCA(size) alloca(size)
-#endif
-
-#define GN_MAX_QUEUE 4
-
-// The maximum number of bound resources of each type on resource table here to prevent resource table abuse
-// We may change this number in the future
-#define GN_MAX_RESOURCE_TABLE_SAMPLERS 2048u
-#define GN_MAX_RESOURCE_TABLE_DESCRIPTORS 1048576u
-
-#undef min
-#undef max
-
-template<typename T, typename T2>
-static constexpr T GnMax(T a, T2 b) noexcept
-{
-    return (a > b) ? a : b;
-}
-
-template<typename T, typename T2, typename... Rest>
-static constexpr T GnMax(T a, T2 b, Rest... rest) noexcept
-{
-    return (a > b) ? a : GnMax<T2, Rest...>(b, rest...);
-}
-
-template<typename T, typename... Args>
-inline static constexpr bool GnContainsBit(T op, Args... args) noexcept
-{
-    T mask = (args | ...);
-    return (op & mask) == mask;
-}
-
-template<typename T, typename... Args>
-inline static constexpr bool GnHasBit(T op, Args... args) noexcept
-{
-    T mask = (args | ...);
-    return (op & mask) != 0;
-}
-
-template<typename T, typename T2, typename... Rest>
-struct GnUnionStorage
-{
-    static constexpr std::size_t size = GnMax(sizeof(T), sizeof(T2), sizeof(Rest)...);
-    static constexpr std::size_t alignment = GnMax(alignof(T), alignof(T2), alignof(Rest)...);
-    alignas(alignment) uint8_t data[size];
-};
-
-struct GnPoolHeader
-{
-    GnPoolHeader* next_pool;
-};
-
-struct GnPoolChunk
-{
-    GnPoolChunk* next_chunk;
-};
-
-// Growable pool
-template<typename T>
-struct GnPool
-{
-    static constexpr std::size_t alloc_size = GnMax(sizeof(T), sizeof(GnPoolHeader));
-    static constexpr std::size_t alloc_alignment = GnMax(alignof(T), alignof(GnPoolHeader));
-
-    GnPoolHeader* first_pool = nullptr;
-    GnPoolHeader* current_pool = nullptr;
-    GnPoolChunk* current_allocation = nullptr;
-    GnPoolChunk* last_allocation = nullptr;
-    std::size_t objects_per_block;
-    std::size_t num_reserved = 0;
-    std::size_t num_allocated = 0;
-    
-    GnPool(std::size_t objects_per_block) noexcept :
-        objects_per_block(objects_per_block)
-    {
-    }
-
-    ~GnPool()
-    {
-        GnPoolHeader* pool = first_pool;
-        while (pool != nullptr) {
-            GnPoolHeader* next_pool = pool->next_pool;
-            ::operator delete(pool, std::align_val_t{alloc_alignment}, std::nothrow);
-            pool = next_pool;
-        }
-    }
-
-    void* allocate() noexcept
-    {
-        if (num_allocated >= num_reserved) {
-            if (!_reserve_new_block()) {
-                return nullptr;
-            }
-        }
-
-        GnPoolChunk* free_chunk = current_allocation;
-        last_allocation = current_allocation;
-        current_allocation = current_allocation->next_chunk;
-        ++num_allocated;
-
-        return free_chunk;
-    }
-
-    void free(void* ptr) noexcept
-    {
-        GnPoolChunk* chunk = reinterpret_cast<GnPoolChunk*>(ptr);
-        chunk->next_chunk = current_allocation;
-        current_allocation = chunk;
-        --num_allocated;
-    }
-
-    bool _reserve_new_block() noexcept
-    {
-        // Allocate the pool
-        // One extra storage is required for the pool header. It may waste space a bit if the object is too large.
-        std::size_t size = alloc_size * (objects_per_block + 1);
-        uint8_t* pool = (uint8_t*)::operator new[](size, std::align_val_t{alloc_alignment}, std::nothrow);
-
-        if (pool == nullptr)
-            return false;
-
-        std::memset(pool, 0, size);
-
-        // Initialize the pool header
-        GnPoolHeader* pool_header = reinterpret_cast<GnPoolHeader*>(pool);
-
-        if (current_pool)
-            current_pool->next_pool = pool_header;
-        else
-            first_pool = pool_header;
-
-        current_pool = pool_header;
-        pool_header->next_pool = nullptr;
-
-        // Initialize free list. The list is stored inside the pool storage.
-        GnPoolChunk* current_chunk = reinterpret_cast<GnPoolChunk*>(pool + alloc_size);
-        current_allocation = current_chunk;
-
-        for (std::size_t i = 1; i < objects_per_block; i++) {
-            current_chunk->next_chunk = reinterpret_cast<GnPoolChunk*>(reinterpret_cast<uint8_t*>(current_chunk) + alloc_size);
-            current_chunk = current_chunk->next_chunk;
-        }
-
-        num_reserved += objects_per_block;
-
-        return true;
-    }
-};
-
-// Only use this for POD structs!!
-template<typename PODType, size_t Size, std::enable_if_t<std::is_pod_v<PODType>, bool> = true>
-struct GnSmallPODVector
-{
-    PODType local_storage[Size]{};
-    PODType* storage = nullptr;
-    size_t size = 0;
-    size_t capacity = Size;
-
-    GnSmallPODVector() noexcept :
-        storage(local_storage)
-    {
-    }
-
-    ~GnSmallPODVector()
-    {
-        if (storage != local_storage) {
-            std::free(storage);
-        }
-    }
-
-    PODType& operator[](size_t n) noexcept
-    {
-        return storage[n];
-    }
-
-    const PODType& operator[](size_t n) const noexcept
-    {
-        return storage[n];
-    }
-
-    bool push_back(const PODType& value) noexcept
-    {
-        if (size == capacity)
-            if (!reserve(capacity + 1))
-                return false;
-
-        storage[size++] = value;
-        return true;
-    }
-
-    bool resize(size_t n) noexcept
-    {
-        size = n;
-        return reserve(n);
-    }
-
-    bool reserve(size_t n) noexcept
-    {
-        if (n > capacity) {
-            PODType* new_storage = (PODType*)std::malloc(n * sizeof(PODType));
-
-            if (new_storage == nullptr)
-                return false;
-
-            std::memcpy(new_storage, storage, size * sizeof(PODType));
-
-            if (storage != local_storage) {
-                std::free(storage);
-            }
-
-            storage = new_storage;
-            capacity = n;
-        }
-
-        return true;
-    }
-};
-
-template<typename ObjectTypes>
-struct GnObjectPool
-{
-    std::optional<GnPool<typename ObjectTypes::Queue>>                  queue;
-    std::optional<GnPool<typename ObjectTypes::Fence>>                  fence;
-    std::optional<GnPool<typename ObjectTypes::Memory>>                 memory;
-    std::optional<GnPool<typename ObjectTypes::Buffer>>                 buffer;
-    std::optional<GnPool<typename ObjectTypes::Texture>>                texture;
-    std::optional<GnPool<typename ObjectTypes::TextureView>>            texture_view;
-    std::optional<GnPool<typename ObjectTypes::ResourceTableLayout>>    resource_table_layout;
-};
-
-struct GnUnimplementedType {};
+#include <gn/gn_core.h>
 
 struct GnInstance_t
 {
@@ -318,6 +58,8 @@ struct GnDevice_t
     virtual GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept = 0;
     virtual GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept = 0;
     virtual GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept = 0;
+    virtual GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept = 0;
+    virtual GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept = 0;
     virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
     virtual void DestroySwapchain(GnSwapchain swapchain) noexcept = 0;
     virtual void DestroyMemory(GnMemory memory) noexcept = 0;
@@ -327,6 +69,8 @@ struct GnDevice_t
     virtual void DestroyRenderPass(GnRenderPass render_pass) noexcept = 0;
     virtual void DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept = 0;
     virtual void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept = 0;
+    virtual void DestroyPipeline(GnPipeline pipeline) noexcept = 0;
+    virtual void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept = 0;
     virtual void DestroyCommandPool(GnCommandPool command_pool) noexcept = 0;
     virtual GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept = 0;
     virtual GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept = 0;
@@ -394,49 +138,23 @@ struct GnPipelineLayout_t
 {
 };
 
+struct GnPipeline_t
+{
+    GnPipelineType type;
+};
+
+struct GnResourceTablePool_t
+{
+
+};
+
 struct GnCommandPool_t
 {
     GnCommandList command_lists; // linked-list
 };
 
-struct GnUpdateRange
-{
-    // 16-bit to save space
-    uint16_t first = UINT16_MAX;
-    uint16_t last = UINT16_MAX;
 
-    inline void Update(uint32_t idx) noexcept
-    {
-        if (first == 0xFFFF) {
-            first = (uint32_t)idx;
-            last = (uint32_t)idx + 1;
-            return;
-        }
-
-        if (idx < first) first = (uint32_t)idx;
-        if (idx > last) last = idx + 1;
-    }
-
-    inline void Update(uint32_t first_idx, uint32_t last_idx) noexcept
-    {
-        if (first == 0xFFFF) {
-            first = (uint32_t)first_idx;
-            last = (uint32_t)last_idx + 1;
-            return;
-        }
-
-        if (first_idx < first) first = (uint32_t)first_idx;
-        if (last_idx > last) last = (uint32_t)last_idx + 1;
-    }
-
-    inline void Flush() noexcept
-    {
-        first = UINT16_MAX;
-        last = UINT16_MAX;
-    }
-};
-
-// We track and apply state changes later when drawing or dispatching to reduce redundant state changes calls.
+// We track and apply state changes later when inserting draw or dispatch commands to reduce redundant state changes calls.
 struct GnCommandListState
 {
     enum
@@ -445,12 +163,43 @@ struct GnCommandListState
         ComputeStateUpdate = ~GraphicsStateUpdate
     };
 
+    // Currently used pipeline
+    GnPipeline          graphics_pipeline;
+    GnPipelineLayout    graphics_pipeline_layout;
+    GnPipeline          compute_pipeline;
+    GnPipelineLayout    compute_pipeline_layout;
+
+    // Resource bindings
+    GnResourceTable     graphics_resource_tables[32];
+    GnBuffer            graphics_global_buffers[32];
+    GnDeviceSize        graphics_global_buffer_offsets[32];
+    GnUpdateRange       graphics_global_buffer_upd_range;
+    
+    // Input-Assembler state
+    GnBuffer            index_buffer;
+    GnDeviceSize        index_buffer_offset;
+    GnBuffer            vertex_buffers[32];
+    GnDeviceSize        vertex_buffer_offsets[32];
+    GnUpdateRange       vertex_buffer_upd_range;
+
+    // Rasterization stage
+    GnViewport          viewports[16];
+    GnUpdateRange       viewport_upd_range;
+    GnScissorRect       scissors[16];
+    GnUpdateRange       scissor_upd_range;
+
+    // Output merger state
+    float               blend_constants[4];
+    uint32_t            stencil_ref;
+
     union
     {
         struct
         {
             bool graphics_pipeline : 1;
+            bool graphics_pipeline_layout : 1;
             bool graphics_resource_binding : 1;
+            bool graphics_shader_constants : 1;
             bool index_buffer : 1;
             bool vertex_buffers : 1;
             bool blend_constants : 1;
@@ -458,32 +207,18 @@ struct GnCommandListState
             bool scissors : 1;
             bool stencil_ref : 1;
 
-            // compute pipeline stuff
             bool compute_pipeline : 1;
+            bool compute_pipeline_layout : 1;
             bool compute_resource_binding : 1;
+            bool compute_shader_constants : 1;
         };
 
         uint32_t    u32;
     } update_flags;
-
-
-    GnBuffer        index_buffer;
-    GnDeviceSize    index_buffer_offset;
-    GnBuffer        vertex_buffers[32];
-    GnDeviceSize    vertex_buffer_offsets[32];
-    GnUpdateRange   vertex_buffer_upd_range;
-    GnViewport      viewports[16];
-    GnUpdateRange   viewport_upd_range;
-    GnScissorRect   scissors[16];
-    GnUpdateRange   scissor_upd_range;
-    float           blend_constants[4];
-    uint32_t        stencil_ref;
-
-    GnPipeline      graphics_pipeline;
-    GnPipeline      compute_pipeline;
-
+    
     inline bool graphics_state_updated() const noexcept
     {
+        auto s = sizeof(index_buffer_offset);
         return (update_flags.u32 & GraphicsStateUpdate) > 0;
     }
 
@@ -1067,26 +802,26 @@ void GnGetBufferMemoryRequirements(GnDevice device, GnBuffer buffer, GnMemoryReq
 {
 }
 
-inline GnResult GnBindBufferMemory(GnDevice device, GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset)
+GnResult GnBindBufferMemory(GnDevice device, GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset)
 {
     return GnResult();
 }
 
-inline GnResult GnBindBufferDedicatedMemory(GnDevice device, GnBuffer buffer, uint32_t memory_type_index)
+GnResult GnBindBufferDedicatedMemory(GnDevice device, GnBuffer buffer, uint32_t memory_type_index)
 {
     return GnResult();
 }
 
-inline GnResult GnMapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory)
+GnResult GnMapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory)
 {
     return GnResult();
 }
 
-inline void GnUnmapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range)
+void GnUnmapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range)
 {
 }
 
-inline GnResult GnWriteBuffer(GnDevice device, GnBuffer buffer, GnDeviceSize size, const void* data)
+GnResult GnWriteBuffer(GnDevice device, GnBuffer buffer, GnDeviceSize size, const void* data)
 {
     return GnResult();
 }
@@ -1171,6 +906,44 @@ void GnDestroyPipelineLayout(GnDevice device, GnPipelineLayout pipeline_layout)
 
 // -- [GnCommandPool] --
 
+GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GnPipeline* graphics_pipeline)
+{
+    return GnResult();
+}
+
+GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* desc, GnPipeline* compute_pipeline)
+{
+    return GnResult();
+}
+
+GnResult GnCreateGraphicsPipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GnPipeline* graphics_pipeline)
+{
+    return GnResult();
+}
+
+GnResult GnCreateComputePipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GnPipeline* compute_pipeline)
+{
+    return GnResult();
+}
+
+void GnDestroyPipeline(GnDevice device, GnPipeline pipeline)
+{
+}
+
+GnPipelineType GnGetPipelineType(GnPipeline pipeline)
+{
+    return pipeline->type;
+}
+
+GnResult GnCreateResourceTablePool(GnDevice device, const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool)
+{
+    return GnResult();
+}
+
+void GnDestroyResourceTablePool(GnDevice device, GnResourceTablePool resource_table_pool)
+{
+}
+
 GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GnCommandPool* command_pool)
 {
     return GnError_Unimplemented;
@@ -1229,27 +1002,47 @@ void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pi
 
 void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout layout)
 {
-
+    if (layout == command_list->state.graphics_pipeline_layout) return;
+    command_list->state.graphics_pipeline_layout = layout;
+    command_list->state.update_flags.graphics_pipeline_layout = true;
 }
 
 void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table)
 {
+    // Don't update if it's the same
+    if (resource_table == command_list->state.graphics_resource_tables[slot]) return;
+    command_list->state.graphics_resource_tables[slot] = resource_table;
+    command_list->state.update_flags.graphics_resource_binding = true;
+}
 
+inline void GnTryUpdateBufferAndOffset(GnBuffer& dst_buffer, GnDeviceSize& dst_offset, GnBuffer src_buffer, GnDeviceSize src_offset) noexcept
+{
+    if (src_buffer == dst_buffer || src_offset == dst_offset) return;
+    dst_buffer = src_buffer;
+    dst_offset = src_offset;
 }
 
 void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, GnDeviceSize offset)
 {
-
+    command_list->state.update_flags.graphics_resource_binding = true;
+    command_list->state.graphics_global_buffer_upd_range.Update(slot);
+    GnTryUpdateBufferAndOffset(command_list->state.graphics_global_buffers[slot],
+                               command_list->state.graphics_global_buffer_offsets[slot],
+                               uniform_buffer, offset);
 }
 
 void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, GnDeviceSize offset)
 {
-
+    command_list->state.update_flags.graphics_resource_binding = true;
+    command_list->state.graphics_global_buffer_upd_range.Update(slot);
+    GnTryUpdateBufferAndOffset(command_list->state.graphics_global_buffers[slot],
+                               command_list->state.graphics_global_buffer_offsets[slot],
+                               storage_buffer, offset);
 }
 
 void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data)
 {
-
+    command_list->state.update_flags.graphics_shader_constants = true;
 }
 
 void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset)

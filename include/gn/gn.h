@@ -1,6 +1,9 @@
 #ifndef GN_H_
 #define GN_H_
 
+#include <stdint.h>
+#include <stddef.h>
+
 #ifdef __cplusplus
 #include <functional>
 #endif
@@ -60,17 +63,17 @@ typedef uint64_t GnDeviceSize;
 typedef enum
 {
     GnSuccess,
-    GnError_Unknown,
-    GnError_Unimplemented,
-    GnError_InvalidArgs,
-    GnError_BackendNotAvailable,
-    GnError_NoAdapterAvailable,
-    GnError_UnsupportedFeature,
-    GnError_InternalError,
-    GnError_OutOfHostMemory,
-    GnError_OutOfDeviceMemory,
-    GnError_MemoryMapFailed,
-    GnError_DeviceLost,
+    GnError_Unknown             = -1,
+    GnError_Unimplemented       = -2,
+    GnError_InvalidArgs         = -3,
+    GnError_BackendNotAvailable = -4,
+    GnError_NoAdapterAvailable  = -5,
+    GnError_UnsupportedFeature  = -6,
+    GnError_InternalError       = -7,
+    GnError_OutOfHostMemory     = -9,
+    GnError_OutOfDeviceMemory   = -10,
+    GnError_MemoryMapFailed     = -11,
+    GnError_DeviceLost          = -12,
 } GnResult;
 
 typedef enum
@@ -704,6 +707,7 @@ typedef struct
 {
     uint32_t            binding;
     GnResourceType      type;
+    GnBool              read_only_storage;
     uint32_t            num_resources;
     GnShaderStageFlags  shader_visibility;
 } GnResourceTableBinding;
@@ -721,6 +725,7 @@ typedef struct
 {
     uint32_t            binding;
     GnResourceType      resource_type;
+    GnBool              read_only_storage;
     GnShaderStageFlags  shader_visibility;
 } GnShaderResource;
 
@@ -845,6 +850,12 @@ typedef enum
     GnPipelineStreamTokenType_EnableIndependentBlend,
     GnPipelineStreamTokenType_Layout,
 } GnPipelineStreamTokenType;
+
+typedef enum
+{
+    GnPipelineType_Graphics,
+    GnPipelineType_Compute,
+} GnPipelineType;
 
 typedef struct
 {
@@ -972,6 +983,32 @@ GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* d
 GnResult GnCreateGraphicsPipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GnPipeline* graphics_pipeline);
 GnResult GnCreateComputePipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GnPipeline* compute_pipeline);
 void GnDestroyPipeline(GnDevice device, GnPipeline pipeline);
+GnPipelineType GnGetPipelineType(GnPipeline pipeline);
+
+typedef enum
+{
+    GnResourceTableType_ShaderResource,
+    GnResourceTableType_Sampler,
+} GnResourceTableType;
+
+typedef struct
+{
+    uint32_t max_uniform_buffers;
+    uint32_t max_storage_buffers;
+    uint32_t max_sampled_textures;
+    uint32_t max_storage_textures;
+    uint32_t max_samplers;
+} GnResourceTablePoolLimits;
+
+typedef struct
+{
+    GnResourceTableType         type;
+    uint32_t                    max_resource_tables;
+    GnResourceTablePoolLimits   pool_limits;
+} GnResourceTablePoolDesc;
+
+GnResult GnCreateResourceTablePool(GnDevice device, const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool);
+void GnDestroyResourceTablePool(GnDevice device, GnResourceTablePool resource_table_pool);
 
 typedef enum
 {
