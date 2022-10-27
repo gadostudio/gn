@@ -2251,11 +2251,11 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
 
         // Update graphics pipeline
         if (state.update_flags.graphics_pipeline)
-            impl_cmd_list->cmd_bind_pipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, GN_TO_VULKAN(GnPipeline, state.graphics_pipeline)->pipeline);
+            impl_cmd_list->cmd_bind_pipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, GN_TO_VULKAN(GnPipeline, state.graphics.pipeline)->pipeline);
 
         // Update graphics resource binding
         if (state.update_flags.graphics_resource_binding) {
-            GnPipelineLayoutVK* pipeline_layout = GN_TO_VULKAN(GnPipelineLayout, state.graphics_pipeline_layout);
+            GnPipelineLayoutVK* pipeline_layout = GN_TO_VULKAN(GnPipelineLayout, state.graphics.pipeline_layout);
             VkPipelineLayout vk_pipeline_layout = pipeline_layout->pipeline_layout;
             GnSmallVector<VkDescriptorSet, 32> descriptor_sets;
 
@@ -2263,11 +2263,11 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
                 GN_ASSERT(false && "Cannot allocate memory");
 
             // ---- Bind resource table ----
-            const uint32_t first_rtable_index = state.graphics_resource_tables_upd_range.first;
-            const uint32_t rtable_update_count = state.graphics_resource_tables_upd_range.last - first_rtable_index;
+            const uint32_t first_rtable_index = state.graphics.resource_tables_upd_range.first;
+            const uint32_t rtable_update_count = state.graphics.resource_tables_upd_range.last - first_rtable_index;
 
             for (uint32_t i = 0; i < rtable_update_count; ++i) {
-                GnResourceTableVK* impl_rtable = GN_TO_VULKAN(GnResourceTable, state.graphics_resource_tables[first_rtable_index + i]);
+                GnResourceTableVK* impl_rtable = GN_TO_VULKAN(GnResourceTable, state.graphics.resource_tables[first_rtable_index + i]);
                 if (impl_rtable != nullptr)
                     descriptor_sets[i] = impl_rtable->descriptor_set;
             }
@@ -2278,8 +2278,8 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
 
             // ---- Bind global resource ----
             const uint32_t global_resource_binding_mask = pipeline_layout->global_resource_binding_mask;
-            const uint32_t descriptor_write_mask = state.graphics_global_buffers_upd_mask & global_resource_binding_mask;
-            const uint32_t offset_write_mask = state.graphics_global_buffer_offsets_upd_mask & global_resource_binding_mask;
+            const uint32_t descriptor_write_mask = state.graphics.global_buffers_upd_mask & global_resource_binding_mask;
+            const uint32_t offset_write_mask = state.graphics.global_buffer_offsets_upd_mask & global_resource_binding_mask;
             const bool should_write_global_descriptors = descriptor_write_mask != 0;
 
             if (should_write_global_descriptors) {
@@ -2301,7 +2301,7 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
 
                         if (GnContainsBit(impl_cmd_list->global_descriptor_write_mask, write_mask)) {
                             VkDescriptorBufferInfo buffer_descriptor;
-                            buffer_descriptor.buffer = GN_TO_VULKAN(GnBuffer, state.graphics_global_buffers[i])->buffer;
+                            buffer_descriptor.buffer = GN_TO_VULKAN(GnBuffer, state.graphics.global_buffers[i])->buffer;
                             buffer_descriptor.offset = 0;
                             buffer_descriptor.range = VK_WHOLE_SIZE;
 
@@ -2316,7 +2316,7 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
                             write_descriptor.pBufferInfo = &buffer_descriptor;
                             write_descriptor.pTexelBufferView = nullptr;
 
-                            if (GnContainsBit(state.graphics_global_buffers_type_mask, write_mask))
+                            if (GnContainsBit(state.graphics.global_buffers_type_mask, write_mask))
                                 write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                             else
                                 write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -2331,22 +2331,22 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
                     impl_cmd_list->current_descriptor_set = descriptor_set;
                 }
 
-                state.graphics_global_buffers_upd_mask = 0;
+                state.graphics.global_buffers_upd_mask = 0;
             }
 
             if (should_write_global_descriptors || offset_write_mask != 0)
                 impl_cmd_list->cmd_bind_descriptor_sets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline_layout,
                                                         pipeline_layout->num_resource_tables, 1, &impl_cmd_list->current_descriptor_set,
-                                                        pipeline_layout->num_resources, state.graphics_global_buffer_offsets);
+                                                        pipeline_layout->num_resources, state.graphics.global_buffer_offsets);
         }
 
         if (state.update_flags.graphics_shader_constants) {
-            VkPipelineLayout layout = GN_TO_VULKAN(GnPipelineLayout, state.graphics_pipeline_layout)->pipeline_layout;
-            GnUpdateRange& update_range = state.graphics_shader_constants_upd_range;
+            VkPipelineLayout layout = GN_TO_VULKAN(GnPipelineLayout, state.graphics.pipeline_layout)->pipeline_layout;
+            GnUpdateRange& update_range = state.graphics.shader_constants_upd_range;
 
             impl_cmd_list->cmd_push_constants(cmd_buf, layout, VK_PIPELINE_BIND_POINT_GRAPHICS, update_range.first,
                                               update_range.last - update_range.first,
-                                              state.graphics_shader_constants);
+                                              state.graphics.shader_constants);
 
             update_range.Flush();
         }

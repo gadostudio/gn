@@ -28,6 +28,12 @@ target_include_directories(gn
     INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
               $<INSTALL_INTERFACE:include>)
 
+add_library(gnsl INTERFACE)
+set_property(TARGET gnsl PROPERTY CXX_STANDARD 17)
+target_include_directories(gnsl
+    INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+              $<INSTALL_INTERFACE:include>)
+
 if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
     if(GN_ENABLE_VULKAN)
         if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
@@ -55,6 +61,12 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
         PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                $<INSTALL_INTERFACE:include>)
 
+    add_library(gnsl-static STATIC src/gnsl_impl_stub.cpp)
+    target_link_libraries(gn-static PRIVATE gnsl)
+    target_include_directories(gnsl-static
+        PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+               $<INSTALL_INTERFACE:include>)
+
     if(GN_BUILD_EXAMPLES)
         add_subdirectory(examples)
     endif()
@@ -76,5 +88,8 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
         add_executable(gn-barrier-test-vulkan test/barrier_conv_test.cpp)
         target_compile_definitions(gn-barrier-test-vulkan PUBLIC GN_TEST_BACKEND_VULKAN)
         target_link_libraries(gn-barrier-test-vulkan PRIVATE gn-static ${GN_STATIC_DEPS})
+
+        add_executable(gnsl-test-bootstrapper test/gnsl_test_bootstrapper.cpp)
+        target_link_libraries(gnsl-test-bootstrapper PRIVATE gnsl-static)
     endif()
 endif()
