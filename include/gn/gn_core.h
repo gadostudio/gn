@@ -167,7 +167,7 @@ struct GnPool
         current_pool = pool_header;
         pool_header->next_pool = nullptr;
 
-        // Initialize free list. The list is stored inside the pool storage.
+        // Initialize free list.
         GnPoolChunk* current_chunk = reinterpret_cast<GnPoolChunk*>(pool + alloc_size);
         current_allocation = current_chunk;
 
@@ -184,23 +184,49 @@ struct GnPool
 
 // Only use this for POD structs!!
 template<typename PODType, size_t Size, std::enable_if_t<std::is_pod_v<PODType>, bool> = true>
-struct GnSmallPODVector
+struct GnSmallVector
 {
     PODType local_storage[Size]{};
     PODType* storage = nullptr;
     size_t size = 0;
     size_t capacity = Size;
 
-    GnSmallPODVector() noexcept :
+    GnSmallVector() noexcept :
         storage(local_storage)
     {
     }
 
-    ~GnSmallPODVector()
+    ~GnSmallVector()
     {
         if (storage != local_storage) {
             std::free(storage);
         }
+    }
+
+    GnSmallVector& operator=(const GnSmallVector& other)
+    {
+        if (other.storage != other.local_storage)
+            reserve(other.size);
+
+        std::memcpy(storage, other.storage, other.size * sizeof(PODType));
+        size = other.size;
+        capacity = other.capacity;
+        return *this;
+    }
+
+    GnSmallVector& operator=(GnSmallVector&& other)
+    {
+        if (other.storage == other.local_storage)
+            std::memcpy(storage, other.storage, other.size * sizeof(PODType));
+        else
+            storage = other.storage;
+
+        size = other.size;
+        capacity = other.capacity;
+        std::memset(other.storage, 0, other.size * sizeof(PODType));
+        other.size = 0;
+        other.capacity = Size;
+        return *this;
     }
 
     PODType& operator[](size_t n) noexcept
@@ -233,6 +259,8 @@ struct GnSmallPODVector
     {
         if (n > capacity) {
             PODType* new_storage = (PODType*)std::malloc(n * sizeof(PODType));
+            
+            std::memset(new_storage, 0, n * sizeof(PODType));
 
             if (new_storage == nullptr)
                 return false;

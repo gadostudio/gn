@@ -149,6 +149,16 @@ struct GnTextureD3D12 : public GnTexture_t
     ID3D12Resource* texture;
 };
 
+struct GnPipelineLayoutD3D12 : public GnPipelineLayout_t
+{
+    ID3D12RootSignature* root_signature;
+};
+
+struct GnPipelineD3D12 : public GnPipeline_t
+{
+    ID3D12PipelineState* pipeline_state;
+};
+
 //typedef void (GN_FPTR* ID3D12GraphicsCommandList_IASetIndexBuffer)(ID3D12GraphicsCommandList* This, const D3D12_INDEX_BUFFER_VIEW* pView);
 //typedef void (GN_FPTR* ID3D12GraphicsCommandList_IASetVertexBuffers)(ID3D12GraphicsCommandList* This, UINT StartSlot, UINT NumViews, const D3D12_VERTEX_BUFFER_VIEW* pViews);
 //typedef void (GN_FPTR* ID3D12GraphicsCommandList_RSSetViewports)(ID3D12GraphicsCommandList* This, UINT NumViewports, const D3D12_VIEWPORT* pViewports);
@@ -164,6 +174,7 @@ struct GnCommandListD3D12 : public GnCommandList_t
     //ID3D12GraphicsCommandList_RSSetScissorRects     rs_set_scissor_rects;
     //ID3D12GraphicsCommandList_OMSetBlendFactor      om_set_blend_factor;
     //ID3D12GraphicsCommandList_OMSetStencilRef       om_set_stencil_ref;
+    GnPipelineType current_pipeline_type = GnPipelineType_Graphics;
 
     GnCommandListD3D12(GnQueueType queue_type, const GnCommandListDesc* desc, ID3D12GraphicsCommandList* cmd_list) noexcept;
 
@@ -823,7 +834,7 @@ GnResult GnDeviceD3D12::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, G
     GN_DBG_ASSERT(desc->num_resources <= 8);
     GN_DBG_ASSERT(desc->num_resource_tables <= 16);
 
-    GnSmallPODVector<D3D12_ROOT_PARAMETER, 32> root_parameters;
+    GnSmallVector<D3D12_ROOT_PARAMETER, 32> root_parameters;
 
     if (!root_parameters.resize(desc->num_resources + desc->num_resource_tables))
         return GnError_OutOfHostMemory;
@@ -995,11 +1006,27 @@ GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandLi
     flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
         GnCommandListD3D12* impl_cmd_list = GN_TO_D3D12(GnCommandList, command_list);
         ID3D12GraphicsCommandList* d3d12_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->draw_cmd_private_data;
+        GnCommandListState& state = impl_cmd_list->state;
 
-        if (impl_cmd_list->state.update_flags.graphics_pipeline) {}
+        if (state.update_flags.graphics_pipeline || impl_cmd_list->current_pipeline_type != GnPipelineType_Graphics) {
+            impl_cmd_list->current_pipeline_type = GnPipelineType_Graphics;
+            d3d12_cmd_list->SetPipelineState(GN_TO_D3D12(GnPipeline, state.graphics_pipeline)->pipeline_state);
+        }
 
-        if (impl_cmd_list->state.update_flags.index_buffer) {
-            GnBufferD3D12* impl_index_buffer = GN_TO_D3D12(GnBuffer, impl_cmd_list->state.index_buffer);
+        if (state.update_flags.graphics_pipeline_layout) {
+
+        }
+
+        if (state.update_flags.graphics_resource_binding) {
+
+        }
+
+        if (state.update_flags.graphics_shader_constants) {
+
+        }
+
+        if (state.update_flags.index_buffer) {
+            GnBufferD3D12* impl_index_buffer = GN_TO_D3D12(GnBuffer, state.index_buffer);
             D3D12_INDEX_BUFFER_VIEW view;
             view.BufferLocation = impl_index_buffer->buffer_va;
             view.SizeInBytes = (UINT)impl_index_buffer->desc.size;
@@ -1008,52 +1035,52 @@ GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandLi
             d3d12_cmd_list->IASetIndexBuffer(&view);
         }
 
-        if (impl_cmd_list->state.update_flags.vertex_buffers) {
+        if (state.update_flags.vertex_buffers) {
             D3D12_VERTEX_BUFFER_VIEW vtx_buffer_views[32];
-            const GnUpdateRange& update_range = impl_cmd_list->state.vertex_buffer_upd_range;
+            const GnUpdateRange& update_range = state.vertex_buffer_upd_range;
             uint32_t count = update_range.last - update_range.first;
 
             for (uint32_t i = 0; i < count; i++) {
                 D3D12_VERTEX_BUFFER_VIEW& view = vtx_buffer_views[i];
-                GnBufferD3D12* impl_vtx_buffer = GN_TO_D3D12(GnBuffer, impl_cmd_list->state.vertex_buffers[i]);
+                GnBufferD3D12* impl_vtx_buffer = GN_TO_D3D12(GnBuffer, state.vertex_buffers[i]);
 
                 view.BufferLocation = impl_vtx_buffer->buffer_va;
                 view.SizeInBytes = (uint32_t)impl_vtx_buffer->desc.size;
             }
 
             d3d12_cmd_list->IASetVertexBuffers(update_range.first, count, vtx_buffer_views);
-            impl_cmd_list->state.vertex_buffer_upd_range.Flush();
+            state.vertex_buffer_upd_range.Flush();
         }
 
-        if (impl_cmd_list->state.update_flags.blend_constants)
-            d3d12_cmd_list->OMSetBlendFactor(impl_cmd_list->state.blend_constants);
+        if (state.update_flags.blend_constants)
+            d3d12_cmd_list->OMSetBlendFactor(state.blend_constants);
 
-        if (impl_cmd_list->state.update_flags.stencil_ref)
-            d3d12_cmd_list->OMSetStencilRef(impl_cmd_list->state.stencil_ref);
+        if (state.update_flags.stencil_ref)
+            d3d12_cmd_list->OMSetStencilRef(state.stencil_ref);
 
-        if (impl_cmd_list->state.update_flags.viewports) {
-            d3d12_cmd_list->RSSetViewports(impl_cmd_list->state.viewport_upd_range.last, (D3D12_VIEWPORT*)impl_cmd_list->state.viewports);
-            impl_cmd_list->state.viewport_upd_range.Flush();
+        if (state.update_flags.viewports) {
+            d3d12_cmd_list->RSSetViewports(state.viewport_upd_range.last, (D3D12_VIEWPORT*)state.viewports);
+            state.viewport_upd_range.Flush();
         }
 
-        if (impl_cmd_list->state.update_flags.scissors) {
+        if (state.update_flags.scissors) {
             D3D12_RECT rects[16];
-            uint32_t count = impl_cmd_list->state.scissor_upd_range.last;
+            uint32_t count = state.scissor_upd_range.last;
 
-            std::memcpy(rects, impl_cmd_list->state.scissors, sizeof(D3D12_RECT) * count);
+            std::memcpy(rects, state.scissors, sizeof(D3D12_RECT) * count);
 
-            for (uint32_t i = 0; i < impl_cmd_list->state.scissor_upd_range.last; i++) {
+            for (uint32_t i = 0; i < state.scissor_upd_range.last; i++) {
                 D3D12_RECT& rect = rects[i];
 
                 rect.right += rect.left;
                 rect.bottom += rect.top;
             }
 
-            d3d12_cmd_list->RSSetScissorRects(impl_cmd_list->state.scissor_upd_range.last, rects);
-            impl_cmd_list->state.scissor_upd_range.Flush();
+            d3d12_cmd_list->RSSetScissorRects(state.scissor_upd_range.last, rects);
+            state.scissor_upd_range.Flush();
         }
 
-        impl_cmd_list->state.update_flags.u32 = 0;
+        state.update_flags.u32 = 0;
     };
 
     flush_compute_state_fn = [](GnCommandList command_list) noexcept {

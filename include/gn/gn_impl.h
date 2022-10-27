@@ -136,6 +136,9 @@ struct GnResourceTableLayout_t
 
 struct GnPipelineLayout_t
 {
+    uint32_t num_resource_tables;
+    uint32_t num_resources;
+    uint32_t num_shader_constants;
 };
 
 struct GnPipeline_t
@@ -145,14 +148,16 @@ struct GnPipeline_t
 
 struct GnResourceTablePool_t
 {
+};
 
+struct GnResourceTable_t
+{
 };
 
 struct GnCommandPool_t
 {
     GnCommandList command_lists; // linked-list
 };
-
 
 // We track and apply state changes later when inserting draw or dispatch commands to reduce redundant state changes calls.
 struct GnCommandListState
@@ -169,12 +174,28 @@ struct GnCommandListState
     GnPipeline          compute_pipeline;
     GnPipelineLayout    compute_pipeline_layout;
 
-    // Resource bindings
+    // Resource bindings for graphics pipeline
     GnResourceTable     graphics_resource_tables[32];
+    GnUpdateRange       graphics_resource_tables_upd_range;
     GnBuffer            graphics_global_buffers[32];
-    GnDeviceSize        graphics_global_buffer_offsets[32];
-    GnUpdateRange       graphics_global_buffer_upd_range;
-    
+    uint32_t            graphics_global_buffer_offsets[32];
+    uint32_t            graphics_global_buffers_upd_mask;
+    uint32_t            graphics_global_buffers_type_mask;
+    uint32_t            graphics_global_buffer_offsets_upd_mask;
+    std::byte           graphics_shader_constants[256];
+    GnUpdateRange       graphics_shader_constants_upd_range;
+
+    // Resource bindings for graphics pipeline
+    GnResourceTable     compute_resource_tables[32];
+    GnUpdateRange       compute_resource_tables_upd_range;
+    GnBuffer            compute_global_buffers[32];
+    uint32_t            compute_global_buffer_offsets[32];
+    uint32_t            compute_global_buffers_update_mask;
+    uint32_t            compute_global_buffers_type_mask;
+    uint32_t            compute_global_buffer_offsets_upd_mask;
+    std::byte           compute_shader_constants[256];
+    GnUpdateRange       compute_shader_constants_upd_range;
+
     // Input-Assembler state
     GnBuffer            index_buffer;
     GnDeviceSize        index_buffer_offset;
@@ -1015,33 +1036,60 @@ void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, Gn
     command_list->state.update_flags.graphics_resource_binding = true;
 }
 
-inline void GnTryUpdateBufferAndOffset(GnBuffer& dst_buffer, GnDeviceSize& dst_offset, GnBuffer src_buffer, GnDeviceSize src_offset) noexcept
+inline bool GnTryUpdateBufferAndOffset(GnBuffer& dst_buffer, GnDeviceSize& dst_offset, GnBuffer src_buffer, uint32_t src_offset) noexcept
 {
-    if (src_buffer == dst_buffer || src_offset == dst_offset) return;
+    if (src_buffer == dst_buffer && src_offset == dst_offset) return false;
     dst_buffer = src_buffer;
     dst_offset = src_offset;
+    return true;
 }
 
-void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, GnDeviceSize offset)
+void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset)
 {
-    command_list->state.update_flags.graphics_resource_binding = true;
-    command_list->state.graphics_global_buffer_upd_range.Update(slot);
-    GnTryUpdateBufferAndOffset(command_list->state.graphics_global_buffers[slot],
-                               command_list->state.graphics_global_buffer_offsets[slot],
-                               uniform_buffer, offset);
+    GnCommandListState& state = command_list->state;
+    GnBuffer& current_buffer = state.graphics_global_buffers[slot];
+    uint32_t& current_offset = state.graphics_global_buffer_offsets[slot];
+    const bool buffer_updated = current_buffer == uniform_buffer;
+    const bool offset_updated = current_offset == offset;
+    
+    if (buffer_updated) {
+        current_buffer = uniform_buffer;
+        state.graphics_global_buffers_upd_mask |= 1 << slot;
+    }
+
+    if (offset_updated) {
+        current_offset = offset;
+        state.graphics_global_buffer_offsets_upd_mask &= ~(1 << slot);
+    }
+
+    state.update_flags.graphics_resource_binding = buffer_updated || offset_updated;
 }
 
-void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, GnDeviceSize offset)
+void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset)
 {
-    command_list->state.update_flags.graphics_resource_binding = true;
-    command_list->state.graphics_global_buffer_upd_range.Update(slot);
-    GnTryUpdateBufferAndOffset(command_list->state.graphics_global_buffers[slot],
-                               command_list->state.graphics_global_buffer_offsets[slot],
-                               storage_buffer, offset);
+    GnCommandListState& state = command_list->state;
+    GnBuffer& current_buffer = state.graphics_global_buffers[slot];
+    uint32_t& current_offset = state.graphics_global_buffer_offsets[slot];
+    const bool buffer_updated = current_buffer == storage_buffer;
+    const bool offset_updated = current_offset == offset;
+
+    if (buffer_updated) {
+        current_buffer = storage_buffer;
+        state.graphics_global_buffers_upd_mask |= 1 << slot;
+    }
+
+    if (offset_updated) {
+        current_offset = offset;
+        state.graphics_global_buffer_offsets_upd_mask |= 1 << slot;
+    }
+
+    state.update_flags.graphics_resource_binding = buffer_updated || offset_updated;
 }
 
 void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data)
 {
+    std::memcpy(command_list->state.graphics_shader_constants, data, size);
+    command_list->state.graphics_shader_constants_upd_range.Update(offset, offset + size);
     command_list->state.update_flags.graphics_shader_constants = true;
 }
 
@@ -1060,7 +1108,7 @@ void GnCmdSetVertexBuffer(GnCommandList command_list, uint32_t slot, GnBuffer ve
     GnDeviceSize& old_buffer_offset = command_list->state.vertex_buffer_offsets[slot];
 
     // Don't update if it's the same
-    if (vertex_buffer == old_vertex_buffer || offset == old_buffer_offset) return;
+    if (vertex_buffer == old_vertex_buffer && offset == old_buffer_offset) return;
 
     // Replace the old ones and update the state flags
     old_vertex_buffer = vertex_buffer;
@@ -1219,12 +1267,21 @@ void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnR
 {
 }
 
-void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, GnDeviceSize offset)
+void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset)
 {
+    GnCommandListState& state = command_list->state;
+    state.update_flags.graphics_resource_binding = true;
+    state.compute_global_buffers_update_mask |= 1 << slot;
+    state.compute_global_buffers_type_mask |= 1 << slot;
 }
 
-void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, GnDeviceSize offset)
+void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset)
 {
+    GnCommandListState& state = command_list->state;
+
+    state.update_flags.graphics_resource_binding = true;
+    state.compute_global_buffers_update_mask |= 1 << slot;
+    state.compute_global_buffers_type_mask &= ~(1 << slot);
 }
 
 void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data)
