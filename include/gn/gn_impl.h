@@ -27,6 +27,7 @@ struct GnAdapter_t
 
     virtual ~GnAdapter_t() { }
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
+    virtual GnResult GetTextureFormatMultisampleSupport(GnFormat format, GnSampleCountFlags* supported_sample_count) const noexcept = 0;
     virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
     virtual GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept = 0;
     virtual void GetSurfaceProperties(GnSurface surface, GnSurfaceProperties* properties) const noexcept = 0;
@@ -72,6 +73,7 @@ struct GnDevice_t
     virtual void DestroyPipeline(GnPipeline pipeline) noexcept = 0;
     virtual void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept = 0;
     virtual void DestroyCommandPool(GnCommandPool command_pool) noexcept = 0;
+    virtual void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept = 0;
     virtual GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept = 0;
     virtual GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept = 0;
     virtual void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept = 0;
@@ -102,7 +104,8 @@ struct GnFence_t
 
 struct GnMemory_t
 {
-    GnMemoryDesc desc;
+    GnMemoryDesc            desc;
+    GnMemoryAttributeFlags  memory_attribute;
 
     inline bool IsAlwaysMapped() const noexcept
     {
@@ -112,12 +115,14 @@ struct GnMemory_t
 
 struct GnBuffer_t
 {
-    GnBufferDesc desc;
+    GnBufferDesc            desc;
+    GnMemoryRequirements    memory_requirements;
 };
 
 struct GnTexture_t
 {
-    GnTextureDesc desc;
+    GnTextureDesc           desc;
+    GnMemoryRequirements    memory_requirements;
 };
 
 struct GnTextureView_t
@@ -811,11 +816,12 @@ void GnGetBufferDesc(GnBuffer buffer, GnBufferDesc* texture_desc)
 
 void GnGetBufferMemoryRequirements(GnDevice device, GnBuffer buffer, GnMemoryRequirements* memory_requirements)
 {
+    *memory_requirements = buffer->memory_requirements;
 }
 
 GnResult GnBindBufferMemory(GnDevice device, GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset)
 {
-    return GnResult();
+    return device->BindBufferMemory(buffer, memory, aligned_offset);
 }
 
 GnResult GnBindBufferDedicatedMemory(GnDevice device, GnBuffer buffer, uint32_t memory_type_index)
@@ -825,11 +831,12 @@ GnResult GnBindBufferDedicatedMemory(GnDevice device, GnBuffer buffer, uint32_t 
 
 GnResult GnMapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory)
 {
-    return GnResult();
+    return device->MapBuffer(buffer, memory_range, mapped_memory);
 }
 
 void GnUnmapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range)
 {
+    device->UnmapBuffer(buffer, memory_range);
 }
 
 GnResult GnWriteBuffer(GnDevice device, GnBuffer buffer, GnDeviceSize size, const void* data)
@@ -900,7 +907,7 @@ GnResult GnCreateResourceTableLayout(GnDevice device, const GnResourceTableLayou
     return GnError_Unimplemented;
 }
 
-void GnDestoryResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table)
+void GnDestroyResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table)
 {
 }
 
@@ -1026,26 +1033,29 @@ void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, Gn
     command_list->state.update_flags.graphics_resource_binding = true;
 }
 
-template<bool StorageBuffer>
-inline bool GnTryUpdateBufferAndOffset(GnPipelineState& pipeline_state, uint32_t slot, GnBuffer buffer, uint32_t offset) noexcept
+inline bool GnTryUpdateBufferAndOffset(GnPipelineState& pipeline_state, uint32_t slot, GnBuffer buffer, uint32_t offset, bool is_storage_buffer) noexcept
 {
     GnBuffer& current_buffer = pipeline_state.global_buffers[slot];
     uint32_t& current_offset = pipeline_state.global_buffer_offsets[slot];
-    const bool buffer_updated = current_buffer == buffer;
+    uint32_t new_type_mask = pipeline_state.global_buffers_type_mask;
+
+    if (is_storage_buffer)
+        new_type_mask |= 1 << slot;
+    else
+        new_type_mask &= ~(1 << slot);
+
+    const bool buffer_updated = current_buffer == buffer || pipeline_state.global_buffers_type_mask != new_type_mask;
     const bool offset_updated = current_offset == offset;
 
     if (buffer_updated) {
         current_buffer = buffer;
         pipeline_state.global_buffers_upd_mask |= 1 << slot;
+        pipeline_state.global_buffers_type_mask = new_type_mask;
     }
 
     if (offset_updated) {
         current_offset = offset;
-        // We set the update bit flag to one if it's a storage buffer otherwise it's a uniform buffer
-        if constexpr (StorageBuffer)
-            pipeline_state.global_buffer_offsets_upd_mask |= 1 << slot;
-        else
-            pipeline_state.global_buffer_offsets_upd_mask &= ~(1 << slot);
+        pipeline_state.global_buffer_offsets_upd_mask |= 1 << slot;
     }
 
     return buffer_updated || offset_updated;
@@ -1054,13 +1064,13 @@ inline bool GnTryUpdateBufferAndOffset(GnPipelineState& pipeline_state, uint32_t
 void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.graphics_resource_binding = GnTryUpdateBufferAndOffset<false>(state.graphics, slot, uniform_buffer, offset);
+    state.update_flags.graphics_resource_binding = GnTryUpdateBufferAndOffset(state.graphics, slot, uniform_buffer, offset, false);
 }
 
 void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.graphics_resource_binding = GnTryUpdateBufferAndOffset<true>(state.graphics, slot, storage_buffer, offset);
+    state.update_flags.graphics_resource_binding = GnTryUpdateBufferAndOffset(state.graphics, slot, storage_buffer, offset, true);
 }
 
 void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data)
@@ -1247,13 +1257,13 @@ void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnR
 void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.compute_resource_binding = GnTryUpdateBufferAndOffset<false>(state.compute, slot, uniform_buffer, offset);
+    state.update_flags.compute_resource_binding = GnTryUpdateBufferAndOffset(state.compute, slot, uniform_buffer, offset, false);
 }
 
 void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.compute_resource_binding = GnTryUpdateBufferAndOffset<true>(state.compute, slot, storage_buffer, offset);
+    state.update_flags.compute_resource_binding = GnTryUpdateBufferAndOffset(state.compute, slot, storage_buffer, offset, true);
 }
 
 void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data)

@@ -325,8 +325,11 @@ struct GnObjectPool
     std::optional<GnPool<typename ObjectTypes::Buffer>>                 buffer;
     std::optional<GnPool<typename ObjectTypes::Texture>>                texture;
     std::optional<GnPool<typename ObjectTypes::TextureView>>            texture_view;
+    std::optional<GnPool<typename ObjectTypes::RenderPass>>             render_pass;
     std::optional<GnPool<typename ObjectTypes::ResourceTableLayout>>    resource_table_layout;
     std::optional<GnPool<typename ObjectTypes::PipelineLayout>>         pipeline_layout;
+    std::optional<GnPool<typename ObjectTypes::ResourceTablePool>>      resource_table_pool;
+    std::optional<GnPool<typename ObjectTypes::Pipeline>>               pipeline;
 };
 
 struct GnUnimplementedType {};

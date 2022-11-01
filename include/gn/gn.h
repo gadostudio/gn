@@ -14,6 +14,7 @@
 #define GN_ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 
 #define GN_INVALID                  (~0U)
+#define GN_WHOLE_SIZE               (~0ULL)
 #define GN_MAX_CHARS                256
 #define GN_MAX_MEMORY_POOLS         16
 #define GN_MAX_MEMORY_TYPES         32
@@ -719,7 +720,7 @@ typedef struct
 } GnResourceTableLayoutDesc;
 
 GnResult GnCreateResourceTableLayout(GnDevice device, const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table);
-void GnDestoryResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table);
+void GnDestroyResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table);
 
 typedef struct
 {
@@ -738,10 +739,10 @@ typedef struct
 
 typedef struct
 {
-    uint32_t                        num_resource_tables;
-    const GnResourceTableLayout*    resource_tables;
     uint32_t                        num_resources;
     const GnShaderResource*         resources;
+    uint32_t                        num_resource_tables;
+    const GnResourceTableLayout*    resource_tables;
     uint32_t                        num_constant_ranges;
     const GnShaderConstantRange*    constant_ranges;
 } GnPipelineLayoutDesc;

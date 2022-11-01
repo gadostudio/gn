@@ -102,6 +102,8 @@ struct GnVulkanDeviceFunctions
     PFN_vkAllocateDescriptorSets vkAllocateDescriptorSets;
     PFN_vkFreeDescriptorSets vkFreeDescriptorSets;
     PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets;
+    PFN_vkCreateRenderPass vkCreateRenderPass;
+    PFN_vkDestroyRenderPass vkDestroyRenderPass;
     PFN_vkCreateCommandPool vkCreateCommandPool;
     PFN_vkDestroyCommandPool vkDestroyCommandPool;
     PFN_vkResetCommandPool vkResetCommandPool;
@@ -180,6 +182,7 @@ struct GnAdapterVK : public GnAdapter_t
     ~GnAdapterVK() {}
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
+    GnResult GetTextureFormatMultisampleSupport(GnFormat format, GnSampleCountFlags* supported_sample_count) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
     GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept override;
     void GetSurfaceProperties(GnSurface surface, GnSurfaceProperties* properties) const noexcept override;
@@ -255,21 +258,23 @@ struct GnFenceVK : public GnFence_t
 
 struct GnMemoryVK : public GnMemory_t
 {
-    VkDeviceMemory              memory;
-    void*                       mapped_address;
-    std::atomic_uint32_t        num_resource_mapped;
+    VkDeviceMemory  memory;
+    void*           mapped_address;
+    uint32_t        num_resources_mapped;
 };
 
 struct GnBufferVK : public GnBuffer_t
 {
-    GnMemoryVK* memory;
-    VkBuffer    buffer;
+    GnMemoryVK*     memory;
+    VkBuffer        buffer;
+    VkDeviceSize    aligned_offset;
 };
 
 struct GnTextureVK : public GnTexture_t
 {
-    GnMemoryVK* memory;
-    VkImage     image;
+    GnMemoryVK*     memory;
+    VkImage         image;
+    VkDeviceSize    aligned_offset;
 };
 
 struct GnTextureViewVK : public GnTextureView_t
@@ -358,6 +363,7 @@ struct GnDeviceVK : public GnDevice_t
     void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
     void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept override;
     void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
+    void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept override;
     GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept;
     GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept;
     void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept;
@@ -643,7 +649,7 @@ inline static VkPipelineStageFlags GnConvertToVkPipelineStageFlags(GnShaderStage
 // Taken from https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkPhysicalDeviceMemoryProperties.html
 static int32_t GnFindMemoryTypeVk(const VkPhysicalDeviceMemoryProperties& vk_memory_properties,
                                   uint32_t memory_type_bits_req,
-                                  VkMemoryPropertyFlags required_properties)
+                                  VkMemoryPropertyFlags required_properties) noexcept
 {
     for (uint32_t i = 0; i < vk_memory_properties.memoryTypeCount; ++i) {
         const bool is_required_memory_types = (memory_type_bits_req & (1 << i)) != 0;
@@ -658,7 +664,41 @@ static int32_t GnFindMemoryTypeVk(const VkPhysicalDeviceMemoryProperties& vk_mem
     return -1;
 }
 
-static GnResult GnAllocateMemoryVk(GnDeviceVK* impl_device, const VkMemoryAllocateInfo* alloc_info, VkDeviceMemory* memory)
+inline static VkMappedMemoryRange GnConvertMemoryRange(VkDeviceMemory memory, const GnMemoryRange* memory_range, GnDeviceSize res_offset, GnDeviceSize res_size) noexcept
+{
+    VkMappedMemoryRange range;
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.pNext = nullptr;
+    range.memory = memory;
+    range.offset = res_offset;
+
+    if (memory_range != nullptr) {
+        range.offset += memory_range->offset;
+        if (memory_range->size == GN_WHOLE_SIZE)
+            range.size = res_size;
+        else
+            range.size = memory_range->size;
+    }
+    else
+        range.size = res_size;
+
+    return range;
+}
+
+inline static bool GnIsDepthStencilFormatVK(GnFormat format) noexcept
+{
+    switch (format) {
+        case GnFormat_D16Unorm:         return true;
+        case GnFormat_D16Unorm_S8Uint:  return true;
+        case GnFormat_D32Float:         return true;
+        case GnFormat_D32Float_S8Uint:  return true;
+        default:                        break;
+    }
+
+    return false;
+}
+
+inline static GnResult GnAllocateMemoryVk(GnDeviceVK* impl_device, const VkMemoryAllocateInfo* alloc_info, VkDeviceMemory* memory) noexcept
 {
     VkResult result = impl_device->fn.vkAllocateMemory(impl_device->device, alloc_info, nullptr, memory);
     return GnConvertFromVkResult(result);
@@ -1106,6 +1146,30 @@ GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat
     return ret;
 }
 
+GnResult GnAdapterVK::GetTextureFormatMultisampleSupport(GnFormat format, GnSampleCountFlags* supported_sample_count) const noexcept
+{
+    VkImageUsageFlags usage = GnIsDepthStencilFormatVK(format) ?
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT :
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+    VkImageFormatProperties format_properties;
+    
+    VkResult result = parent_instance->fn.vkGetPhysicalDeviceImageFormatProperties(physical_device, GnConvertToVkFormat(format),
+                                                                                   VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                                                   usage, 0, &format_properties);
+
+    if (result == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+        *supported_sample_count = 0;
+        return GnError_UnsupportedFeature;
+    }
+    else if (GN_VULKAN_FAILED(result))
+        return GnError_InternalError;
+
+    *supported_sample_count = format_properties.sampleCounts;
+
+    return GnSuccess;
+}
+
 GnBool GnAdapterVK::IsVertexFormatSupported(GnFormat format) const noexcept
 {
     VkFormatProperties fmt;
@@ -1384,6 +1448,9 @@ GnResult GnDeviceVK::CreateMemory(const GnMemoryDesc* desc, GnMemory* memory) no
     new(impl_memory) GnMemoryVK();
     impl_memory->memory = vk_memory;
     impl_memory->desc = *desc;
+    impl_memory->memory_attribute = parent_adapter->memory_properties.memory_types[desc->memory_type_index].attribute;
+
+    *memory = impl_memory;
 
     return GnSuccess;
 }
@@ -1405,6 +1472,9 @@ GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) no
         return GnError_InternalError;
     }
 
+    VkMemoryRequirements requirements;
+    fn.vkGetBufferMemoryRequirements(device, vk_buffer, &requirements);
+
     if (!pool.buffer)
         pool.buffer.emplace(128);
 
@@ -1415,6 +1485,9 @@ GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) no
 
     impl_buffer->buffer = vk_buffer;
     impl_buffer->desc = *desc;
+    impl_buffer->memory_requirements.size = requirements.size;
+    impl_buffer->memory_requirements.alignment = requirements.alignment;
+    impl_buffer->memory_requirements.supported_memory_type_bits = requirements.memoryTypeBits;
 
     *buffer = impl_buffer;
 
@@ -1444,6 +1517,9 @@ GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture
     if (GN_VULKAN_FAILED(fn.vkCreateImage(device, &image_info, nullptr, &image)))
         return GnError_InternalError;
 
+    VkMemoryRequirements requirements;
+    fn.vkGetImageMemoryRequirements(device, image, &requirements);
+
     if (!pool.texture)
         pool.texture.emplace(128);
 
@@ -1455,6 +1531,9 @@ GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture
 
     impl_texture->image = image;
     impl_texture->desc = *desc;
+    impl_texture->memory_requirements.size = requirements.size;
+    impl_texture->memory_requirements.alignment = requirements.alignment;
+    impl_texture->memory_requirements.supported_memory_type_bits = requirements.memoryTypeBits;
 
     *texture = impl_texture;
 
@@ -1623,10 +1702,9 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
         }
     }
 
-    VkDescriptorSetLayout global_resource_layout = nullptr;
+    VkDescriptorSetLayout global_resource_layout = VK_NULL_HANDLE;
     uint32_t global_resource_binding_mask = 0;
 
-    // Unlike D3D12, Vulkan can't bind resource directly to the shader.
     if (desc->num_resources > 0 && desc->resources != nullptr) {
         GnSmallVector<VkDescriptorSetLayoutBinding, 32> global_resource_bindings;
 
@@ -1656,8 +1734,6 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
 
         if (!set_layouts.push_back(global_resource_layout))
             return GnError_OutOfHostMemory;
-
-        
     }
 
     VkPipelineLayoutCreateInfo pipeline_layout_info;
@@ -1670,6 +1746,7 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
     pipeline_layout_info.pPushConstantRanges = push_constant_ranges.storage;
 
     VkPipelineLayout layout;
+
     if (GN_VULKAN_FAILED(fn.vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &layout))) {
         fn.vkDestroyDescriptorSetLayout(device, global_resource_layout, nullptr);
         return GnError_InternalError;
@@ -1679,11 +1756,20 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
         pool.pipeline_layout.emplace(32);
 
     GnPipelineLayoutVK* impl_pipeline_layout = (GnPipelineLayoutVK*)pool.pipeline_layout->allocate();
+
     if (pipeline_layout == nullptr) {
         fn.vkDestroyPipelineLayout(device, layout, nullptr);
-        fn.vkDestroyDescriptorSetLayout(device, global_resource_layout, nullptr);
+        if (global_resource_layout == VK_NULL_HANDLE)
+            fn.vkDestroyDescriptorSetLayout(device, global_resource_layout, nullptr);
         return GnError_OutOfHostMemory;
     }
+
+    impl_pipeline_layout->num_resources = desc->num_resources;
+    impl_pipeline_layout->num_resource_tables = desc->num_resource_tables;
+    impl_pipeline_layout->num_shader_constants = desc->num_constant_ranges;
+    impl_pipeline_layout->pipeline_layout = layout;
+    impl_pipeline_layout->global_resource_layout = global_resource_layout;
+    impl_pipeline_layout->global_resource_binding_mask = global_resource_binding_mask;
 
     *pipeline_layout = impl_pipeline_layout;
 
@@ -1710,6 +1796,16 @@ GnResult GnDeviceVK::CreateComputePipeline(const GnComputePipelineDesc* desc, Gn
     VkPipeline vk_pipeline;
     if (GN_VULKAN_FAILED(fn.vkCreateComputePipelines(device, nullptr, 1, &pipeline_info, nullptr, &vk_pipeline)))
         return GnError_InternalError;
+
+    if (!pool.pipeline)
+        pool.pipeline.emplace(128);
+
+    GnPipelineVK* impl_pipeline = (GnPipelineVK*)pool.pipeline->allocate();
+
+    if (impl_pipeline == nullptr) {
+        fn.vkDestroyPipeline(device, vk_pipeline, nullptr);
+        return GnError_OutOfHostMemory;
+    }
 
     return GnSuccess;
 }
@@ -1805,17 +1901,14 @@ void GnDeviceVK::DestroyTextureView(GnTextureView texture_view) noexcept
 
 void GnDeviceVK::DestroyRenderPass(GnRenderPass render_pass) noexcept
 {
-
+    fn.vkDestroyRenderPass(device, GN_TO_VULKAN(GnRenderPass, render_pass)->render_pass, nullptr);
+    pool.render_pass->free(render_pass);
 }
 
 void GnDeviceVK::DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept
 {
     fn.vkDestroyDescriptorSetLayout(device, GN_TO_VULKAN(GnResourceTableLayout, resource_table_layout)->set_layout, nullptr);
-}
-
-void GnDeviceVK::DestroyPipeline(GnPipeline pipeline) noexcept
-{
-    fn.vkDestroyPipeline(device, GN_TO_VULKAN(GnPipeline, pipeline)->pipeline, nullptr);
+    pool.resource_table_layout->free(resource_table_layout);
 }
 
 void GnDeviceVK::DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept
@@ -1823,16 +1916,33 @@ void GnDeviceVK::DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcep
     GnPipelineLayoutVK* impl_pipeline_layout = GN_TO_VULKAN(GnPipelineLayout, pipeline_layout);
     fn.vkDestroyPipelineLayout(device, impl_pipeline_layout->pipeline_layout, nullptr);
     fn.vkDestroyDescriptorSetLayout(device, impl_pipeline_layout->global_resource_layout, nullptr);
+    pool.pipeline_layout->free(pipeline_layout);
+}
+
+void GnDeviceVK::DestroyPipeline(GnPipeline pipeline) noexcept
+{
+    fn.vkDestroyPipeline(device, GN_TO_VULKAN(GnPipeline, pipeline)->pipeline, nullptr);
+    pool.pipeline->free(pipeline);
 }
 
 void GnDeviceVK::DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept
 {
     fn.vkDestroyDescriptorPool(device, GN_TO_VULKAN(GnResourceTablePool, resource_table_pool)->descriptor_pool, nullptr);
+    pool.resource_table_pool->free(resource_table_pool);
 }
 
 void GnDeviceVK::DestroyCommandPool(GnCommandPool command_pool) noexcept
 {
     fn.vkDestroyCommandPool(device, GN_TO_VULKAN(GnCommandPool, command_pool)->cmd_pool, nullptr);
+}
+
+void GnDeviceVK::GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept
+{
+    VkMemoryRequirements requirements;
+    fn.vkGetBufferMemoryRequirements(device, GN_TO_VULKAN(GnBuffer, buffer)->buffer, &requirements);
+    memory_requirements->size = requirements.size;
+    memory_requirements->alignment = requirements.alignment;
+    memory_requirements->supported_memory_type_bits = requirements.memoryTypeBits;
 }
 
 GnResult GnDeviceVK::BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept
@@ -1842,6 +1952,7 @@ GnResult GnDeviceVK::BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDevice
 
     fn.vkBindBufferMemory(device, impl_buffer->buffer, impl_memory->memory, aligned_offset);
     impl_buffer->memory = (GnMemoryVK*)memory;
+    impl_buffer->aligned_offset = aligned_offset;
 
     return GnSuccess;
 }
@@ -1863,9 +1974,19 @@ GnResult GnDeviceVK::MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_rang
     }
 
     if (!impl_memory->IsAlwaysMapped())
-        impl_memory->num_resource_mapped.fetch_add(1, std::memory_order_relaxed);
+        impl_memory->num_resources_mapped++;
 
-    *mapped_memory = reinterpret_cast<std::byte*>(impl_memory->mapped_address) + memory_range->offset;
+    if (!GnHasBit(impl_memory->memory_attribute, GnMemoryAttribute_HostCoherent)) {
+        VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
+        fn.vkInvalidateMappedMemoryRanges(device, 1, &range);
+    }
+
+    GnDeviceSize offset = impl_buffer->aligned_offset;
+
+    if (memory_range != nullptr)
+        offset += memory_range->offset;
+
+    *mapped_memory = reinterpret_cast<std::byte*>(impl_memory->mapped_address) + offset;
 
     return GnSuccess;
 }
@@ -1878,23 +1999,13 @@ void GnDeviceVK::UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range)
     if (impl_memory == nullptr)
         return;
 
-    GnMemoryType& mem_type = parent_adapter->memory_properties.memory_types[impl_memory->desc.memory_type_index];
-
     // Manually flush & invalidate memory region if it's not a host-coherent memory
-    if (!GnHasBit(mem_type.attribute, GnMemoryAttribute_HostCoherent)) {
-        VkMappedMemoryRange range;
-        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        range.pNext = nullptr;
-        range.memory = impl_memory->memory;
-        range.offset = memory_range->offset;
-        range.size = memory_range->size;
-
+    if (!GnHasBit(impl_memory->memory_attribute, GnMemoryAttribute_HostCoherent)) {
+        VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
         fn.vkFlushMappedMemoryRanges(device, 1, &range);
-        fn.vkInvalidateMappedMemoryRanges(device, 1, &range);
     }
     
-    if (!impl_memory->IsAlwaysMapped() && impl_memory->num_resource_mapped.fetch_sub(1, std::memory_order_release) == 1) {
-        std::atomic_thread_fence(std::memory_order_acquire);
+    if (!impl_memory->IsAlwaysMapped() && impl_memory->num_resources_mapped-- == 1) {
         fn.vkUnmapMemory(device, impl_memory->memory);
         impl_memory->mapped_address = nullptr;
     }
@@ -2266,7 +2377,7 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
             const uint32_t first_rtable_index = state.graphics.resource_tables_upd_range.first;
             const uint32_t rtable_update_count = state.graphics.resource_tables_upd_range.last - first_rtable_index;
 
-            for (uint32_t i = 0; i < rtable_update_count; ++i) {
+            for (uint32_t i = 0; i < rtable_update_count; i++) {
                 GnResourceTableVK* impl_rtable = GN_TO_VULKAN(GnResourceTable, state.graphics.resource_tables[first_rtable_index + i]);
                 if (impl_rtable != nullptr)
                     descriptor_sets[i] = impl_rtable->descriptor_set;
@@ -2285,6 +2396,7 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
             if (should_write_global_descriptors) {
                 impl_cmd_list->global_descriptor_write_mask |= descriptor_write_mask;
 
+                // Should we check for global_descriptor_write_mask?
                 if (impl_cmd_list->global_descriptor_write_mask != 0) {
                     GnSmallVector<VkDescriptorBufferInfo, 32> buffer_descriptors;
                     GnSmallVector<VkWriteDescriptorSet, 32> write_descriptors;
@@ -2298,7 +2410,6 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
 
                     for (uint32_t i = 0; i < 32; i++) {
                         const uint32_t write_mask = 1 << i;
-
                         if (GnContainsBit(impl_cmd_list->global_descriptor_write_mask, write_mask)) {
                             VkDescriptorBufferInfo buffer_descriptor;
                             buffer_descriptor.buffer = GN_TO_VULKAN(GnBuffer, state.graphics.global_buffers[i])->buffer;
@@ -2327,17 +2438,19 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
                         }
                     }
 
-                    impl_cmd_list->fn.vkUpdateDescriptorSets(device, write_descriptors.size, write_descriptors.storage, 0, nullptr);
+                    impl_cmd_list->fn.vkUpdateDescriptorSets(device, (uint32_t)write_descriptors.size, write_descriptors.storage, 0, nullptr);
                     impl_cmd_list->current_descriptor_set = descriptor_set;
                 }
 
                 state.graphics.global_buffers_upd_mask = 0;
             }
 
-            if (should_write_global_descriptors || offset_write_mask != 0)
+            if (should_write_global_descriptors || offset_write_mask != 0) {
+                state.graphics.global_buffer_offsets_upd_mask = 0;
                 impl_cmd_list->cmd_bind_descriptor_sets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline_layout,
                                                         pipeline_layout->num_resource_tables, 1, &impl_cmd_list->current_descriptor_set,
                                                         pipeline_layout->num_resources, state.graphics.global_buffer_offsets);
+            }
         }
 
         if (state.update_flags.graphics_shader_constants) {
@@ -2406,7 +2519,7 @@ GnFlushGfxStateFn GnGetGraphicsStateFlusherVk() noexcept
 GnCommandListVK::GnCommandListVK(GnDeviceVK* impl_device, GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) noexcept :
     fn(impl_device->fn)
 {
-    // Set command private data. Also, we don't need VkCommandBuffer anymore since we can have it as the private data.
+    // Set VkCommandBuffer as command private data.
     draw_cmd_private_data = (void*)cmd_buffer;
     draw_indexed_cmd_private_data = (void*)cmd_buffer;
     dispatch_cmd_private_data = (void*)cmd_buffer;

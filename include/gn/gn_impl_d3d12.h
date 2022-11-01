@@ -117,10 +117,11 @@ struct GnDeviceD3D12 : public GnDevice_t
     void DestroyPipeline(GnPipeline pipeline) noexcept override;
     void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept override;
     void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
-    GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept;
-    GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept;
-    void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept;
-    void WriteBuffer(GnBuffer buffer, GnDeviceSize size, const void* data) noexcept;
+    void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept override;
+    GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept override;
+    GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept override;
+    void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept override;
+    void WriteBuffer(GnBuffer buffer, GnDeviceSize size, const void* data) noexcept override;
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
     GnResult DeviceWaitIdle() noexcept;
 };
@@ -953,6 +954,10 @@ void GnDeviceD3D12::DestroyCommandPool(GnCommandPool command_pool) noexcept
 {
 }
 
+void GnDeviceD3D12::GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept
+{
+}
+
 GnResult GnDeviceD3D12::BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept
 {
     return GnError_Unimplemented;
@@ -1010,7 +1015,7 @@ GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandLi
 
         if (state.update_flags.graphics_pipeline || impl_cmd_list->current_pipeline_type != GnPipelineType_Graphics) {
             impl_cmd_list->current_pipeline_type = GnPipelineType_Graphics;
-            d3d12_cmd_list->SetPipelineState(GN_TO_D3D12(GnPipeline, state.graphics_pipeline)->pipeline_state);
+            d3d12_cmd_list->SetPipelineState(GN_TO_D3D12(GnPipeline, state.graphics.pipeline)->pipeline_state);
         }
 
         if (state.update_flags.graphics_pipeline_layout) {
