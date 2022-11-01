@@ -1,14 +1,7 @@
 #pragma once
 #include <gn/gn.h>
-#include <iostream>
 #include <memory>
-#include <cassert>
-
-#define EX_ERROR(x) \
-    if ((x)) { \
-        std::cout << x "\n"; \
-        assert(false); \
-    }
+#include "example_def.h"
 
 struct GnExampleWindow
 {
