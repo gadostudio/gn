@@ -68,6 +68,7 @@ struct GnAdapterD3D12 : public GnAdapter_t
     ~GnAdapterD3D12();
 
     GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept override;
+    GnSampleCountFlags GetTextureFormatMultisampleSupport(GnFormat format) const noexcept override;
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
     GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept override;
     void GetSurfaceProperties(GnSurface surface, GnSurfaceProperties* properties) const noexcept override;
@@ -131,7 +132,11 @@ struct GnQueueD3D12 : public GnQueue_t
     ID3D12CommandQueue* cmd_queue;
 
     virtual ~GnQueueD3D12();
-    GnResult QueuePresent(GnSwapchain swapchain) noexcept override;
+    GnResult EnqueueWaitSemaphore(uint32_t num_wait_semaphores, const GnSemaphore* wait_semaphores) noexcept override;
+    GnResult EnqueueCommandLists(uint32_t num_command_lists, const GnCommandList* command_lists) noexcept override;
+    GnResult EnqueueSignalSemaphore(uint32_t num_signal_semaphores, const GnSemaphore* signal_semaphores) noexcept override;
+    GnResult Flush(GnFence fence, bool wait) noexcept override;
+    GnResult PresentSwapchain(GnSwapchain swapchain) noexcept override;
 };
 
 struct GnMemoryD3D12 : public GnMemory_t
@@ -624,6 +629,11 @@ GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFor
     return ret;
 }
 
+GnSampleCountFlags GnAdapterD3D12::GetTextureFormatMultisampleSupport(GnFormat format) const noexcept
+{
+    return GnResult();
+}
+
 GnBool GnAdapterD3D12::IsVertexFormatSupported(GnFormat format) const noexcept
 {
     const D3D12_FEATURE_DATA_FORMAT_SUPPORT& fmt = fmt_support[format];
@@ -995,7 +1005,27 @@ GnQueueD3D12::~GnQueueD3D12()
     GnSafeComRelease(cmd_queue);
 }
 
-GnResult GnQueueD3D12::QueuePresent(GnSwapchain swapchain) noexcept
+GnResult GnQueueD3D12::EnqueueWaitSemaphore(uint32_t num_wait_semaphores, const GnSemaphore* wait_semaphores) noexcept
+{
+    return GnResult();
+}
+
+GnResult GnQueueD3D12::EnqueueCommandLists(uint32_t num_command_lists, const GnCommandList* command_lists) noexcept
+{
+    return GnResult();
+}
+
+GnResult GnQueueD3D12::EnqueueSignalSemaphore(uint32_t num_signal_semaphores, const GnSemaphore* signal_semaphores) noexcept
+{
+    return GnResult();
+}
+
+GnResult GnQueueD3D12::Flush(GnFence fence, bool wait) noexcept
+{
+    return GnResult();
+}
+
+GnResult GnQueueD3D12::PresentSwapchain(GnSwapchain swapchain) noexcept
 {
     return GnResult();
 }

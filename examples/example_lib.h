@@ -234,7 +234,7 @@ struct GnExampleApp
     {
         while (window->open) {
             window->ProcessEvent();
-            GnQueuePresent(queue, swapchain);
+            GnPresentSwapchain(queue, swapchain);
         }
 
         return 0;

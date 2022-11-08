@@ -13,6 +13,7 @@ option(GN_BUILD_TESTS "Build tests (must build static library)" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
+set(CMAKE_EXC TRUE)
 
 if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
     include(FetchContent)

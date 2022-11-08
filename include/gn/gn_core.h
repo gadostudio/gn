@@ -36,6 +36,12 @@
 #define GN_ALLOCA(size) alloca(size)
 #endif
 
+#ifdef _MSC_VER
+#define GN_SAFEBUFFERS __declspec(safebuffers)
+#else
+#define GN_SAFEBUFFERS
+#endif
+
 #define GN_MAX_QUEUE 4
 
 // The maximum number of bound resources of each type on resource table here to prevent resource table abuse
@@ -138,6 +144,7 @@ struct GnPool
 
     void free(void* ptr) noexcept
     {
+        std::memset(ptr, 0, alloc_size);
         GnPoolChunk* chunk = reinterpret_cast<GnPoolChunk*>(ptr);
         chunk->next_chunk = current_allocation;
         current_allocation = chunk;
@@ -198,9 +205,8 @@ struct GnSmallVector
 
     ~GnSmallVector()
     {
-        if (storage != local_storage) {
-            std::free(storage);
-        }
+        if (storage != local_storage)
+            ::operator delete[](storage, std::align_val_t{alignof(PODType)}, std::nothrow);
     }
 
     GnSmallVector& operator=(const GnSmallVector& other)
@@ -242,11 +248,21 @@ struct GnSmallVector
     bool push_back(const PODType& value) noexcept
     {
         if (size == capacity)
-            if (!reserve(capacity + 1))
+            if (!reserve(capacity + (capacity / 2)))
                 return false;
 
         storage[size++] = value;
         return true;
+    }
+
+    std::optional<PODType&> emplace_back() noexcept
+    {
+        if (size == capacity)
+            if (!reserve(capacity + (capacity / 2)))
+                return {};
+
+        auto ptr = new(storage + size++) PODType();
+        return { *ptr };
     }
 
     bool resize(size_t n) noexcept
@@ -258,20 +274,111 @@ struct GnSmallVector
     bool reserve(size_t n) noexcept
     {
         if (n > capacity) {
-            PODType* new_storage = (PODType*)std::malloc(n * sizeof(PODType));
+            PODType* new_storage = (PODType*)::operator new[](n * sizeof(PODType), std::align_val_t{ alignof(PODType) }, std::nothrow);
             
-            std::memset(new_storage, 0, n * sizeof(PODType));
+            //std::memset(new_storage, 0, n * sizeof(PODType));
 
             if (new_storage == nullptr)
                 return false;
 
             std::memcpy(new_storage, storage, size * sizeof(PODType));
 
-            if (storage != local_storage) {
-                std::free(storage);
-            }
+            if (storage != local_storage)
+                ::operator delete[](storage, std::align_val_t{alignof(PODType)}, std::nothrow);
 
             storage = new_storage;
+            capacity = n;
+        }
+
+        return true;
+    }
+};
+
+template<typename PODType, size_t Size, std::enable_if_t<std::is_pod_v<PODType>, bool> = true>
+struct GnSmallQueue
+{
+    PODType local_storage[Size]{};
+    PODType* data = nullptr;
+    PODType* read_ptr = nullptr;
+    PODType* write_ptr = nullptr;
+    size_t capacity = Size;
+
+    GnSmallQueue() :
+        data(local_storage),
+        read_ptr(data),
+        write_ptr(data)
+    {
+    }
+
+    ~GnSmallQueue()
+    {
+        if (data != local_storage)
+            ::operator delete[](data, std::align_val_t{ alignof(PODType) }, std::nothrow);
+    }
+
+    bool push(const PODType& value) noexcept
+    {
+        if (num_items_written() == capacity)
+            if (!reserve(capacity + (capacity / 2)))
+                return false;
+
+        *write_ptr = value;
+        write_ptr++;
+
+        return true;
+    }
+
+    PODType* pop() noexcept
+    {
+        if (write_ptr == read_ptr)
+            return nullptr;
+
+        return read_ptr++;
+    }
+
+    PODType* pop_all() noexcept
+    {
+        PODType* tmp = read_ptr;
+        read_ptr = write_ptr;
+        return read_ptr;
+    }
+
+    size_t size() const noexcept
+    {
+        return write_ptr - read_ptr;
+    }
+
+    size_t num_items_written() const noexcept
+    {
+        return write_ptr - data;
+    }
+
+    size_t num_items_read() const noexcept
+    {
+        return read_ptr - data;
+    }
+
+    void clear() noexcept
+    {
+
+    }
+
+    bool reserve(size_t n) noexcept
+    {
+        if (n > capacity) {
+            PODType* new_storage = (PODType*)::operator new[](n * sizeof(PODType), std::align_val_t{ alignof(PODType) }, std::nothrow);
+
+            if (new_storage == nullptr)
+                return false;
+
+            std::memcpy(new_storage, data, num_items_written() * sizeof(PODType));
+
+            if (data != local_storage)
+                ::operator delete[](data, std::align_val_t{ alignof(PODType) }, std::nothrow);
+
+            data = new_storage;
+            read_ptr = new_storage + num_items_read();
+            write_ptr = new_storage + num_items_written();
             capacity = n;
         }
 

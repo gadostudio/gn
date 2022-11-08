@@ -27,7 +27,7 @@ struct GnAdapter_t
 
     virtual ~GnAdapter_t() { }
     virtual GnTextureFormatFeatureFlags GetTextureFormatFeatureSupport(GnFormat format) const noexcept = 0;
-    virtual GnResult GetTextureFormatMultisampleSupport(GnFormat format, GnSampleCountFlags* supported_sample_count) const noexcept = 0;
+    virtual GnSampleCountFlags GetTextureFormatMultisampleSupport(GnFormat format) const noexcept = 0;
     virtual GnBool IsVertexFormatSupported(GnFormat format) const noexcept = 0;
     virtual GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept = 0;
     virtual void GetSurfaceProperties(GnSurface surface, GnSurfaceProperties* properties) const noexcept = 0;
@@ -49,7 +49,6 @@ struct GnDevice_t
     uint32_t    total_enabled_queues = 0;
 
     virtual ~GnDevice_t() { }
-
     virtual GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept = 0;
     virtual GnResult CreateFence(GnBool signaled, GnFence* fence) noexcept = 0;
     virtual GnResult CreateMemory(const GnMemoryDesc* desc, GnMemory* buffer) noexcept = 0;
@@ -91,15 +90,19 @@ struct GnSwapchain_t
 
 struct GnQueue_t
 {
-    virtual ~GnQueue_t() { }
-    virtual GnResult QueuePresent(GnSwapchain swapchain) noexcept = 0;
+    virtual GnResult EnqueueWaitSemaphore(uint32_t num_wait_semaphores, const GnSemaphore* wait_semaphores) noexcept = 0;
+    virtual GnResult EnqueueCommandLists(uint32_t num_command_lists, const GnCommandList* command_lists) noexcept = 0;
+    virtual GnResult EnqueueSignalSemaphore(uint32_t num_wait_semaphores, const GnSemaphore* wait_semaphores) noexcept = 0;
+    virtual GnResult Flush(GnFence fence, bool wait) noexcept = 0;
+    virtual GnResult PresentSwapchain(GnSwapchain swapchain) noexcept = 0;
+};
+
+struct GnSemaphore_t
+{
 };
 
 struct GnFence_t
 {
-    GnFenceType             type;
-
-    virtual ~GnFence_t() { }
 };
 
 struct GnMemory_t
@@ -244,7 +247,7 @@ struct GnCommandListState
     }
 };
 
-typedef void (GN_FPTR* GnFlushGfxStateFn)(GnCommandList command_list);
+typedef void (GN_FPTR* GnFlushStateFn)(GnCommandList command_list);
 typedef void (GN_FPTR* GnFlushComputeStateFn)(GnCommandList command_list);
 typedef void (GN_FPTR* GnDrawCmdFn)(void* cmd_data, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance);
 typedef void (GN_FPTR* GnDrawIndexedCmdFn)(void* cmd_data, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance);
@@ -255,7 +258,7 @@ struct GnCommandList_t
     GnCommandListState          state{};
 
     // Function pointer for certain functions are defined here to avoid vtables and function call indirections.
-    GnFlushGfxStateFn           flush_gfx_state_fn;
+    GnFlushStateFn              flush_gfx_state_fn;
     GnFlushComputeStateFn       flush_compute_state_fn;
     void*                       draw_cmd_private_data;
     GnDrawCmdFn                 draw_cmd_fn;
@@ -717,24 +720,29 @@ void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain)
 
 // -- [GnQueue] --
 
-GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions, GnFence signal_fence)
+GnResult GnEnqueueCommandLists(GnQueue queue, uint32_t num_command_lists, const GnCommandList* command_lists)
 {
     return GnError_Unimplemented;
 }
 
-GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions)
+GnResult GnFlushQueue(GnQueue queue, GnFence fence)
 {
     return GnError_Unimplemented;
 }
 
-GnResult GnQueuePresent(GnQueue queue, GnSwapchain swapchain)
+GnResult GnFlushQueueAndWait(GnQueue queue) 
 {
-    return queue->QueuePresent(swapchain);
+    return GnError_Unimplemented;
 }
 
 GnResult GnWaitQueue(GnQueue queue)
 {
     return GnError_Unimplemented;
+}
+
+GnResult GnPresentSwapchain(GnQueue queue, GnSwapchain swapchain)
+{
+    return queue->PresentSwapchain(swapchain);
 }
 
 // -- [GnSemaphore] --
@@ -904,22 +912,24 @@ void GnDestroyRenderPass(GnDevice device, GnRenderPass render_pass)
 
 GnResult GnCreateResourceTableLayout(GnDevice device, const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table)
 {
-    return GnError_Unimplemented;
+    return device->CreateResourceTableLayout(desc, resource_table);
 }
 
 void GnDestroyResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table)
 {
+    device->DestroyResourceTableLayout(resource_table);
 }
 
 // -- [GnPipelineLayout] --
 
 GnResult GnCreatePipelineLayout(GnDevice device, const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout)
 {
-    return GnError_Unimplemented;
+    return device->CreatePipelineLayout(desc, pipeline_layout);
 }
 
 void GnDestroyPipelineLayout(GnDevice device, GnPipelineLayout pipeline_layout)
 {
+    device->DestroyPipelineLayout(pipeline_layout);
 }
 
 // -- [GnCommandPool] --

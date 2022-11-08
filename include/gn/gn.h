@@ -469,20 +469,13 @@ void GnDestroyDevice(GnDevice device);
 GnQueue GnGetDeviceQueue(GnDevice device, uint32_t queue_group_index, uint32_t queue_index);
 GnResult GnDeviceWaitIdle(GnDevice device);
 
-typedef struct
-{
-    uint32_t                num_wait_semaphores;
-    const GnSemaphore*      wait_semaphores;
-    uint32_t                num_command_lists;
-    const GnCommandList*    command_lists;
-    uint32_t                num_signal_semaphores;
-    const GnSemaphore*      signal_semaphores;
-} GnSubmitDesc;
-
-GnResult GnQueueSubmit(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions, GnFence signal_fence);
-GnResult GnQueueSubmitAndWait(GnQueue queue, uint32_t num_submission, const GnSubmitDesc* submissions);
-GnResult GnQueuePresent(GnQueue queue, GnSwapchain swapchain);
+GnResult GnEnqueueWaitSemaphore(GnQueue queue, uint32_t num_wait_semaphores, const GnSemaphore* wait_semaphores);
+GnResult GnEnqueueCommandLists(GnQueue queue, uint32_t num_command_lists, const GnCommandList* command_lists);
+GnResult GnEnqueueSignalSemaphore(GnQueue queue, uint32_t num_signal_semaphores, const GnSemaphore* signal_semaphores);
+GnResult GnFlushQueue(GnQueue queue, GnFence fence);
+GnResult GnFlushQueueAndWait(GnQueue queue);
 GnResult GnWaitQueue(GnQueue queue);
+GnResult GnPresentSwapchain(GnQueue queue, GnSwapchain swapchain);
 
 typedef struct
 {

@@ -1,5 +1,6 @@
 #include <gn/gn.h>
 #include <array>
+#include <vector>
 #include "../example_def.h"
 
 const std::array<float, 8> buffer_data = {
@@ -64,7 +65,20 @@ int main()
 
     //GnBuffer dst_buffer;
     //EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &dst_buffer));
+    
+    GnShaderResource resources[2] = {
+        { 0, GnResourceType_StorageBuffer, true, GnShaderStage_ComputeShader },
+        { 1, GnResourceType_StorageBuffer, false, GnShaderStage_ComputeShader },
+    };
 
+    GnPipelineLayoutDesc layout_desc{};
+    layout_desc.num_resources = 2;
+    layout_desc.resources = resources;
+    
+    GnPipelineLayout layout;
+    EX_THROW_IF_FAILED(GnCreatePipelineLayout(device, &layout_desc, &layout));
+
+    GnDestroyPipelineLayout(device, layout);
     GnDestroyBuffer(device, src_buffer);
     GnDestroyMemory(device, src_buffer_memory);
     GnDestroyDevice(device);
