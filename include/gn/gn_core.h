@@ -42,13 +42,6 @@
 #define GN_SAFEBUFFERS
 #endif
 
-#define GN_MAX_QUEUE 4
-
-// The maximum number of bound resources of each type on resource table here to prevent resource table abuse
-// We may change this number in the future
-#define GN_MAX_RESOURCE_TABLE_SAMPLERS 2048u
-#define GN_MAX_RESOURCE_TABLE_DESCRIPTORS 1048576u
-
 #undef min
 #undef max
 
@@ -78,13 +71,17 @@ inline static constexpr bool GnHasBit(T op, Args... args) noexcept
     return (op & mask) != 0;
 }
 
-template<typename T, typename T2, typename... Rest>
-struct GnUnionStorage
+template<typename T>
+inline static T* GnAllocate(std::size_t count = 1, std::size_t align = alignof(T))
 {
-    static constexpr std::size_t size = GnMax(sizeof(T), sizeof(T2), sizeof(Rest)...);
-    static constexpr std::size_t alignment = GnMax(alignof(T), alignof(T2), alignof(Rest)...);
-    alignas(alignment) uint8_t data[size];
-};
+    return (T*)::operator new[](sizeof(T) * count, std::align_val_t{ align }, std::nothrow);
+}
+
+template<typename T, std::enable_if_t<std::is_pointer_v<T>, bool> = true>
+inline static void GnFree(T ptr, std::size_t align = alignof(std::remove_pointer_t<T>))
+{
+    ::operator delete(ptr, std::align_val_t{ align }, std::nothrow);
+}
 
 struct GnPoolHeader
 {
@@ -110,8 +107,9 @@ struct GnPool
     std::size_t objects_per_block;
     std::size_t num_reserved = 0;
     std::size_t num_allocated = 0;
+    bool reserve_once = false;
 
-    GnPool(std::size_t objects_per_block) noexcept :
+    GnPool(std::size_t objects_per_block, bool reserve_once = false) noexcept :
         objects_per_block(objects_per_block)
     {
     }
@@ -135,7 +133,7 @@ struct GnPool
         }
 
         GnPoolChunk* free_chunk = current_allocation;
-        last_allocation = current_allocation;
+        //last_allocation = current_allocation;
         current_allocation = current_allocation->next_chunk;
         ++num_allocated;
 
@@ -153,6 +151,8 @@ struct GnPool
 
     bool _reserve_new_block() noexcept
     {
+        if (reserve_once && num_reserved == objects_per_block) return false;
+
         // Allocate the pool
         // One extra storage is required for the pool header. It may waste space a bit if the object is too large.
         std::size_t size = alloc_size * (objects_per_block + 1);
@@ -186,6 +186,125 @@ struct GnPool
         num_reserved += objects_per_block;
 
         return true;
+    }
+};
+
+template<typename T, std::enable_if_t<std::is_pod_v<T>, bool> = true>
+struct GnVector
+{
+    T* first_ptr = nullptr;
+    T* last_ptr = nullptr;
+    T* end_ptr = nullptr;
+
+    GnVector() noexcept
+    {
+    }
+
+    GnVector(GnVector&& other) noexcept :
+        first_ptr(other.first_ptr),
+        last_ptr(other.last_ptr),
+        end_ptr(other.end_ptr)
+    {
+        other.first_ptr = nullptr;
+        other.last_ptr = nullptr;
+        other.end_ptr = nullptr;
+    }
+
+    ~GnVector()
+    {
+        if (first_ptr)
+            ::operator delete[](first_ptr, std::align_val_t{ alignof(T) }, std::nothrow);
+    }
+
+    T& operator[](size_t n) noexcept
+    {
+        return first_ptr[n];
+    }
+
+    const T& operator[](size_t n) const noexcept
+    {
+        return first_ptr[n];
+    }
+
+    T* data() noexcept
+    {
+        return first_ptr;
+    }
+
+    const T* data() const noexcept
+    {
+        return first_ptr;
+    }
+
+    bool push_back(const T& value) noexcept
+    {
+        if (last_ptr == end_ptr) {
+            size_t last_capacity = capacity();
+            if (!reserve(1 + last_capacity + last_capacity / 2))
+                return false;
+        }
+
+        new(last_ptr++) T(value);
+        return true;
+    }
+
+    template<typename... Args>
+    std::optional<std::reference_wrapper<T>> emplace_back(Args&&... args) noexcept
+    {
+        if (last_ptr == end_ptr) {
+            size_t last_capacity = capacity();
+            if (!reserve(1 + last_capacity + last_capacity / 2))
+                return false;
+        }
+
+        auto ptr = new(last_ptr++) T{ std::forward<Args>(args)... };
+        return { std::ref(*ptr) };
+    }
+
+    bool resize(size_t n) noexcept
+    {
+        if (n >= size()) {
+            if (!reserve(n))
+                return false;
+
+            last_ptr = first_ptr + n;
+        }
+
+        return true;
+    }
+
+    bool reserve(size_t n) noexcept
+    {
+        if (n <= capacity())
+            return true;
+
+        T* new_storage = (T*)::operator new[](n * sizeof(T), std::align_val_t{ alignof(T) }, std::nothrow);
+
+        if (new_storage == nullptr)
+            return false;
+
+        size_t last_size = size();
+
+        if (first_ptr) {
+            std::memcpy(new_storage, first_ptr, last_size * sizeof(T));
+            ::operator delete[](first_ptr, std::align_val_t{ alignof(T) }, std::nothrow);
+        }
+
+        first_ptr = new_storage;
+        last_ptr = new_storage + last_size;
+        end_ptr = new_storage + n;
+
+        return true;
+    }
+
+    size_t size() const noexcept
+    {
+        return last_ptr - first_ptr;
+    }
+
+    size_t capacity() const noexcept
+    {
+        return end_ptr - first_ptr;
     }
 };
 
@@ -255,14 +374,16 @@ struct GnSmallVector
         return true;
     }
 
-    std::optional<PODType&> emplace_back() noexcept
+    template<typename... Args>
+    std::optional<std::reference_wrapper<PODType>> emplace_back(Args&&... args) noexcept
     {
         if (size == capacity)
             if (!reserve(capacity + (capacity / 2)))
                 return {};
 
-        auto ptr = new(storage + size++) PODType();
-        return { *ptr };
+        auto ptr = new(storage + size++) PODType{ std::forward<Args>(args)... };
+
+        return { std::ref(*ptr) };
     }
 
     bool resize(size_t n) noexcept
@@ -328,6 +449,18 @@ struct GnSmallQueue
         return true;
     }
 
+    template<typename... Args>
+    std::optional<std::reference_wrapper<PODType>> emplace(Args&&... args) noexcept
+    {
+        if (num_items_written() == capacity)
+            if (!reserve(capacity + (capacity / 2)))
+                return {};
+
+        auto ptr = new(write_ptr++) PODType{ std::forward<Args>(args)... };
+
+        return { std::ref(*ptr) };
+    }
+
     PODType* pop() noexcept
     {
         if (write_ptr == read_ptr)
@@ -358,9 +491,15 @@ struct GnSmallQueue
         return read_ptr - data;
     }
 
+    bool empty() const noexcept
+    {
+        return size() == 0;
+    }
+
     void clear() noexcept
     {
-
+        write_ptr = data;
+        read_ptr = data;
     }
 
     bool reserve(size_t n) noexcept
@@ -437,6 +576,7 @@ struct GnObjectPool
     std::optional<GnPool<typename ObjectTypes::PipelineLayout>>         pipeline_layout;
     std::optional<GnPool<typename ObjectTypes::ResourceTablePool>>      resource_table_pool;
     std::optional<GnPool<typename ObjectTypes::Pipeline>>               pipeline;
+    std::optional<GnPool<typename ObjectTypes::CommandPool>>            command_pool;
 };
 
 struct GnUnimplementedType {};

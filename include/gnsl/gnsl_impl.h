@@ -1,96 +1,14 @@
+#ifndef GNSL_IMPL_H_
+#define GNSL_IMPL_H_
+
 #include "gnsl.h"
-#include <vector>
-#include <optional>
-
-typedef enum
-{
-    GnslTokenType_Identifier,
-
-    // Operators
-    GnslTokenType_OpAdd,
-    GnslTokenType_OpSubtract,
-    GnslTokenType_OpMultiply,
-    GnslTokenType_OpDivide,
-    GnslTokenType_OpModulo,
-    GnslTokenType_OpAndBitwise,
-    GnslTokenType_OpOrBitwise,
-    GnslTokenType_OpNotBitwise,
-    GnslTokenType_OpXor,
-    GnslTokenType_OpLShift,
-    GnslTokenType_OpRShift,
-    GnslTokenType_OpIncrement,
-    GnslTokenType_OpDecrement,
-    GnslTokenType_OpAssign,
-    GnslTokenType_OpAddAssign,
-    GnslTokenType_OpSubtractAssign,
-    GnslTokenType_OpMultiplyAssign,
-    GnslTokenType_OpDivideAssign,
-    GnslTokenType_OpModuloAssign,
-    GnslTokenType_OpAndBitwiseAssign,
-    GnslTokenType_OpOrBitwiseAssign,
-    GnslTokenType_OpNotBitwiseAssign,
-    GnslTokenType_OpXorAssign,
-    GnslTokenType_OpLShiftAssign,
-    GnslTokenType_OpRShiftAssign,
-
-    // Built-in type keywords
-    GnslTokenType_Const,
-    GnslTokenType_Void,
-    GnslTokenType_Bool,
-    GnslTokenType_Int,
-    GnslTokenType_Uint,
-    GnslTokenType_Float,
-    GnslTokenType_Bool2,
-    GnslTokenType_Int2,
-    GnslTokenType_Uint2,
-    GnslTokenType_Float2,
-    GnslTokenType_Bool3,
-    GnslTokenType_Int3,
-    GnslTokenType_Uint3,
-    GnslTokenType_Float3,
-    GnslTokenType_Bool4,
-    GnslTokenType_Int4,
-    GnslTokenType_Uint4,
-    GnslTokenType_Float4,
-
-    // Access specifier keywords
-    GnslTokenType_In,
-    GnslTokenType_Out,
-    GnslTokenType_Inout,
-
-    // Control flow keywords
-    GnslTokenType_If,
-    GnslTokenType_Else,
-    GnslTokenType_Switch,
-    GnslTokenType_Case,
-    GnslTokenType_Default,
-    GnslTokenType_For,
-    GnslTokenType_While,
-    GnslTokenType_Do,
-    GnslTokenType_Break,
-    GnslTokenType_Continue,
-    GnslTokenType_Discard,
-    GnslTokenType_Return,
-} GnslTokenType;
-
-typedef enum
-{
-    
-} GnslNodeType;
-
-struct GnslToken
-{
-    GnslTokenType type;
-};
-
-struct GnslNode
-{
-    GnslNodeType type;
-};
+#include "gnsl_frontend.h"
+#include <memory>
+#include <cstdio>
 
 struct GnslCompiler_t
 {
-    std::optional<std::vector<GnslToken>> GenerateToken(size_t size, const char* str, GnslCompilationResult compilation_result) noexcept;
+    GnslResult CompileFromMemory(GnslShaderType shader_type, size_t size, const GnslByte* str, GnslCompilationResult* compilation_result);
 };
 
 struct GnslCompilationResult_t
@@ -98,10 +16,12 @@ struct GnslCompilationResult_t
 
 };
 
+// ----
+
 GnslResult GnslCreateCompiler(GnslCompiler* compiler)
 {
     *compiler = new GnslCompiler_t();
-    return GnslError_Unimplemented;
+    return GnslSuccess;
 }
 
 void GnslDestroyCompiler(GnslCompiler compiler)
@@ -109,37 +29,61 @@ void GnslDestroyCompiler(GnslCompiler compiler)
     delete compiler;
 }
 
-GnslResult GnslCompileFromString(GnslCompiler compiler, GnslShaderType shader_type, size_t size, const char* str, GnslCompilationResult* compilation_result)
+GnslResult GnslCompileFromFile(GnslCompiler compiler, GnslShaderType shader_type, const char* path, GnslCompilationResult* compilation_result)
 {
-    GnslCompilationResult result = new GnslCompilationResult_t();
-    auto tokens = compiler->GenerateToken(size, str, result);
+    std::FILE* file = std::fopen(path, "rb");
 
-    if (!tokens) {
-        return GnslError_CompilationFailed;
-    }
+    if (file == nullptr)
+        return GnslError_CannotOpenFile;
+
+    std::fseek(file, 0, SEEK_END);
     
-    return GnslError_Unimplemented;
+    int file_size = std::ftell(file);
+    int string_size = file_size + 1;
+    GnslByte* str = (GnslByte*)std::malloc(string_size);
+
+    if (str == nullptr)
+        return GnslError_CannotOpenFile;
+    
+    std::memset(str, 0, string_size);
+    std::fseek(file, 0, SEEK_SET);
+    std::fread(str, 1, sizeof(GnslByte) * file_size, file);
+    std::fclose(file);
+
+    GnslResult result = compiler->CompileFromMemory(shader_type, file_size, str, compilation_result);
+
+    std::free(str);
+
+    return result;
+}
+
+GnslResult GnslCompileFromMemory(GnslCompiler compiler, GnslShaderType shader_type, size_t size, const GnslByte* str, GnslCompilationResult* compilation_result)
+{
+    return compiler->CompileFromMemory(shader_type, size, str, compilation_result);
 }
 
 void GnslDestroyCompilationResult(GnslCompilationResult compilation_result)
 {
 }
 
-std::tuple<const char*, char32_t> GnslGetNextUTF8Char(const char* str, const char* end_str) noexcept
+GnslResult GnslCompiler_t::CompileFromMemory(GnslShaderType shader_type, size_t size, const GnslByte* str, GnslCompilationResult* compilation_result)
 {
-    return { str, 0 };
-}
+    std::unique_ptr<GnslCompilationResult_t> result = std::make_unique<GnslCompilationResult_t>();
+    GnslLexer lexer;
+    auto tokens = lexer.GenerateToken(size, str, result.get());
 
-std::optional<std::vector<GnslToken>> GnslCompiler_t::GenerateToken(size_t size, const char* str, GnslCompilationResult compilation_result) noexcept
-{
-    const char* current_str = str;
-    const char* end_str = str + size;
-
-    while (current_str != end_str) {
-        auto [next_str, current_char] = GnslGetNextUTF8Char(str, end_str);
-
-        current_str = next_str;
+    if (!tokens) {
+        return GnslError_CompilationFailed;
     }
 
-    return {};
+    PrintToken(*tokens);
+
+    GnslParser parser;
+    parser.SetTokenStream(&*tokens);
+    parser.Parse();
+
+    *compilation_result = result.release();
+    return GnslError_Unimplemented;
 }
+
+#endif // GNSL_IMPL_H_

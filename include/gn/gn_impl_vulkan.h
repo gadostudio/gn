@@ -63,6 +63,10 @@ struct GnVulkanInstanceFunctions
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR;
     PFN_vkCreateDevice vkCreateDevice;
+    PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties;
+
+    // Vulkan 1.1 functions
+    PFN_vkGetPhysicalDeviceFeatures2KHR vkGetPhysicalDeviceFeatures2;
 };
 
 struct GnVulkanDeviceFunctions
@@ -95,6 +99,8 @@ struct GnVulkanDeviceFunctions
     PFN_vkDestroyImage vkDestroyImage;
     PFN_vkCreateImageView vkCreateImageView;
     PFN_vkDestroyImageView vkDestroyImageView;
+    PFN_vkCreateShaderModule vkCreateShaderModule;
+    PFN_vkDestroyShaderModule vkDestroyShaderModule;
     PFN_vkCreateGraphicsPipelines vkCreateGraphicsPipelines;
     PFN_vkCreateComputePipelines vkCreateComputePipelines;
     PFN_vkDestroyPipeline vkDestroyPipeline;
@@ -137,16 +143,52 @@ struct GnVulkanDeviceFunctions
     PFN_vkQueuePresentKHR vkQueuePresentKHR;
 };
 
+struct GnInstanceVersionInfoVK
+{
+    uint32_t    api_version;
+    bool        has_khr_surface_extension;
+    bool        has_khr_win32_surface_extension;
+    bool        has_khr_get_physical_device_properties2_extension;
+
+    bool HasKHRSurface() { return has_khr_surface_extension; }
+    bool HasKHRWin32Surface() { return has_khr_win32_surface_extension; }
+    bool HasKHRGetPhysicalDeviceProperties2() { return api_version > VK_API_VERSION_1_0 || has_khr_get_physical_device_properties2_extension; }
+};
+
+template<typename BaseStruct>
+struct GnStructChainBuilderVK
+{
+    VkBaseInStructure* last_struct;
+
+    GnStructChainBuilderVK(BaseStruct* base) : last_struct((VkBaseInStructure*)base) { }
+    
+    template<typename StructType>
+    void push(StructType* structure)
+    {
+        last_struct->pNext = (VkBaseInStructure*)structure;
+        last_struct = (VkBaseInStructure*)structure;
+    }
+};
+
+struct GnDeviceVersionInfoVK
+{
+    uint32_t    api_version;
+    bool        has_ext_depth_clip_enable_extension;
+};
+
 struct GnVulkanFunctionDispatcher
 {
-    void*                       dll_handle;
-    PFN_vkGetInstanceProcAddr   vkGetInstanceProcAddr = nullptr;
-    PFN_vkCreateInstance        vkCreateInstance = nullptr;
+    void*                                       dll_handle;
+    PFN_vkGetInstanceProcAddr                   vkGetInstanceProcAddr = nullptr;
+    PFN_vkCreateInstance                        vkCreateInstance = nullptr;
+    PFN_vkEnumerateInstanceExtensionProperties  vkEnumerateInstanceExtensionProperties = nullptr;
+    PFN_vkEnumerateInstanceLayerProperties      vkEnumerateInstanceLayerProperties = nullptr;
+    PFN_vkEnumerateInstanceVersion              vkEnumerateInstanceVersion = nullptr;
 
     GnVulkanFunctionDispatcher(void* dll_handle) noexcept;
 
     bool LoadFunctions() noexcept;
-    void LoadInstanceFunctions(VkInstance instance, GnVulkanInstanceFunctions& fn) noexcept;
+    void LoadInstanceFunctions(VkInstance instance, const GnInstanceVersionInfoVK& ver_info, GnVulkanInstanceFunctions& fn) noexcept;
     void LoadDeviceFunctions(VkInstance instance, VkDevice device, uint32_t api_version, GnVulkanDeviceFunctions& fn) noexcept;
 
     static bool Init() noexcept;
@@ -163,6 +205,7 @@ struct GnInstanceVK : public GnInstance_t
     GnVulkanInstanceFunctions   fn{};
     VkInstance                  instance = VK_NULL_HANDLE;
     GnAdapterVK*                vk_adapters = nullptr; // dynamic array
+    GnInstanceVersionInfoVK     ver_info{};
 
     GnInstanceVK() noexcept;
     ~GnInstanceVK();
@@ -172,17 +215,18 @@ struct GnInstanceVK : public GnInstance_t
 
 struct GnAdapterVK : public GnAdapter_t
 {
-    GnInstanceVK*                       parent_instance;
-    VkPhysicalDevice                    physical_device = VK_NULL_HANDLE;
-    uint32_t                            api_version = 0;
-    VkPhysicalDeviceFeatures            supported_features{};
-    VkPhysicalDeviceMemoryProperties    vk_memory_properties{};
+    GnInstanceVK*                               parent_instance = nullptr;
+    VkPhysicalDevice                            physical_device = VK_NULL_HANDLE;
+    uint32_t                                    api_version = 0;
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT  depth_clip_enable_feature{};
+    VkPhysicalDeviceFeatures2                   supported_features{};
+    VkPhysicalDeviceMemoryProperties            vk_memory_properties{};
+    GnVector<VkExtensionProperties>             extensions;
 
-    GnAdapterVK(GnInstanceVK* instance,
-                const GnVulkanInstanceFunctions& fn,
-                VkPhysicalDevice physical_device,
-                const VkPhysicalDeviceProperties& vk_properties,
-                const VkPhysicalDeviceFeatures& vk_features) noexcept;
+    GnAdapterVK(GnInstanceVK*                       instance,
+                const GnVulkanInstanceFunctions&    fn,
+                VkPhysicalDevice                    physical_device,
+                GnVector<VkExtensionProperties>&&   supported_extensions) noexcept;
 
     ~GnAdapterVK() {}
 
@@ -219,6 +263,7 @@ struct GnQueueVK : public GnQueue_t
     GnSmallQueue<VkSemaphore, 32>           wait_semaphore_queue;
     GnSmallQueue<VkPipelineStageFlags, 32>  wait_dst_stage_queue;
     GnSmallQueue<VkSemaphore, 32>           signal_semaphore_queue;
+    GnSmallQueue<VkSubmitInfo, 32>          submission_queue;
 
     VkResult Init(GnDeviceVK* impl_device, VkQueue queue) noexcept;
     void Destroy() noexcept;
@@ -278,7 +323,7 @@ struct GnMemoryVK : public GnMemory_t
     VkDeviceMemory  memory;
     void*           mapped_address;
     uint32_t        num_resources_mapped;
-    std::mutex      mappping_lock{};
+    std::mutex      mapping_lock{};
 };
 
 struct GnBufferVK : public GnBuffer_t
@@ -313,8 +358,11 @@ struct GnResourceTableLayoutVK : public GnResourceTableLayout_t
 struct GnPipelineLayoutVK : public GnPipelineLayout_t
 {
     VkPipelineLayout        pipeline_layout;
+    VkShaderStageFlags      push_constants_stage_flags;
     VkDescriptorSetLayout   global_resource_layout;
     uint32_t                global_resource_binding_mask;
+    uint32_t                num_global_uniform_buffers;
+    uint32_t                num_global_storage_buffers;
 };
 
 struct GnPipelineVK : public GnPipeline_t
@@ -332,98 +380,26 @@ struct GnResourceTableVK : public GnResourceTable_t
     VkDescriptorSet descriptor_set;
 };
 
-struct GnObjectTypesVK
+struct GnDescriptorStreamChunkVK
 {
-    using Queue                 = GnQueueVK;
-    using Fence                 = GnFenceVK;
-    using Memory                = GnMemoryVK;
-    using Buffer                = GnBufferVK;
-    using Texture               = GnTextureVK;
-    using TextureView           = GnTextureViewVK;
-    using RenderPass            = GnRenderPassVK;
-    using ResourceTableLayout   = GnResourceTableLayoutVK;
-    using PipelineLayout        = GnPipelineLayoutVK;
-    using Pipeline              = GnPipelineVK;
-    using ResourceTablePool     = GnResourceTablePoolVK;
-    using ResourceTable         = GnUnimplementedType;
-    using CommandPool           = GnCommandPoolVK;
-    using CommandList           = GnCommandListVK;
-};
-
-struct GnDeviceVK : public GnDevice_t
-{
-    GnVulkanDeviceFunctions             fn{};
-    VkDevice                            device = VK_NULL_HANDLE;
-    GnQueueVK*                          enabled_queues = nullptr;
-    GnObjectPool<GnObjectTypesVK>       pool;
-
-    ~GnDeviceVK();
-    GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
-    GnResult CreateFence(GnBool signaled, GnFence* fence) noexcept override;
-    GnResult CreateMemory(const GnMemoryDesc* desc, GnMemory* memory) noexcept override;
-    GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
-    GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
-    GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
-    GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept override;
-    GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept override;
-    GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept override;
-    GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept override;
-    GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept override;
-    GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
-    void DestroySwapchain(GnSwapchain swapchain) noexcept override;
-    void DestroyMemory(GnMemory memory) noexcept override;
-    void DestroyBuffer(GnBuffer buffer) noexcept override;
-    void DestroyTexture(GnTexture texture) noexcept override;
-    void DestroyTextureView(GnTextureView texture_view) noexcept override;
-    void DestroyRenderPass(GnRenderPass render_pass) noexcept override;
-    void DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept override;
-    void DestroyPipeline(GnPipeline pipeline) noexcept override;
-    void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
-    void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept override;
-    void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
-    void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept override;
-    GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept;
-    GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept;
-    void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept;
-    void WriteBuffer(GnBuffer buffer, GnDeviceSize size, const void* data) noexcept;
-    GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
-    GnResult DeviceWaitIdle() noexcept override;
+    VkDescriptorPool            descriptor_pool;
+    uint32_t                    num_descriptor_sets;
+    uint32_t                    num_uniform_buffers;
+    uint32_t                    num_storage_buffers;
+    uint32_t                    max_descriptor_sets;
+    uint32_t                    max_descriptors;
+    GnDescriptorStreamChunkVK*  next;
 };
 
 struct GnDescriptorStreamVK
 {
-    struct PoolList
-    {
-        VkDescriptorPool    descriptor_pool;
-        PoolList*           next;
-    };
+    GnDescriptorStreamChunkVK*          first_chunk = nullptr;
+    GnDescriptorStreamChunkVK*          current_chunk = nullptr;
+    GnPool<GnDescriptorStreamChunkVK>   chunk_pool{ 16 };
 
-    PoolList first_pool{};
-    PoolList* current_pool = &first_pool;
-    
-    uint32_t num_descriptor_sets = 0;
-    uint32_t num_uniform_buffers = 0;
-    uint32_t num_storage_buffers = 0;
-    uint32_t reserved_descriptor_sets = 0;
-    uint32_t reserved_uniform_buffers = 0;
-    uint32_t reserved_storage_buffers = 0;
-
-    VkDescriptorSet AllocateForWrite(GnDeviceVK* device, VkDescriptorSetLayout set_layout) noexcept;
-    bool _ReserveDescriptorPool() noexcept;
-};
-
-struct GnCommandPoolVK : public GnCommandPool_t
-{
-    GnDeviceVK*             parent_device = nullptr;
-    VkCommandPool           cmd_pool = VK_NULL_HANDLE;
-
-    // Descriptor stream for global resource descriptors.
-    // Because Vulkan doesn't have "Root Descriptor" like in D3D12, we have to do it manually.
-    GnDescriptorStreamVK    descriptor_stream{};
-
-    GnCommandPoolVK(GnDeviceVK* impl_device, VkCommandPool cmd_pool) noexcept;
-    void Destroy() noexcept;
-    VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout set_layout) noexcept;
+    ~GnDescriptorStreamVK();
+    VkDescriptorSet AllocateDescriptorSet(GnDeviceVK* device, GnPipelineLayoutVK* pipeline_layout) noexcept;
+    GnDescriptorStreamChunkVK* CreateChunk(GnDeviceVK* impl_device, uint32_t max_descriptor_sets, uint32_t max_descriptors) noexcept;
 };
 
 struct GnCommandListVK : public GnCommandList_t
@@ -440,26 +416,123 @@ struct GnCommandListVK : public GnCommandList_t
     PFN_vkCmdSetViewport            cmd_set_viewport;
     PFN_vkCmdSetScissor             cmd_set_scissor;
 
-    VkDescriptorSet                 current_descriptor_set;
-    uint32_t                        graphics_descriptor_write_mask;
-    uint32_t                        compute_descriptor_write_mask;
+    VkDescriptorSet                 current_descriptor_set          = VK_NULL_HANDLE;
+    uint32_t                        graphics_descriptor_write_mask  = 0;
+    uint32_t                        compute_descriptor_write_mask   = 0;
 
-    GnCommandListVK(GnDeviceVK* impl_device, GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) noexcept;
+    GnCommandListVK(GnCommandPoolVK* parent_cmd_pool) noexcept;
     ~GnCommandListVK();
 
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
     void BeginRenderPass() noexcept override;
     void EndRenderPass() noexcept override;
     GnResult End() noexcept override;
+
+    void BindCommandBuffer(VkCommandBuffer command_buffer) noexcept
+    {
+        cmd_private_data = command_buffer;
+    }
 };
 
 constexpr uint32_t clvksize = sizeof(GnCommandListVK); // TODO: delete this
+
+struct GnCommandPoolVK : public GnCommandPool_t
+{
+    GnDeviceVK*             parent_device;
+    VkCommandPool           cmd_pool;
+    VkCommandBufferLevel    level;
+    GnCommandListVK*        command_list_pool = nullptr;
+    GnCommandListVK*        free_command_lists = nullptr;
+    GnCommandListVK*        allocated_command_lists = nullptr;
+
+    // Descriptor stream for global resource descriptors.
+    // Because Vulkan doesn't have "Root Descriptor" like in D3D12, we have to do it manually.
+    GnDescriptorStreamVK    descriptor_stream{};
+
+    GnCommandPoolVK(GnDeviceVK* impl_device, uint32_t max_command_lists, VkCommandBufferLevel level, VkCommandPool cmd_pool) noexcept;
+};
+
+struct GnObjectTypesVK
+{
+    using Queue = GnQueueVK;
+    using Fence = GnFenceVK;
+    using Memory = GnMemoryVK;
+    using Buffer = GnBufferVK;
+    using Texture = GnTextureVK;
+    using TextureView = GnTextureViewVK;
+    using RenderPass = GnRenderPassVK;
+    using ResourceTableLayout = GnResourceTableLayoutVK;
+    using PipelineLayout = GnPipelineLayoutVK;
+    using Pipeline = GnPipelineVK;
+    using ResourceTablePool = GnResourceTablePoolVK;
+    using ResourceTable = GnUnimplementedType;
+    using CommandPool = GnCommandPoolVK;
+    using CommandList = GnCommandListVK;
+};
+
+struct GnDeviceVK : public GnDevice_t
+{
+    GnVulkanDeviceFunctions         fn{};
+    VkDevice                        device = VK_NULL_HANDLE;
+    GnQueueVK*                      enabled_queues = nullptr;
+    GnObjectPool<GnObjectTypesVK>   pool;
+
+    ~GnDeviceVK();
+    GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
+    GnResult CreateFence(GnBool signaled, GnFence* fence) noexcept override;
+    GnResult CreateMemory(const GnMemoryDesc* desc, GnMemory* memory) noexcept override;
+    GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
+    GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
+    GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
+    GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept override;
+    GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept override;
+    GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept override;
+    GnResult CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept override;
+    GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept override;
+    GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept override;
+    GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
+    GnResult CreateCommandLists(GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists) noexcept override;
+    void DestroySwapchain(GnSwapchain swapchain) noexcept override;
+    void DestroyFence(GnFence fence) noexcept override;
+    void DestroyMemory(GnMemory memory) noexcept override;
+    void DestroyBuffer(GnBuffer buffer) noexcept override;
+    void DestroyTexture(GnTexture texture) noexcept override;
+    void DestroyTextureView(GnTextureView texture_view) noexcept override;
+    void DestroyRenderPass(GnRenderPass render_pass) noexcept override;
+    void DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept override;
+    void DestroyPipeline(GnPipeline pipeline) noexcept override;
+    void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
+    void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept override;
+    void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
+    void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept;
+    void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept override;
+    GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept;
+    GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept;
+    void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept;
+    GnResult WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept;
+    GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
+    GnResult DeviceWaitIdle() noexcept override;
+};
 
 // -------------------------------------------------------
 //                    IMPLEMENTATION
 // -------------------------------------------------------
 
 static std::optional<GnVulkanFunctionDispatcher> g_vk_dispatcher;
+
+template<VkStructureType Type, typename BaseStructType, typename VisitFn>
+static void GnVisitStructChainVK(BaseStructType* base, VisitFn fn)
+{
+    VkBaseOutStructure* current_struct = (VkBaseOutStructure*)base;
+
+    while (current_struct != nullptr) {
+        if (current_struct->sType == Type) {
+            fn(current_struct);
+            break;
+        }
+        current_struct = current_struct->pNext;
+    }
+}
 
 inline static GnResult GnConvertFromVkResult(VkResult result) noexcept
 {
@@ -572,29 +645,43 @@ inline static GnFormat GnVkFormatToGnFormat(VkFormat format) noexcept
     return GnFormat_Unknown;
 }
 
-#define GN_CHECK_VULKAN_FEATURE(x) \
-    if (!supported_features.x) \
+#define GN_CHECK_FEATURE(x) \
+    if (!supported_features.features.x) \
         return false; \
-    enabled_features.x = VK_TRUE;
+    enabled_features.features.x = VK_TRUE;
 
-inline static bool GnConvertAndCheckDeviceFeatures(const uint32_t num_requested_features,
-                                                   const GnFeature* features,
-                                                   const VkPhysicalDeviceFeatures& supported_features,
-                                                   VkPhysicalDeviceFeatures& enabled_features) noexcept
+static bool GnConvertAndCheckDeviceFeatures(const uint32_t num_requested_features,
+                                            const GnFeature* features,
+                                            const std::bitset<GnFeature_Count>& supported_features,
+                                            VkPhysicalDeviceFeatures2& enabled_features) noexcept
 {
+    bool ret = true;
+
     for (uint32_t i = 0; i < num_requested_features; i++) {
         switch (features[i]) {
-            case GnFeature_FullDrawIndexRange32Bit:     GN_CHECK_VULKAN_FEATURE(fullDrawIndexUint32); break;
-            case GnFeature_TextureCubeArray:            GN_CHECK_VULKAN_FEATURE(imageCubeArray); break;
-            case GnFeature_IndependentBlend:            GN_CHECK_VULKAN_FEATURE(independentBlend); break;
-            case GnFeature_NativeMultiDrawIndirect:     GN_CHECK_VULKAN_FEATURE(multiDrawIndirect); break;
-            case GnFeature_DrawIndirectFirstInstance:   GN_CHECK_VULKAN_FEATURE(drawIndirectFirstInstance); break;
-            case GnFeature_TextureViewComponentSwizzle: break;
             default:                                    GN_DBG_ASSERT(false && "Unreachable");
+            case GnFeature_FullDrawIndexRange32Bit:     ret = enabled_features.features.fullDrawIndexUint32 = supported_features[GnFeature_FullDrawIndexRange32Bit]; break;
+            case GnFeature_TextureCubeArray:            ret = enabled_features.features.imageCubeArray = supported_features[GnFeature_TextureCubeArray]; break;
+            case GnFeature_IndependentBlend:            ret = enabled_features.features.independentBlend = supported_features[GnFeature_IndependentBlend]; break;
+            case GnFeature_NativeMultiDrawIndirect:     ret = enabled_features.features.multiDrawIndirect = supported_features[GnFeature_NativeMultiDrawIndirect]; break;
+            case GnFeature_DrawIndirectFirstInstance:   ret = enabled_features.features.drawIndirectFirstInstance = supported_features[GnFeature_DrawIndirectFirstInstance]; break;
+            case GnFeature_TextureViewComponentSwizzle: break;
+            case GnFeature_PrimitiveRestartControl:     break;
+            case GnFeature_LinePolygonMode:
+            case GnFeature_PointPolygonMode:            ret = enabled_features.features.fillModeNonSolid = supported_features[GnFeature_LinePolygonMode]; break;
+            case GnFeature_ColorAttachmentLogicOp:      ret = enabled_features.features.logicOp = supported_features[GnFeature_ColorAttachmentLogicOp]; break;
+            case GnFeature_UnclippedDepth:
+                GnVisitStructChainVK<VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT>(
+                    &enabled_features,
+                    [&](VkBaseOutStructure* structure) {
+                        auto feature = (VkPhysicalDeviceDepthClipEnableFeaturesEXT*)structure;
+                        ret = feature->depthClipEnable = supported_features[GnFeature_UnclippedDepth];
+                    });
+                break;
         }
     }
 
-    return true;
+    return ret;
 }
 
 inline static VkImageType GnConvertToVkImageType(GnTextureType type) noexcept
@@ -654,15 +741,260 @@ inline static VkDescriptorType GnConvertToVkDescriptorType(GnResourceType type) 
     return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
-inline static VkPipelineStageFlags GnConvertToVkPipelineStageFlags(GnShaderStageFlags stage) noexcept
+inline static VkShaderStageFlags GnConvertToVkShaderStageFlags(GnShaderStageFlags stage) noexcept
 {
-    VkPipelineStageFlags ret = 0;
+    VkShaderStageFlags ret = 0;
 
-    if (GnContainsBit(stage, GnShaderStage_VertexShader)) ret |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-    if (GnContainsBit(stage, GnShaderStage_FragmentShader)) ret |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    if (GnContainsBit(stage, GnShaderStage_ComputeShader)) ret |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (GnContainsBit(stage, GnShaderStage_VertexShader)) ret |= VK_SHADER_STAGE_VERTEX_BIT;
+    if (GnContainsBit(stage, GnShaderStage_FragmentShader)) ret |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    if (GnContainsBit(stage, GnShaderStage_ComputeShader)) ret |= VK_SHADER_STAGE_COMPUTE_BIT;
 
     return ret;
+}
+
+inline static VkAttachmentLoadOp GnConvertToVkAttachmentLoadOp(GnAttachmentOp att_op) noexcept
+{
+    switch (att_op) {
+        case GnAttachmentOp_Load:       return VK_ATTACHMENT_LOAD_OP_LOAD;
+        case GnAttachmentOp_Clear:      return VK_ATTACHMENT_LOAD_OP_CLEAR;
+        case GnAttachmentOp_Discard:    return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    }
+
+    return {};
+}
+
+inline static VkAttachmentStoreOp GnConvertToVkAttachmentStoreOp(GnAttachmentOp att_op) noexcept
+{
+    switch (att_op) {
+        case GnAttachmentOp_Store:      return VK_ATTACHMENT_STORE_OP_STORE;
+        case GnAttachmentOp_Discard:    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    }
+
+    return {};
+}
+
+inline static VkCompareOp GnConvertToVkCompareOp(GnCompareOp compare_op) noexcept
+{
+    switch (compare_op) {
+        case GnCompareOp_Never:             return VK_COMPARE_OP_NEVER;
+        case GnCompareOp_Equal:             return VK_COMPARE_OP_EQUAL;
+        case GnCompareOp_NotEqual:          return VK_COMPARE_OP_NOT_EQUAL;
+        case GnCompareOp_Less:              return VK_COMPARE_OP_LESS;
+        case GnCompareOp_LessOrEqual:       return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case GnCompareOp_Greater:           return VK_COMPARE_OP_GREATER;
+        case GnCompareOp_GreaterOrEqual:    return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case GnCompareOp_Always:            return VK_COMPARE_OP_ALWAYS;
+    }
+
+    return {};
+}
+
+inline static VkStencilOp GnConvertToVkStencilOp(GnStencilOp stencil_op) noexcept
+{
+    switch (stencil_op) {
+        case GnStencilOp_Keep:              return VK_STENCIL_OP_KEEP;
+        case GnStencilOp_Zero:              return VK_STENCIL_OP_ZERO;
+        case GnStencilOp_Replace:           return VK_STENCIL_OP_REPLACE;
+        case GnStencilOp_IncrementClamp:    return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        case GnStencilOp_DecrementClamp:    return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+        case GnStencilOp_Invert:            return VK_STENCIL_OP_INVERT;
+        case GnStencilOp_Increment:         return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+        case GnStencilOp_Decrement:         return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    }
+    
+    return {};
+}
+
+inline static VkBlendFactor GnConvertToVkBlendFactor(GnBlendFactor blend_factor) noexcept
+{
+    switch (blend_factor) {
+        case GnBlendFactor_Zero:                return VK_BLEND_FACTOR_ZERO;
+        case GnBlendFactor_One:                 return VK_BLEND_FACTOR_ONE;
+        case GnBlendFactor_SrcColor:            return VK_BLEND_FACTOR_SRC_COLOR;
+        case GnBlendFactor_InvSrcColor:         return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case GnBlendFactor_DstColor:            return VK_BLEND_FACTOR_DST_COLOR;
+        case GnBlendFactor_InvDstColor:         return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+        case GnBlendFactor_SrcAlpha:            return VK_BLEND_FACTOR_SRC_ALPHA;
+        case GnBlendFactor_InvSrcAlpha:         return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case GnBlendFactor_DstAlpha:            return VK_BLEND_FACTOR_DST_ALPHA;
+        case GnBlendFactor_InvDstAlpha:         return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        case GnBlendFactor_SrcAlphaSaturate:    return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+        case GnBlendFactor_BlendConstant:       return VK_BLEND_FACTOR_CONSTANT_COLOR;
+        case GnBlendFactor_InvBlendConstant:    return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+    }
+
+    return {};
+}
+
+inline static VkBlendOp GnConvertToVkBlendOp(GnBlendOp blend_op) noexcept
+{
+    switch (blend_op) {
+        case GnBlendOp_Add:         return VK_BLEND_OP_ADD;
+        case GnBlendOp_Subtract:    return VK_BLEND_OP_SUBTRACT;
+        case GnBlendOp_RevSubtract: return VK_BLEND_OP_REVERSE_SUBTRACT;
+        case GnBlendOp_Max:         return VK_BLEND_OP_MAX;
+        case GnBlendOp_Min:         return VK_BLEND_OP_MIN;
+    }
+
+    return {};
+}
+
+template<bool AfterAccess>
+inline VkPipelineStageFlags GnGetPipelineStageFromAccessVK(GnResourceAccessFlags access)
+{
+    static constexpr GnResourceAccessFlags vs_access =
+        GnResourceAccess_VSUniformRead |
+        GnResourceAccess_VSRead |
+        GnResourceAccess_VSWrite;
+
+    static constexpr GnResourceAccessFlags fs_access =
+        GnResourceAccess_FSUniformRead |
+        GnResourceAccess_FSRead |
+        GnResourceAccess_FSWrite;
+
+    static constexpr GnResourceAccessFlags cs_access =
+        GnResourceAccess_CSUniformRead |
+        GnResourceAccess_CSRead |
+        GnResourceAccess_CSWrite;
+
+    static constexpr GnResourceAccessFlags transfer_access =
+        GnResourceAccess_CopySrc |
+        GnResourceAccess_BlitSrc |
+        GnResourceAccess_ClearSrc |
+        GnResourceAccess_CopyDst |
+        GnResourceAccess_BlitDst |
+        GnResourceAccess_ClearDst;
+
+    VkPipelineStageFlags stage = 0;
+
+    if (access & (GnResourceAccess_VertexBuffer | GnResourceAccess_IndexBuffer))
+        stage |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+
+    if (access & vs_access)
+        stage |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+
+    if (access & fs_access)
+        stage |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+    if (access & cs_access)
+        stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+
+    if (access & (GnResourceAccess_ColorAttachmentRead | GnResourceAccess_ColorAttachmentWrite))
+        stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    if (access & (GnResourceAccess_DepthStencilAttachmentRead | GnResourceAccess_DepthStencilAttachmentWrite))
+        stage |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+
+    if (access & transfer_access)
+        stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+    if (access & (GnResourceAccess_HostRead | GnResourceAccess_HostWrite))
+        stage |= VK_PIPELINE_STAGE_HOST_BIT;
+
+    if (stage == 0)
+        stage |= AfterAccess ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+
+    return stage;
+}
+
+inline VkAccessFlags GnGetAccessVK(GnResourceAccessFlags access)
+{
+    static constexpr GnResourceAccessFlags uniform_read_access =
+        GnResourceAccess_VSUniformRead |
+        GnResourceAccess_FSUniformRead |
+        GnResourceAccess_CSUniformRead;
+
+    static constexpr GnResourceAccessFlags read_access =
+        GnResourceAccess_VSRead |
+        GnResourceAccess_FSRead |
+        GnResourceAccess_CSRead;
+
+    static constexpr GnResourceAccessFlags write_access =
+        GnResourceAccess_VSWrite |
+        GnResourceAccess_FSWrite |
+        GnResourceAccess_CSWrite;
+
+    static constexpr GnResourceAccessFlags src_transfer_access =
+        GnResourceAccess_CopySrc |
+        GnResourceAccess_BlitSrc |
+        GnResourceAccess_ClearSrc;
+
+    static constexpr GnResourceAccessFlags dst_transfer_access =
+        GnResourceAccess_CopyDst |
+        GnResourceAccess_BlitDst |
+        GnResourceAccess_ClearDst;
+
+    static constexpr VkAccessFlags vk_indirect_index_vertex_access =
+        VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+        VK_ACCESS_INDEX_READ_BIT |
+        VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+
+    static constexpr VkAccessFlags vk_attachment_access =
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    VkAccessFlags vk_access = 0;
+
+    // Convert indirect buffer, index buffer, or vertex buffer access flags to VkAccessFlagBits
+    vk_access |= (access >> 1) & vk_indirect_index_vertex_access;
+
+    // Convert attachments access to VkAccessFlagBits
+    vk_access |= (access >> 6) & vk_attachment_access;
+
+    // Convert hosts access to VkAccessFlagBits
+    vk_access |= (access >> 11) & (VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT);
+
+    if (access & uniform_read_access) vk_access |= VK_ACCESS_UNIFORM_READ_BIT;
+    if (access & read_access) vk_access |= VK_ACCESS_SHADER_READ_BIT;
+    if (access & write_access) vk_access |= VK_ACCESS_SHADER_WRITE_BIT;
+    if (access & src_transfer_access) vk_access |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (access & dst_transfer_access) vk_access |= VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    return vk_access;
+}
+
+inline VkImageLayout GnGetImageLayoutFromAccessVK(GnResourceAccessFlags access)
+{
+    static constexpr GnResourceAccessFlags read_access =
+        GnResourceAccess_VSRead |
+        GnResourceAccess_FSRead |
+        GnResourceAccess_CSRead;
+
+    static constexpr GnResourceAccessFlags storage_access =
+        GnResourceAccess_VSWrite |
+        GnResourceAccess_FSWrite |
+        GnResourceAccess_CSWrite;
+
+    static constexpr GnResourceAccessFlags color_attachment_access =
+        GnResourceAccess_ColorAttachmentRead |
+        GnResourceAccess_ColorAttachmentWrite;
+
+    static constexpr GnResourceAccessFlags depth_stencil_attachment_access =
+        GnResourceAccess_DepthStencilAttachmentRead |
+        GnResourceAccess_DepthStencilAttachmentWrite;
+
+    static constexpr GnResourceAccessFlags src_transfer_access =
+        GnResourceAccess_CopySrc |
+        GnResourceAccess_BlitSrc |
+        GnResourceAccess_ClearSrc;
+
+    static constexpr GnResourceAccessFlags dst_transfer_access =
+        GnResourceAccess_CopyDst |
+        GnResourceAccess_BlitDst |
+        GnResourceAccess_ClearDst;
+
+    if (access & GnResourceAccess_Common || access & storage_access) return VK_IMAGE_LAYOUT_GENERAL;
+
+    if (access & read_access) return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    else if (access & color_attachment_access) return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    else if (access & depth_stencil_attachment_access) return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    else if (access & src_transfer_access) return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    else if (access & dst_transfer_access) return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    else if (access & GnResourceAccess_Present) return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 // Taken from https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkPhysicalDeviceMemoryProperties.html
@@ -671,10 +1003,9 @@ static int32_t GnFindMemoryTypeVk(const VkPhysicalDeviceMemoryProperties& vk_mem
                                   VkMemoryPropertyFlags required_properties) noexcept
 {
     for (uint32_t i = 0; i < vk_memory_properties.memoryTypeCount; ++i) {
-        const bool is_required_memory_types = (memory_type_bits_req & (1 << i)) != 0;
-
         const VkMemoryPropertyFlags properties = vk_memory_properties.memoryTypes[i].propertyFlags;
         const bool has_required_properties = (properties & required_properties) == required_properties;
+        const bool is_required_memory_types = (memory_type_bits_req & (1 << i)) != 0;
 
         if (is_required_memory_types && has_required_properties)
             return static_cast<int32_t>(i);
@@ -691,6 +1022,7 @@ inline static VkMappedMemoryRange GnConvertMemoryRange(VkDeviceMemory memory, co
     range.memory = memory;
     range.offset = res_offset;
 
+    // Should this be a multiply of nonCoherentAtomSize?
     if (memory_range != nullptr) {
         range.offset += memory_range->offset;
         if (memory_range->size == GN_WHOLE_SIZE)
@@ -707,11 +1039,13 @@ inline static VkMappedMemoryRange GnConvertMemoryRange(VkDeviceMemory memory, co
 inline static bool GnIsDepthStencilFormatVK(GnFormat format) noexcept
 {
     switch (format) {
-        case GnFormat_D16Unorm:         return true;
-        case GnFormat_D16Unorm_S8Uint:  return true;
-        case GnFormat_D32Float:         return true;
-        case GnFormat_D32Float_S8Uint:  return true;
-        default:                        break;
+        case GnFormat_D16Unorm:
+        case GnFormat_D16Unorm_S8Uint:
+        case GnFormat_D32Float:
+        case GnFormat_D32Float_S8Uint:
+            return true;
+        default:
+            break;
     }
 
     return false;
@@ -734,10 +1068,16 @@ bool GnVulkanFunctionDispatcher::LoadFunctions() noexcept
 {
     vkGetInstanceProcAddr = GnGetLibraryFunction<PFN_vkGetInstanceProcAddr>(dll_handle, "vkGetInstanceProcAddr");
     vkCreateInstance = (PFN_vkCreateInstance)vkGetInstanceProcAddr(nullptr, "vkCreateInstance");
-    return vkGetInstanceProcAddr && vkCreateInstance;
+    vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties)vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceExtensionProperties");
+    vkEnumerateInstanceLayerProperties = (PFN_vkEnumerateInstanceLayerProperties)vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceLayerProperties");
+    vkEnumerateInstanceVersion = (PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion");
+    return vkGetInstanceProcAddr &&
+        vkCreateInstance &&
+        vkEnumerateInstanceExtensionProperties &&
+        vkEnumerateInstanceLayerProperties;
 }
 
-void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, GnVulkanInstanceFunctions& fn) noexcept
+void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, const GnInstanceVersionInfoVK& ver_info, GnVulkanInstanceFunctions& fn) noexcept
 {
     GN_LOAD_INSTANCE_FN(vkDestroyInstance);
     GN_LOAD_INSTANCE_FN(vkEnumeratePhysicalDevices);
@@ -756,6 +1096,13 @@ void GnVulkanFunctionDispatcher::LoadInstanceFunctions(VkInstance instance, GnVu
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceSurfaceFormatsKHR);
     GN_LOAD_INSTANCE_FN(vkGetPhysicalDeviceSurfacePresentModesKHR);
     GN_LOAD_INSTANCE_FN(vkCreateDevice);
+    GN_LOAD_INSTANCE_FN(vkEnumerateDeviceExtensionProperties);
+
+    if (ver_info.has_khr_get_physical_device_properties2_extension)
+        fn.vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2KHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2KHR");
+
+    if (ver_info.api_version >= VK_API_VERSION_1_1)
+        fn.vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2KHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2");
 }
 
 void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevice device, uint32_t api_version, GnVulkanDeviceFunctions& fn) noexcept
@@ -789,6 +1136,8 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkDestroyImage);
     GN_LOAD_DEVICE_FN(vkCreateImageView);
     GN_LOAD_DEVICE_FN(vkDestroyImageView);
+    GN_LOAD_DEVICE_FN(vkCreateShaderModule);
+    GN_LOAD_DEVICE_FN(vkDestroyShaderModule);
     GN_LOAD_DEVICE_FN(vkCreateGraphicsPipelines);
     GN_LOAD_DEVICE_FN(vkCreateComputePipelines);
     GN_LOAD_DEVICE_FN(vkDestroyPipeline);
@@ -863,6 +1212,11 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
     if (!GnVulkanFunctionDispatcher::Init())
         return GnError_BackendNotAvailable;
 
+    uint32_t api_version = VK_VERSION_1_0;
+
+    if (g_vk_dispatcher->vkEnumerateInstanceVersion != nullptr)
+        g_vk_dispatcher->vkEnumerateInstanceVersion(&api_version);
+
     VkApplicationInfo app_info;
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app_info.pNext = nullptr;
@@ -870,38 +1224,63 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
     app_info.applicationVersion = 0;
     app_info.pEngineName = nullptr;
     app_info.engineVersion = 0;
-    app_info.apiVersion = VK_HEADER_VERSION_COMPLETE;
+    app_info.apiVersion = api_version;
 
-    // For now, gn will always activate debugging extensions and validation layer
-    static const char* extensions[] = {
-        "VK_KHR_surface",
-        "VK_KHR_win32_surface",
-        "VK_EXT_debug_report",
-        "VK_EXT_debug_utils",
-    };
+    GnSmallVector<VkExtensionProperties, 32> available_extensions;
+    uint32_t num_available_extensions;
+    
+    g_vk_dispatcher->vkEnumerateInstanceExtensionProperties(nullptr, &num_available_extensions, nullptr);
+    if (!available_extensions.resize(num_available_extensions)) return GnError_OutOfHostMemory;
+    g_vk_dispatcher->vkEnumerateInstanceExtensionProperties(nullptr, &num_available_extensions, available_extensions.storage);
+
+    GnSmallVector<const char*, 32> extensions;
+    GnInstanceVersionInfoVK ver_info{};
+
+    ver_info.api_version = api_version;
+
+    for (uint32_t i = 0; i < num_available_extensions; i++) {
+        const VkExtensionProperties& ext_properties = available_extensions[i];
+        if (strncmp(ext_properties.extensionName, "VK_KHR_surface", VK_MAX_EXTENSION_NAME_SIZE) == 0) {
+            ver_info.has_khr_surface_extension = true;
+            extensions.push_back("VK_KHR_surface");
+        }
+        else if (strncmp(ext_properties.extensionName, "VK_KHR_win32_surface", VK_MAX_EXTENSION_NAME_SIZE) == 0) {
+            ver_info.has_khr_win32_surface_extension = true;
+            extensions.push_back("VK_KHR_win32_surface");
+        }
+        else if (VK_API_VERSION_MAJOR(api_version) == 1 && VK_API_VERSION_MINOR(api_version) == 0) {
+            if (strncmp(ext_properties.extensionName, "VK_KHR_get_physical_device_properties2", VK_MAX_EXTENSION_NAME_SIZE) == 0) {
+                ver_info.has_khr_get_physical_device_properties2_extension = true;
+                extensions.push_back("VK_KHR_get_physical_device_properties2");
+            }
+        }
+    }
+
+    extensions.push_back("VK_EXT_debug_report");
+    extensions.push_back("VK_EXT_debug_utils");
 
     static const char* layers[] = {
         "VK_LAYER_KHRONOS_validation",
     };
 
-    VkInstanceCreateInfo instance_info{};
-    instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    instance_info.pNext = nullptr;
-    instance_info.flags = 0;
-    instance_info.pApplicationInfo = &app_info;
-    instance_info.enabledLayerCount = GN_ARRAY_SIZE(layers);
-    instance_info.ppEnabledLayerNames = layers;
-    instance_info.enabledExtensionCount = GN_ARRAY_SIZE(extensions);
-    instance_info.ppEnabledExtensionNames = extensions;
+    VkInstanceCreateInfo instance_create_info{};
+    instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_create_info.pNext = nullptr;
+    instance_create_info.flags = 0;
+    instance_create_info.pApplicationInfo = &app_info;
+    instance_create_info.enabledLayerCount = GN_ARRAY_SIZE(layers);
+    instance_create_info.ppEnabledLayerNames = layers;
+    instance_create_info.enabledExtensionCount = (uint32_t)extensions.size;
+    instance_create_info.ppEnabledExtensionNames = extensions.storage;
 
     VkInstance vk_instance = VK_NULL_HANDLE;
-    VkResult result = g_vk_dispatcher->vkCreateInstance(&instance_info, nullptr, &vk_instance);
+    VkResult result = g_vk_dispatcher->vkCreateInstance(&instance_create_info, nullptr, &vk_instance);
 
     if (GN_VULKAN_FAILED(result))
         return GnError_InternalError;
 
     GnVulkanInstanceFunctions fn;
-    g_vk_dispatcher->LoadInstanceFunctions(vk_instance, fn);
+    g_vk_dispatcher->LoadInstanceFunctions(vk_instance, ver_info, fn);
 
     // Allocate memory for the new instance
     GnInstanceVK* new_instance = (GnInstanceVK*)std::malloc(sizeof(GnInstanceVK));
@@ -914,14 +1293,14 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
     // Get the number of active physical devices
     uint32_t num_physical_devices;
     fn.vkEnumeratePhysicalDevices(vk_instance, &num_physical_devices, nullptr);
-    
+
     GnAdapterVK* adapters = nullptr;
     VkPhysicalDevice* physical_devices = nullptr;
 
     if (num_physical_devices > 0) {
         // Allocate memory for the adapters
-        adapters = (GnAdapterVK*)std::malloc(sizeof(GnAdapterVK) * num_physical_devices);// alloc_callbacks->malloc_fn(alloc_callbacks->userdata, sizeof(GnAdapterVK) * new_instance->num_adapters, alignof(GnAdapterVK), GnAllocationScope_Instance);
-        
+        adapters = (GnAdapterVK*)std::malloc(sizeof(GnAdapterVK) * num_physical_devices);
+
         if (adapters == nullptr) {
             fn.vkDestroyInstance(vk_instance, nullptr);
             return GnError_OutOfHostMemory;
@@ -929,7 +1308,7 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
 
         // Allocate memory for the physical device
         physical_devices = (VkPhysicalDevice*)std::malloc(sizeof(VkPhysicalDevice) * num_physical_devices);
-        
+
         if (physical_devices == nullptr) {
             std::free(adapters);
             fn.vkDestroyInstance(vk_instance, nullptr);
@@ -937,21 +1316,29 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
         }
 
         fn.vkEnumeratePhysicalDevices(vk_instance, &num_physical_devices, physical_devices);
-        
+
         GnAdapterVK* predecessor = nullptr;
+        GnVector<VkExtensionProperties> available_extensions;
+
         for (uint32_t i = 0; i < num_physical_devices; i++) {
             GnAdapterVK* adapter = &adapters[i];
+            VkPhysicalDevice physical_device = physical_devices[i];
 
             if (predecessor != nullptr)
                 predecessor->next_adapter = static_cast<GnAdapter>(adapter); // construct linked list
 
-            VkPhysicalDevice physical_device = physical_devices[i];
-            VkPhysicalDeviceProperties properties;
-            VkPhysicalDeviceFeatures features;
-            fn.vkGetPhysicalDeviceProperties(physical_device, &properties);
-            fn.vkGetPhysicalDeviceFeatures(physical_device, &features);
+            uint32_t num_extensions;
+            fn.vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &num_extensions, nullptr);
 
-            new(adapter) GnAdapterVK(new_instance, fn, physical_device, properties, features);
+            if (!available_extensions.resize(num_extensions)) {
+                std::free(physical_devices);
+                std::free(adapters);
+                fn.vkDestroyInstance(vk_instance, nullptr);
+            }
+
+            fn.vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &num_extensions, available_extensions.data());
+
+            new(adapter) GnAdapterVK(new_instance, fn, physical_device, std::move(available_extensions));
 
             predecessor = adapter;
         }
@@ -965,6 +1352,7 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
     new_instance->num_adapters = num_physical_devices;
     new_instance->vk_adapters = adapters;
     new_instance->adapters = static_cast<GnAdapter>(new_instance->vk_adapters);
+    new_instance->ver_info = ver_info;
 
     *instance = new_instance;
 
@@ -989,9 +1377,15 @@ GnInstanceVK::~GnInstanceVK()
 
 GnResult GnInstanceVK::CreateSurface(const GnSurfaceDesc* desc, GnSurface* surface) noexcept
 {
+    if (!ver_info.has_khr_surface_extension)
+        return GnError_UnsupportedFeature;
+
     VkSurfaceKHR vk_surface;
 
 #ifdef _WIN32
+    if (!ver_info.has_khr_win32_surface_extension)
+        return GnError_UnsupportedFeature;
+
     VkWin32SurfaceCreateInfoKHR surface_info{};
     surface_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
     surface_info.hinstance = GetModuleHandle(nullptr);
@@ -1021,15 +1415,17 @@ GnResult GnInstanceVK::CreateSurface(const GnSurfaceDesc* desc, GnSurface* surfa
 
 // -- [GnAdapterVK] --
 
-GnAdapterVK::GnAdapterVK(GnInstanceVK* instance,
-                         const GnVulkanInstanceFunctions& fn,
-                         VkPhysicalDevice physical_device,
-                         const VkPhysicalDeviceProperties& vk_properties,
-                         const VkPhysicalDeviceFeatures& vk_features) noexcept
+GnAdapterVK::GnAdapterVK(GnInstanceVK*                      instance,
+                         const GnVulkanInstanceFunctions&   fn,
+                         VkPhysicalDevice                   physical_device,
+                         GnVector<VkExtensionProperties>&&  supported_extensions) noexcept
     : physical_device(physical_device),
-      supported_features(vk_features)
+      extensions(std::move(supported_extensions))
 {
     parent_instance = instance;
+
+    VkPhysicalDeviceProperties vk_properties;
+    fn.vkGetPhysicalDeviceProperties(physical_device, &vk_properties);
 
     // Sets properties
     std::memcpy(properties.name, vk_properties.deviceName, GN_MAX_CHARS);
@@ -1081,13 +1477,27 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK* instance,
                                                                       limits.max_per_stage_sampled_texture_resources +
                                                                       limits.max_per_stage_storage_texture_resources;
 
+    depth_clip_enable_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT;
+    depth_clip_enable_feature.pNext = nullptr;
+    supported_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    supported_features.pNext = &depth_clip_enable_feature;
+
+    fn.vkGetPhysicalDeviceFeatures2(physical_device, &supported_features);
+
+    const VkPhysicalDeviceFeatures& vk_features_1 = supported_features.features;
+
     // Apply feature set
-    features[GnFeature_FullDrawIndexRange32Bit]     = vk_features.fullDrawIndexUint32;
-    features[GnFeature_TextureCubeArray]            = vk_features.imageCubeArray;
-    features[GnFeature_IndependentBlend]            = vk_features.independentBlend;
-    features[GnFeature_NativeMultiDrawIndirect]     = vk_features.multiDrawIndirect;
-    features[GnFeature_DrawIndirectFirstInstance]   = vk_features.drawIndirectFirstInstance;
+    features[GnFeature_FullDrawIndexRange32Bit]     = vk_features_1.fullDrawIndexUint32;
+    features[GnFeature_TextureCubeArray]            = vk_features_1.imageCubeArray;
+    features[GnFeature_IndependentBlend]            = vk_features_1.independentBlend;
+    features[GnFeature_NativeMultiDrawIndirect]     = vk_features_1.multiDrawIndirect;
+    features[GnFeature_DrawIndirectFirstInstance]   = vk_features_1.drawIndirectFirstInstance;
     features[GnFeature_TextureViewComponentSwizzle] = true; // Will always be supported by Vulkan*
+    features[GnFeature_PrimitiveRestartControl]     = true;
+    features[GnFeature_LinePolygonMode]             = vk_features_1.fillModeNonSolid;
+    features[GnFeature_PointPolygonMode]            = vk_features_1.fillModeNonSolid;
+    features[GnFeature_ColorAttachmentLogicOp]      = vk_features_1.logicOp;
+    features[GnFeature_UnclippedDepth]              = depth_clip_enable_feature.depthClipEnable;
 
     // Get the available queues
     VkQueueFamilyProperties queue_families[4]{};
@@ -1176,9 +1586,10 @@ GnSampleCountFlags GnAdapterVK::GetTextureFormatMultisampleSupport(GnFormat form
 
     VkImageFormatProperties format_properties;
     
-    VkResult result = parent_instance->fn.vkGetPhysicalDeviceImageFormatProperties(physical_device, GnConvertToVkFormat(format),
-                                                                                   VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-                                                                                   usage, 0, &format_properties);
+    VkResult result = parent_instance->fn.vkGetPhysicalDeviceImageFormatProperties(
+        physical_device, GnConvertToVkFormat(format),
+        VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        usage, 0, &format_properties);
 
     if (result == VK_ERROR_FORMAT_NOT_SUPPORTED)
         return 0;
@@ -1240,14 +1651,13 @@ GnResult GnAdapterVK::GetSurfaceFormats(GnSurface surface, uint32_t* num_surface
 
     VkSurfaceFormatKHR* surface_formats = (VkSurfaceFormatKHR*)std::malloc(sizeof(VkSurfaceFormatKHR) * total_formats);
 
-    if (!surface_formats) {
+    if (!surface_formats)
         return GnError_OutOfHostMemory;
-    }
 
     parent_instance->fn.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, vk_surface, &total_formats, surface_formats);
 
     // There are some unsupported Vulkan formats which we have to inspect it.
-    if (formats) {
+    if (formats != nullptr) {
         uint32_t num_supported_formats = 0;
 
         for (uint32_t i = 0; i < total_formats; i++) {
@@ -1308,14 +1718,24 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
 {   
     const GnVulkanInstanceFunctions& fn = parent_instance->fn;
 
-    static const char* device_extensions[] = {
-        "VK_KHR_maintenance1",
-        "VK_KHR_swapchain"
-    };
+    GnVector<const char*> device_extensions;
+    device_extensions.push_back(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
-    // Check if there are some unsupported features
-    VkPhysicalDeviceFeatures enabled_features{};
-    if (!GnConvertAndCheckDeviceFeatures(desc->num_enabled_features, desc->enabled_features, supported_features, enabled_features))
+    VkPhysicalDeviceFeatures2 enabled_features{};
+    enabled_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
+    GnStructChainBuilderVK chain_builder(&enabled_features);
+
+    VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable_feature{};
+    depth_clip_enable_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT;
+
+    if (features[GnFeature_UnclippedDepth]) {
+        device_extensions.push_back(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+        chain_builder.push(&depth_clip_enable_feature);
+    }
+
+    if (!GnConvertAndCheckDeviceFeatures(desc->num_enabled_features, desc->enabled_features, features, enabled_features))
         return GnError_UnsupportedFeature;
 
     GnDeviceVK* new_device = new(std::nothrow) GnDeviceVK();
@@ -1326,7 +1746,6 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
     VkDeviceQueueCreateInfo queue_infos[4];
     uint32_t total_enabled_queues = 0;
 
-    // Fill queue create info structs
     for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
         VkDeviceQueueCreateInfo& queue_info = queue_infos[i];
         queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -1347,15 +1766,15 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
 
     VkDeviceCreateInfo device_info;
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    device_info.pNext = nullptr;
+    device_info.pNext = &enabled_features;
     device_info.flags = 0;
     device_info.queueCreateInfoCount = desc->num_enabled_queue_groups;
     device_info.pQueueCreateInfos = queue_infos;
     device_info.enabledLayerCount = 0;
     device_info.ppEnabledLayerNames = nullptr;
-    device_info.enabledExtensionCount = GN_ARRAY_SIZE(device_extensions);
-    device_info.ppEnabledExtensionNames = device_extensions;
-    device_info.pEnabledFeatures = &enabled_features;
+    device_info.enabledExtensionCount = (uint32_t)device_extensions.size();
+    device_info.ppEnabledExtensionNames = device_extensions.data();
+    device_info.pEnabledFeatures = nullptr;
 
     VkDevice vk_device = nullptr;
 
@@ -1371,7 +1790,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
     new_device->num_enabled_queue_groups = desc->num_enabled_queue_groups;
     new_device->enabled_queues = queues;
 
-    // Initialize enabled queues
+    // Initialize queues
     for (uint32_t i = 0; i < desc->num_enabled_queue_groups; ++i) {
         const GnQueueGroupDesc& group_desc = desc->queue_group_descs[i];
         for (uint32_t j = 0; j < group_desc.num_enabled_queues; ++j) {
@@ -1437,7 +1856,10 @@ GnResult GnDeviceVK::CreateFence(GnBool signaled, GnFence* fence) noexcept
     if (GN_VULKAN_FAILED(fn.vkCreateFence(device, &fence_info, nullptr, &vk_fence)))
         return GnError_InternalError;
 
-    GnFenceVK* new_fence = (GnFenceVK*)std::malloc(sizeof(GnQueueVK));
+    if (!pool.fence)
+        pool.fence.emplace(64);
+
+    GnFenceVK* new_fence = (GnFenceVK*)pool.fence->allocate();
 
     if (new_fence == nullptr) {
         fn.vkDestroyFence(device, vk_fence, nullptr);
@@ -1627,18 +2049,205 @@ GnResult GnDeviceVK::CreateTextureView(const GnTextureViewDesc* desc, GnTextureV
     return GnSuccess;
 }
 
+inline static void GnBuildDependency(VkSubpassDependency* implicit_dependency, GnResourceAccessFlags initial_access, GnResourceAccessFlags subpass_access)
+{
+    implicit_dependency->srcStageMask |= GnGetPipelineStageFromAccessVK<false>(initial_access);
+    implicit_dependency->dstStageMask |= GnGetPipelineStageFromAccessVK<true>(subpass_access);
+    implicit_dependency->srcAccessMask |= GnGetAccessVK(initial_access);
+    implicit_dependency->dstAccessMask |= GnGetAccessVK(subpass_access);
+};
+
+struct GnSubpassImplicitDepVK
+{
+    bool has_ingoing_subpass;
+    bool has_outgoing_subpass;
+};
+
 GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept
 {
-    VkAttachmentDescription* attachments = (VkAttachmentDescription*)std::malloc(desc->num_attachments * sizeof(VkAttachmentDescription));
+    GnSmallVector<VkAttachmentDescription, 32> attachments;
+    GnSmallVector<VkSubpassDescription, 16> subpasses;
+    GnSmallVector<VkAttachmentReference, 32> color_att_refs;
+    GnSmallVector<VkAttachmentReference, 32> resolve_att_refs;
+    GnSmallVector<VkAttachmentReference, 16> ds_att_refs;
+    GnSmallVector<VkSubpassDependency, 32> dependencies;
+    GnSmallVector<GnSubpassImplicitDepVK, 16> implicit_dependencies;
 
-    if (attachments == nullptr)
+    if (!(attachments.resize(desc->num_attachments) ||
+          subpasses.resize(desc->num_subpasses) ||
+          dependencies.resize(desc->num_dependencies) ||
+          implicit_dependencies.resize(desc->num_subpasses)))
+    {
         return GnError_OutOfHostMemory;
+    }
 
-    VkSubpassDescription* subpasses = (VkSubpassDescription*)std::malloc(desc->num_subpasses * sizeof(VkSubpassDescription));
+    for (uint32_t i = 0; i < desc->num_attachments; i++) {
+        VkAttachmentDescription& vk_att_desc = attachments[i];
+        const GnAttachmentDesc& att_desc = desc->attachments[i];
+        vk_att_desc.flags = {};
+        vk_att_desc.format = GnConvertToVkFormat(att_desc.format);
+        vk_att_desc.samples = (VkSampleCountFlagBits)att_desc.sample_count;
+        vk_att_desc.loadOp = GnConvertToVkAttachmentLoadOp(att_desc.load_op);
+        vk_att_desc.storeOp = GnConvertToVkAttachmentStoreOp(att_desc.store_op);
+        vk_att_desc.stencilLoadOp = GnConvertToVkAttachmentLoadOp(att_desc.stencil_load_op);
+        vk_att_desc.stencilStoreOp = GnConvertToVkAttachmentStoreOp(att_desc.stencil_store_op);
+        vk_att_desc.initialLayout = GnGetImageLayoutFromAccessVK(att_desc.initial_access);
+        vk_att_desc.finalLayout = GnGetImageLayoutFromAccessVK(att_desc.final_access);
+    }
 
-    if (subpasses == nullptr) {
-        std::free(attachments);
-        return GnError_OutOfHostMemory;
+    uint32_t current_color_att_ref = 0;
+
+    for (uint32_t i = 0; i < desc->num_subpasses; i++) {
+        VkSubpassDescription& vk_subpass = subpasses[i];
+        const GnSubpassDesc& subpass = desc->subpasses[i];
+
+        if (!color_att_refs.resize(color_att_refs.size + subpass.num_color_attachments) ||
+            !resolve_att_refs.resize(resolve_att_refs.size + subpass.num_color_attachments))
+        {
+            return GnError_OutOfHostMemory;
+        }
+
+        VkAttachmentReference* depth_stencil_att_ref = nullptr;
+
+        if (subpass.depth_stencil_attachment) {
+            auto new_depth_stencil_att_ref = ds_att_refs.emplace_back(subpass.depth_stencil_attachment->attachment, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            if (!new_depth_stencil_att_ref)
+                return GnError_OutOfHostMemory;
+            depth_stencil_att_ref = &new_depth_stencil_att_ref->get();
+        }
+
+        vk_subpass.flags = 0;
+        vk_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        vk_subpass.inputAttachmentCount = {};
+        vk_subpass.pInputAttachments = {};
+        vk_subpass.colorAttachmentCount = subpass.num_color_attachments;
+        vk_subpass.pColorAttachments = &color_att_refs[current_color_att_ref];
+        vk_subpass.pResolveAttachments = &resolve_att_refs[current_color_att_ref];
+        vk_subpass.pDepthStencilAttachment = depth_stencil_att_ref;
+        vk_subpass.preserveAttachmentCount = {};
+        vk_subpass.pPreserveAttachments = {};
+
+        for (uint32_t j = 0; j < subpass.num_color_attachments; j++) {
+            const GnAttachmentReference& color_att_ref = subpass.color_attachments[i];
+            const GnAttachmentReference& resolve_att_ref = subpass.resolve_attachments[i];
+            color_att_refs[current_color_att_ref].attachment = color_att_ref.attachment;
+            color_att_refs[current_color_att_ref].layout = GnGetImageLayoutFromAccessVK(color_att_ref.access);
+            resolve_att_refs[current_color_att_ref].attachment = resolve_att_ref.attachment;
+            resolve_att_refs[current_color_att_ref].layout = GnGetImageLayoutFromAccessVK(resolve_att_ref.access);
+            current_color_att_ref++;
+        }
+    }
+
+    for (uint32_t i = 0; i < desc->num_dependencies; i++) {
+        VkSubpassDependency& vk_dependency = dependencies[i];
+        const GnSubpassDependency& dependency = desc->dependencies[i];
+        const GnSubpassDesc& prev_subpass = desc->subpasses[dependency.subpass_src];
+        const GnSubpassDesc& next_subpass = desc->subpasses[dependency.subpass_dst];
+
+        vk_dependency.srcSubpass = dependency.subpass_src;
+        vk_dependency.dstSubpass = dependency.subpass_dst;
+
+        for (uint32_t j = 0; j < prev_subpass.num_color_attachments; j++) {
+            const GnAttachmentReference& color_att_ref = prev_subpass.color_attachments[j];
+            const GnAttachmentReference& resolve_att_ref = prev_subpass.resolve_attachments[j];
+
+            vk_dependency.srcStageMask |=
+                GnGetPipelineStageFromAccessVK<false>(color_att_ref.access) |
+                GnGetPipelineStageFromAccessVK<false>(resolve_att_ref.access);
+
+            vk_dependency.srcAccessMask |=
+                GnGetAccessVK(color_att_ref.access) |
+                GnGetAccessVK(resolve_att_ref.access);
+        }
+
+        for (uint32_t j = 0; j < next_subpass.num_color_attachments; j++) {
+            const GnAttachmentReference& color_att_ref = next_subpass.color_attachments[j];
+            const GnAttachmentReference& resolve_att_ref = next_subpass.resolve_attachments[j];
+
+            vk_dependency.dstStageMask |=
+                GnGetPipelineStageFromAccessVK<false>(color_att_ref.access) |
+                GnGetPipelineStageFromAccessVK<false>(resolve_att_ref.access);
+
+            vk_dependency.dstAccessMask |=
+                GnGetAccessVK(color_att_ref.access) |
+                GnGetAccessVK(resolve_att_ref.access);
+        }
+
+        static constexpr VkPipelineStageFlags framebuffer_region_stages =
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+        if (vk_dependency.srcStageMask & framebuffer_region_stages || vk_dependency.dstStageMask & framebuffer_region_stages)
+            vk_dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+        implicit_dependencies[dependency.subpass_dst].has_ingoing_subpass = true;
+        implicit_dependencies[dependency.subpass_src].has_outgoing_subpass = true;
+    }
+
+    // Insert implicit dependency
+    for (uint32_t i = 0; i < desc->num_subpasses; i++) {
+        const GnSubpassImplicitDepVK& implicit_dep = implicit_dependencies[i];
+        const GnSubpassDesc& subpass = desc->subpasses[i];
+        
+        if (!implicit_dep.has_ingoing_subpass) {
+            VkSubpassDependency vk_dependency{};
+            vk_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+            vk_dependency.dstSubpass = i;
+
+            for (uint32_t j = 0; j < subpass.num_color_attachments; j++) {
+                const GnAttachmentReference& color_att_ref = subpass.color_attachments[j];
+                const GnAttachmentReference& resolve_att_ref = subpass.resolve_attachments[j];
+                GnResourceAccessFlags color_att_intial_access = desc->attachments[color_att_ref.attachment].initial_access;
+                GnResourceAccessFlags resolve_att_initial_access = desc->attachments[resolve_att_ref.attachment].initial_access;
+
+                if (color_att_intial_access != color_att_ref.access)
+                    GnBuildDependency(&vk_dependency, color_att_intial_access, color_att_ref.access);
+
+                if (resolve_att_initial_access != resolve_att_ref.access)
+                    GnBuildDependency(&vk_dependency, resolve_att_initial_access, resolve_att_ref.access);
+            }
+
+            if (subpass.depth_stencil_attachment != nullptr) {
+                GnResourceAccessFlags initial_access = desc->attachments[subpass.depth_stencil_attachment->attachment].initial_access;
+                GnResourceAccessFlags subpass_access = subpass.depth_stencil_attachment->access;
+                if (initial_access != subpass_access)
+                    GnBuildDependency(&vk_dependency, initial_access, subpass_access);
+            }
+
+            if (!dependencies.push_back(vk_dependency))
+                return GnError_OutOfHostMemory;
+        }
+        
+        if (!implicit_dep.has_outgoing_subpass) {
+            VkSubpassDependency vk_dependency{};
+            vk_dependency.srcSubpass = i;
+            vk_dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
+
+            for (uint32_t j = 0; j < subpass.num_color_attachments; j++) {
+                const GnAttachmentReference& color_att_ref = subpass.color_attachments[j];
+                const GnAttachmentReference& resolve_att_ref = subpass.resolve_attachments[j];
+                GnResourceAccessFlags color_att_final_access = desc->attachments[color_att_ref.attachment].final_access;
+                GnResourceAccessFlags resolve_att_final_access = desc->attachments[resolve_att_ref.attachment].final_access;
+
+                if (color_att_final_access != color_att_ref.access)
+                    GnBuildDependency(&vk_dependency, color_att_ref.access, color_att_final_access);
+
+                if (resolve_att_final_access != resolve_att_ref.access)
+                    GnBuildDependency(&vk_dependency, resolve_att_ref.access, resolve_att_final_access);
+            }
+
+            if (subpass.depth_stencil_attachment != nullptr) {
+                GnResourceAccessFlags final_access = desc->attachments[subpass.depth_stencil_attachment->attachment].final_access;
+                GnResourceAccessFlags subpass_access = subpass.depth_stencil_attachment->access;
+                if (final_access != subpass_access)
+                    GnBuildDependency(&vk_dependency, subpass_access, final_access);
+            }
+
+            if (!dependencies.push_back(vk_dependency))
+                return GnError_OutOfHostMemory;
+        }
     }
 
     VkRenderPassCreateInfo rp_info;
@@ -1646,14 +2255,11 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
     rp_info.pNext = nullptr;
     rp_info.flags = 0;
     rp_info.attachmentCount = desc->num_attachments;
-    rp_info.pAttachments = attachments;
+    rp_info.pAttachments = attachments.storage;
     rp_info.subpassCount = desc->num_subpasses;
-    rp_info.pSubpasses = subpasses;
-    rp_info.dependencyCount = {};
-    rp_info.pDependencies = {};
-
-    std::free(subpasses);
-    std::free(attachments);
+    rp_info.pSubpasses = subpasses.storage;
+    rp_info.dependencyCount = (uint32_t)dependencies.size;
+    rp_info.pDependencies = dependencies.storage;
 
     return GnError_Unimplemented;
 }
@@ -1671,7 +2277,7 @@ GnResult GnDeviceVK::CreateResourceTableLayout(const GnResourceTableLayoutDesc* 
         vk_binding.binding = binding.binding;
         vk_binding.descriptorType = GnConvertToVkDescriptorType<false>(binding.type);
         vk_binding.descriptorCount = binding.num_resources;
-        vk_binding.stageFlags = GnConvertToVkPipelineStageFlags(binding.shader_visibility);
+        vk_binding.stageFlags = GnConvertToVkShaderStageFlags(binding.shader_visibility);
     }
 
     VkDescriptorSetLayoutCreateInfo set_layout_info;
@@ -1711,6 +2317,7 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
         set_layouts[i] = GN_TO_VULKAN(GnResourceTableLayout, desc->resource_tables[i])->set_layout;
 
     GnSmallVector<VkPushConstantRange, 16> push_constant_ranges;
+    VkShaderStageFlags push_constants_stage_flags = 0;
 
     if (desc->num_constant_ranges > 0 && desc->constant_ranges != nullptr) {
         if (!push_constant_ranges.resize(desc->num_constant_ranges))
@@ -1719,14 +2326,17 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
         for (uint32_t i = 0; i < desc->num_constant_ranges; i++) {
             VkPushConstantRange& push_constant_range = push_constant_ranges[i];
             const GnShaderConstantRange& constant_range = desc->constant_ranges[i];
-            push_constant_range.stageFlags = GnConvertToVkPipelineStageFlags(constant_range.shader_visibility);
+            push_constant_range.stageFlags = GnConvertToVkShaderStageFlags(constant_range.shader_visibility);
             push_constant_range.offset = constant_range.offset;
             push_constant_range.size = constant_range.size;
+            push_constants_stage_flags |= push_constant_range.stageFlags;
         }
     }
 
     VkDescriptorSetLayout global_resource_layout = VK_NULL_HANDLE;
     uint32_t global_resource_binding_mask = 0;
+    uint32_t num_global_uniform_buffers = 0;
+    uint32_t num_global_storage_buffers = 0;
 
     if (desc->num_resources > 0 && desc->resources != nullptr) {
         GnSmallVector<VkDescriptorSetLayoutBinding, 32> global_resource_bindings;
@@ -1740,9 +2350,15 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
             binding.binding = global_resource.binding;
             binding.descriptorType = GnConvertToVkDescriptorType<true>(global_resource.resource_type);
             binding.descriptorCount = 1;
-            binding.stageFlags = GnConvertToVkPipelineStageFlags(global_resource.shader_visibility);
+            binding.stageFlags = GnConvertToVkShaderStageFlags(global_resource.shader_visibility);
             binding.pImmutableSamplers = nullptr;
+
             global_resource_binding_mask |= 1 << global_resource.binding;
+
+            if (binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+                num_global_uniform_buffers++;
+            else
+                num_global_storage_buffers++;
         }
 
         VkDescriptorSetLayoutCreateInfo global_resource_layout_info;
@@ -1793,14 +2409,315 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
     impl_pipeline_layout->pipeline_layout = layout;
     impl_pipeline_layout->global_resource_layout = global_resource_layout;
     impl_pipeline_layout->global_resource_binding_mask = global_resource_binding_mask;
+    impl_pipeline_layout->num_global_uniform_buffers = num_global_uniform_buffers;
+    impl_pipeline_layout->num_global_storage_buffers = num_global_storage_buffers;
+    impl_pipeline_layout->push_constants_stage_flags = push_constants_stage_flags;
 
     *pipeline_layout = impl_pipeline_layout;
 
     return GnSuccess;
 }
 
+GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept
+{
+    VkShaderModuleCreateInfo module_infos[2];
+    module_infos[0].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    module_infos[0].pNext = nullptr;
+    module_infos[0].flags = 0;
+    module_infos[0].codeSize = desc->vs->size;
+    module_infos[0].pCode = (const uint32_t*)desc->vs->bytecode;
+    module_infos[1].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    module_infos[1].pNext = nullptr;
+    module_infos[1].flags = 0;
+    module_infos[1].codeSize = desc->fs->size;
+    module_infos[1].pCode = (const uint32_t*)desc->fs->bytecode;
+
+    VkShaderModule vs_module = VK_NULL_HANDLE;
+    if (GN_VULKAN_FAILED(fn.vkCreateShaderModule(device, &module_infos[0], nullptr, &vs_module)))
+        return GnError_InternalError;
+
+    VkShaderModule fs_module = VK_NULL_HANDLE;
+    if (GN_VULKAN_FAILED(fn.vkCreateShaderModule(device, &module_infos[1], nullptr, &fs_module))) {
+        fn.vkDestroyShaderModule(device, vs_module, nullptr);
+        return GnError_InternalError;
+    }
+
+    uint32_t num_input_slots = desc->vertex_input->num_input_slots;
+    uint32_t num_attributes = desc->vertex_input->num_attributes;
+    GnSmallVector<VkVertexInputBindingDescription, 32> vertex_bindings;
+    GnSmallVector<VkVertexInputAttributeDescription, 64> vertex_attributes;
+
+    if (!(vertex_bindings.resize(num_input_slots) || vertex_attributes.resize(num_attributes))) {
+        fn.vkDestroyShaderModule(device, vs_module, nullptr);
+        fn.vkDestroyShaderModule(device, fs_module, nullptr);
+        return GnError_InternalError;
+    }
+
+    for (uint32_t i = 0; i < num_input_slots; i++) {
+        VkVertexInputBindingDescription& vk_binding = vertex_bindings[i];
+        const GnVertexInputSlotDesc& slot = desc->vertex_input->input_slots[i];
+        vk_binding.binding = slot.binding;
+        vk_binding.stride = slot.stride;
+        vk_binding.inputRate = (VkVertexInputRate)slot.input_rate;
+    }
+
+    for (uint32_t i = 0; i < num_attributes; i++) {
+        VkVertexInputAttributeDescription& vk_attribute = vertex_attributes[i];
+        const GnVertexAttributeDesc& attribute = desc->vertex_input->attribute[i];
+        vk_attribute.location = attribute.location;
+        vk_attribute.binding = attribute.slot_binding;
+        vk_attribute.format = GnConvertToVkFormat(attribute.format);
+        vk_attribute.offset = attribute.offset;
+    }
+
+    VkPipelineVertexInputStateCreateInfo vertex_input;
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.pNext = nullptr;
+    vertex_input.flags = 0;
+    vertex_input.vertexBindingDescriptionCount = num_input_slots;
+    vertex_input.pVertexBindingDescriptions = vertex_bindings.storage;
+    vertex_input.vertexAttributeDescriptionCount = num_attributes;
+    vertex_input.pVertexAttributeDescriptions = vertex_attributes.storage;
+
+    VkPipelineShaderStageCreateInfo stages[2];
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].pNext = nullptr;
+    stages[0].flags = 0;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs_module;
+    stages[0].pName = desc->vs->entry_point;
+    stages[0].pSpecializationInfo = nullptr;
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].pNext = nullptr;
+    stages[1].flags = 0;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs_module;
+    stages[1].pName = desc->fs->entry_point;
+    stages[1].pSpecializationInfo = nullptr;
+
+    VkPrimitiveTopology prim_topo = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+
+    switch (desc->input_assembly->topology) {
+        case GnPrimitiveTopology_PointList:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+            break;
+        case GnPrimitiveTopology_LineList:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+            break;
+        case GnPrimitiveTopology_LineStrip:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+            break;
+        case GnPrimitiveTopology_TriangleList:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            break;
+        case GnPrimitiveTopology_TriangleStrip:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+            break;
+        case GnPrimitiveTopology_LineListAdj:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY;
+            break;
+        case GnPrimitiveTopology_LineStripAdj:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY;
+            break;
+        case GnPrimitiveTopology_TriangleListAdj:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
+            break;
+        case GnPrimitiveTopology_TriangleStripAdj:
+            prim_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY;
+            break;
+        default:
+            GN_UNREACHABLE();
+    }
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly;
+    input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.pNext = nullptr;
+    input_assembly.flags = 0;
+    input_assembly.topology = prim_topo;
+    input_assembly.primitiveRestartEnable = desc->input_assembly->primitive_restart != GnPrimitiveRestart_Disable;
+
+    VkPipelineViewportStateCreateInfo viewport_state;
+    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.pNext = nullptr;
+    viewport_state.flags = 0;
+    viewport_state.viewportCount = desc->num_viewports;
+    viewport_state.pViewports = nullptr;
+    viewport_state.scissorCount = desc->num_viewports;
+    viewport_state.pScissors = nullptr;
+
+    VkPolygonMode polygon_mode = VK_POLYGON_MODE_MAX_ENUM;
+    VkCullModeFlags cull_mode = 0;
+
+    switch (desc->rasterization->cull_mode) {
+        case GnCullMode_None:
+            cull_mode = VK_CULL_MODE_NONE;
+            break;
+        case GnCullMode_Front:
+            cull_mode = VK_CULL_MODE_FRONT_BIT;
+            break;
+        case GnCullMode_Back:
+            cull_mode = VK_CULL_MODE_BACK_BIT;
+            break;
+        default:
+            GN_UNREACHABLE();
+    }
+
+    switch (desc->rasterization->polygon_mode) {
+        case GnPolygonMode_Fill:
+            polygon_mode = VK_POLYGON_MODE_FILL;
+            break;
+        case GnPolygonMode_Line:
+            polygon_mode = VK_POLYGON_MODE_LINE;
+            break;
+        case GnPolygonMode_Point:
+            polygon_mode = VK_POLYGON_MODE_POINT;
+            break;
+        default:
+            GN_UNREACHABLE();
+    }
+
+    VkPipelineRasterizationStateCreateInfo rasterization_state;
+    rasterization_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterization_state.pNext = nullptr;
+    rasterization_state.flags = 0;
+    rasterization_state.depthClampEnable = VK_FALSE;
+    rasterization_state.rasterizerDiscardEnable = VK_FALSE;
+    rasterization_state.polygonMode = polygon_mode;
+    rasterization_state.cullMode = cull_mode;
+    rasterization_state.frontFace = desc->rasterization->frontface_ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    rasterization_state.depthBiasEnable = desc->rasterization->depth_bias != 0 || desc->rasterization->depth_bias_slope_scale != 0.0f;
+    rasterization_state.depthBiasConstantFactor = (float)desc->rasterization->depth_bias;
+    rasterization_state.depthBiasClamp = desc->rasterization->depth_bias_clamp;
+    rasterization_state.depthBiasSlopeFactor = desc->rasterization->depth_bias_slope_scale;
+    rasterization_state.lineWidth = 1.0f;
+
+    VkPipelineRasterizationDepthClipStateCreateInfoEXT depth_clip_state;
+
+    if (desc->rasterization->unclipped_depth) {
+        depth_clip_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT;
+        depth_clip_state.pNext = nullptr;
+        depth_clip_state.flags = 0;
+        depth_clip_state.depthClipEnable = VK_FALSE;
+        rasterization_state.pNext = &depth_clip_state;
+    }
+
+    VkPipelineMultisampleStateCreateInfo multisample_state;
+    multisample_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample_state.pNext = nullptr;
+    multisample_state.flags = 0;
+    multisample_state.rasterizationSamples = (VkSampleCountFlagBits)desc->multisample->num_samples;
+    multisample_state.sampleShadingEnable = VK_FALSE;
+    multisample_state.minSampleShading = 0.0f;
+    multisample_state.pSampleMask = &desc->multisample->sample_mask;
+    multisample_state.alphaToCoverageEnable = desc->multisample->alpha_to_coverage;
+    multisample_state.alphaToOneEnable = VK_FALSE;
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state;
+    depth_stencil_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil_state.pNext = nullptr;
+    depth_stencil_state.flags = 0;
+    depth_stencil_state.depthTestEnable = desc->depth_stencil->depth_test;
+    depth_stencil_state.depthWriteEnable = desc->depth_stencil->depth_write;
+    depth_stencil_state.depthCompareOp = GnConvertToVkCompareOp(desc->depth_stencil->depth_compare_op);
+    depth_stencil_state.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil_state.stencilTestEnable = desc->depth_stencil->stencil_test;
+    depth_stencil_state.front.failOp = GnConvertToVkStencilOp(desc->depth_stencil->front.fail_op);
+    depth_stencil_state.front.passOp = GnConvertToVkStencilOp(desc->depth_stencil->front.pass_op);
+    depth_stencil_state.front.depthFailOp = GnConvertToVkStencilOp(desc->depth_stencil->front.depth_fail_op);
+    depth_stencil_state.front.compareOp = GnConvertToVkCompareOp(desc->depth_stencil->front.compare_op);
+    depth_stencil_state.front.compareMask = desc->depth_stencil->stencil_read_mask;
+    depth_stencil_state.front.writeMask = desc->depth_stencil->stencil_write_mask;
+    depth_stencil_state.front.reference = 0;
+    depth_stencil_state.back.failOp = GnConvertToVkStencilOp(desc->depth_stencil->front.fail_op);
+    depth_stencil_state.back.passOp = GnConvertToVkStencilOp(desc->depth_stencil->front.pass_op);
+    depth_stencil_state.back.depthFailOp = GnConvertToVkStencilOp(desc->depth_stencil->front.depth_fail_op);
+    depth_stencil_state.back.compareOp = GnConvertToVkCompareOp(desc->depth_stencil->front.compare_op);
+    depth_stencil_state.back.compareMask = desc->depth_stencil->stencil_read_mask;
+    depth_stencil_state.back.writeMask = desc->depth_stencil->stencil_write_mask;
+    depth_stencil_state.back.reference = 0;
+    depth_stencil_state.minDepthBounds = 0.0f;
+    depth_stencil_state.maxDepthBounds = 1.0f;
+
+    uint32_t num_color_attachments = desc->blend->num_color_attachments;
+    VkPipelineColorBlendAttachmentState vk_attachments[8]{};
+
+    for (uint32_t i = 0; i < num_color_attachments; i++) {
+        VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
+        GnColorAttachmentBlendStateDesc& attachment = desc->blend->color_attachments[i];
+        vk_attachment.blendEnable = attachment.blend_enable;
+        vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(attachment.src_color_blend_factor);
+        vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(attachment.dst_color_blend_factor);
+        vk_attachment.colorBlendOp = GnConvertToVkBlendOp(attachment.color_blend_op);
+        vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.src_alpha_blend_factor);
+        vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.dst_alpha_blend_factor);
+        vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(attachment.alpha_blend_op);
+        vk_attachment.colorWriteMask = attachment.color_write_mask;
+    }
+
+    VkPipelineColorBlendStateCreateInfo color_blend_state;
+    color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend_state.pNext = nullptr;
+    color_blend_state.flags = 0;
+    color_blend_state.logicOpEnable = VK_FALSE;
+    color_blend_state.logicOp = VK_LOGIC_OP_CLEAR;
+    color_blend_state.attachmentCount = num_color_attachments;
+    color_blend_state.pAttachments = vk_attachments;
+    color_blend_state.blendConstants[0] = 0.0f;
+    color_blend_state.blendConstants[1] = 0.0f;
+    color_blend_state.blendConstants[2] = 0.0f;
+    color_blend_state.blendConstants[3] = 0.0f;
+
+    static const VkDynamicState dynamic_states[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+        VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamic_state;
+    dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state.pNext = nullptr;
+    dynamic_state.flags = 0;
+    dynamic_state.dynamicStateCount = {};
+    dynamic_state.pDynamicStates = {};
+
+    VkGraphicsPipelineCreateInfo pipeline_info;
+    pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.pNext = nullptr;
+    pipeline_info.flags = 0;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = stages;
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pTessellationState = nullptr;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterization_state;
+    pipeline_info.pMultisampleState = &multisample_state;
+    pipeline_info.pDepthStencilState = &depth_stencil_state;
+    pipeline_info.pColorBlendState = &color_blend_state;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = GN_TO_VULKAN(GnPipelineLayout, desc->layout)->pipeline_layout;
+    pipeline_info.renderPass = {};
+    pipeline_info.subpass = {};
+    pipeline_info.basePipelineHandle = {};
+    pipeline_info.basePipelineIndex = {};
+
+    return GnResult();
+}
+
 GnResult GnDeviceVK::CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept
 {
+    VkShaderModuleCreateInfo shader_module_info;
+    shader_module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader_module_info.pNext = nullptr;
+    shader_module_info.flags = 0;
+    shader_module_info.codeSize = desc->cs.size;
+    shader_module_info.pCode = (const uint32_t*)desc->cs.bytecode;
+
+    VkShaderModule module;
+    if (GN_VULKAN_FAILED(fn.vkCreateShaderModule(device, &shader_module_info, nullptr, &module)))
+        return GnError_InternalError;
+
     VkComputePipelineCreateInfo pipeline_info;
     pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipeline_info.pNext = nullptr;
@@ -1809,16 +2726,18 @@ GnResult GnDeviceVK::CreateComputePipeline(const GnComputePipelineDesc* desc, Gn
     pipeline_info.stage.pNext = nullptr;
     pipeline_info.stage.flags = 0;
     pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipeline_info.stage.module = {};
-    pipeline_info.stage.pName = {};
-    pipeline_info.stage.pSpecializationInfo = {};
+    pipeline_info.stage.module = module;
+    pipeline_info.stage.pName = desc->cs.entry_point;
+    pipeline_info.stage.pSpecializationInfo = nullptr;
     pipeline_info.layout = GN_TO_VULKAN(GnPipelineLayout, desc->layout)->pipeline_layout;
     pipeline_info.basePipelineHandle = nullptr;
     pipeline_info.basePipelineIndex = 0;
 
     VkPipeline vk_pipeline;
-    if (GN_VULKAN_FAILED(fn.vkCreateComputePipelines(device, nullptr, 1, &pipeline_info, nullptr, &vk_pipeline)))
+    if (GN_VULKAN_FAILED(fn.vkCreateComputePipelines(device, nullptr, 1, &pipeline_info, nullptr, &vk_pipeline))) {
+        fn.vkDestroyShaderModule(device, module, nullptr);
         return GnError_InternalError;
+    }
 
     if (!pool.pipeline)
         pool.pipeline.emplace(128);
@@ -1826,9 +2745,12 @@ GnResult GnDeviceVK::CreateComputePipeline(const GnComputePipelineDesc* desc, Gn
     GnPipelineVK* impl_pipeline = (GnPipelineVK*)pool.pipeline->allocate();
 
     if (impl_pipeline == nullptr) {
+        fn.vkDestroyShaderModule(device, module, nullptr);
         fn.vkDestroyPipeline(device, vk_pipeline, nullptr);
         return GnError_OutOfHostMemory;
     }
+
+    *pipeline = impl_pipeline;
 
     return GnSuccess;
 }
@@ -1880,20 +2802,92 @@ GnResult GnDeviceVK::CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandP
     VkCommandPoolCreateInfo info;
     info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     info.pNext = nullptr;
-    info.flags = 0;
+    info.flags = desc->usage & 3;
     info.queueFamilyIndex = desc->queue_group_index;
 
     VkCommandPool vk_command_pool;
-    if (fn.vkCreateCommandPool(device, &info, nullptr, &vk_command_pool))
+    if (GN_VULKAN_FAILED(fn.vkCreateCommandPool(device, &info, nullptr, &vk_command_pool)))
         return GnError_InternalError;
 
+    if (!pool.command_pool)
+        pool.command_pool.emplace(128);
+
+    GnCommandListVK* command_list_pool = GnAllocate<GnCommandListVK>(desc->max_allocated_cmd_list);
+
+    if (command_list_pool == nullptr) {
+        fn.vkDestroyCommandPool(device, vk_command_pool, nullptr);
+        return GnError_OutOfHostMemory;
+    }
+
+    GnCommandPoolVK* impl_command_pool = (GnCommandPoolVK*)pool.command_pool->allocate();
+
+    if (impl_command_pool == nullptr) {
+        GnFree(command_list_pool);
+        fn.vkDestroyCommandPool(device, vk_command_pool, nullptr);
+        return GnError_OutOfHostMemory;
+    }
+
+    VkCommandBufferLevel level = desc->command_list_usage == GnCommandListUsage_Primary
+        ? VK_COMMAND_BUFFER_LEVEL_PRIMARY
+        : VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+
+    new(impl_command_pool) GnCommandPoolVK(this, desc->max_allocated_cmd_list, level, vk_command_pool);
+
+    GnCommandListVK* prev_command_list = nullptr;
+    for (uint32_t i = 0; i < desc->max_allocated_cmd_list; i++) {
+        auto current_command_list = new(command_list_pool + i) GnCommandListVK(impl_command_pool);
+
+        if (prev_command_list)
+            prev_command_list->next = current_command_list;
+
+        current_command_list->prev = prev_command_list;
+        prev_command_list = current_command_list;
+    }
+
+    impl_command_pool->free_command_lists = command_list_pool;
+    impl_command_pool->command_list_pool = command_list_pool;
+
+    *command_pool = impl_command_pool;
+
     return GnError_Unimplemented;
+}
+
+GnResult GnDeviceVK::CreateCommandLists(GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists) noexcept
+{
+    GnCommandPoolVK* impl_command_pool = GN_TO_VULKAN(GnCommandPool, command_pool);
+
+    VkCommandBufferAllocateInfo info;
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    info.pNext = nullptr;
+    info.commandPool = impl_command_pool->cmd_pool;
+    info.level = impl_command_pool->level;
+    info.commandBufferCount = num_cmd_lists;
+
+    if (GN_VULKAN_FAILED(fn.vkAllocateCommandBuffers(device, &info, (VkCommandBuffer*)command_lists)))
+        return GnError_InternalError;
+
+    for (uint32_t i = 0; i < num_cmd_lists; i++) {
+        GnCommandListVK* command_list = impl_command_pool->free_command_lists;
+        impl_command_pool->free_command_lists = GN_TO_VULKAN(GnCommandList, command_list->next);
+        
+        if (impl_command_pool->allocated_command_lists);
+
+        command_list->BindCommandBuffer((VkCommandBuffer)command_lists[i]);
+    }
+
+    return GnSuccess;
 }
 
 void GnDeviceVK::DestroySwapchain(GnSwapchain swapchain) noexcept
 {
     GN_TO_VULKAN(GnSwapchain, swapchain)->Destroy(this);
     delete swapchain;
+}
+
+void GnDeviceVK::DestroyFence(GnFence fence) noexcept
+{
+    fn.vkDestroyFence(device, GN_TO_VULKAN(GnFence, fence)->fence, nullptr);
+    pool.fence->free(fence);
 }
 
 void GnDeviceVK::DestroyMemory(GnMemory memory) noexcept
@@ -1957,6 +2951,22 @@ void GnDeviceVK::DestroyResourceTablePool(GnResourceTablePool resource_table_poo
 void GnDeviceVK::DestroyCommandPool(GnCommandPool command_pool) noexcept
 {
     fn.vkDestroyCommandPool(device, GN_TO_VULKAN(GnCommandPool, command_pool)->cmd_pool, nullptr);
+    pool.command_pool->free(command_pool);
+}
+
+void GnDeviceVK::DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept
+{
+    GnCommandPoolVK* impl_command_pool = GN_TO_VULKAN(GnCommandPool, command_pool);
+
+    for (uint32_t i = 0; i < num_command_lists; i++) {
+        GnCommandListVK* impl_command_list = GN_TO_VULKAN(GnCommandList, command_lists[i]);
+        fn.vkFreeCommandBuffers(device, impl_command_pool->cmd_pool, 1, (VkCommandBuffer*)&impl_command_list->cmd_private_data);
+
+        // Detach linked list
+        if (impl_command_list->prev)
+            impl_command_list->prev->next = impl_command_list->next;
+        
+    }
 }
 
 void GnDeviceVK::GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept
@@ -1984,10 +2994,11 @@ GnResult GnDeviceVK::MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_rang
 {
     GnBufferVK* impl_buffer = GN_TO_VULKAN(GnBuffer, buffer);
     GnMemoryVK* impl_memory = impl_buffer->memory;
-    std::scoped_lock lock(impl_memory->mappping_lock);
 
     if (impl_memory == nullptr)
         return GnError_MemoryMapFailed;
+
+    std::scoped_lock lock(impl_memory->mapping_lock);
 
     if (impl_memory->mapped_address == nullptr) {
         VkResult result = fn.vkMapMemory(device, impl_memory->memory, 0, VK_WHOLE_SIZE, 0, &impl_memory->mapped_address);
@@ -2000,6 +3011,7 @@ GnResult GnDeviceVK::MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_rang
     if (!impl_memory->IsAlwaysMapped())
         impl_memory->num_resources_mapped++;
 
+    // Non-host-coherent memory needs to be invalidated manually.
     if (!GnHasBit(impl_memory->memory_attribute, GnMemoryAttribute_HostCoherent)) {
         VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
         fn.vkInvalidateMappedMemoryRanges(device, 1, &range);
@@ -2019,12 +3031,13 @@ void GnDeviceVK::UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range)
 {
     GnBufferVK* impl_buffer = GN_TO_VULKAN(GnBuffer, buffer);
     GnMemoryVK* impl_memory = impl_buffer->memory;
-    std::scoped_lock lock(impl_memory->mappping_lock);
 
     if (impl_memory == nullptr)
         return;
 
-    // Manually flush & invalidate memory region if it's not a host-coherent memory
+    std::scoped_lock lock(impl_memory->mapping_lock);
+
+    // Non-host-coherent memory needs to be invalidated manually.
     if (!GnHasBit(impl_memory->memory_attribute, GnMemoryAttribute_HostCoherent)) {
         VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
         fn.vkFlushMappedMemoryRanges(device, 1, &range);
@@ -2036,8 +3049,47 @@ void GnDeviceVK::UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range)
     }
 }
 
-void GnDeviceVK::WriteBuffer(GnBuffer buffer, GnDeviceSize size, const void* data) noexcept
+GnResult GnDeviceVK::WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept
 {
+    GnBufferVK* impl_buffer = GN_TO_VULKAN(GnBuffer, buffer);
+    GnMemoryVK* impl_memory = impl_buffer->memory;
+
+    if (impl_memory == nullptr)
+        return GnError_MemoryMapFailed;
+
+    std::scoped_lock lock(impl_memory->mapping_lock);
+
+    bool is_non_host_coherent = !GnHasBit(impl_memory->memory_attribute, GnMemoryAttribute_HostCoherent);
+    bool is_always_mapped = impl_memory->IsAlwaysMapped();
+    void* mapped_address = impl_memory->mapped_address;
+
+    if (mapped_address == nullptr) {
+        VkResult result = fn.vkMapMemory(device, impl_memory->memory, 0, VK_WHOLE_SIZE, 0, &mapped_address);
+
+        if (result == VK_ERROR_MEMORY_MAP_FAILED)
+            return GnError_MemoryMapFailed;
+        else if (GN_VULKAN_FAILED(result))
+            return GnError_InternalError;
+
+        if (is_always_mapped)
+            impl_memory->mapped_address = mapped_address;
+    }
+
+    VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
+
+    if (is_non_host_coherent)
+        fn.vkInvalidateMappedMemoryRanges(device, 1, &range);
+
+    GnDeviceSize offset = impl_buffer->aligned_offset + memory_range->offset;
+    std::memcpy(reinterpret_cast<std::byte*>(mapped_address) + offset, data, memory_range->size);
+
+    if (is_non_host_coherent)
+        fn.vkFlushMappedMemoryRanges(device, 1, &range);
+
+    if (!is_always_mapped && impl_memory->num_resources_mapped-- == 1)
+        fn.vkUnmapMemory(device, impl_memory->memory);
+
+    return GnSuccess;
 }
 
 GnQueue GnDeviceVK::GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept
@@ -2072,11 +3124,13 @@ void GnQueueVK::Destroy() noexcept
 
 GnResult GnQueueVK::EnqueueWaitSemaphore(uint32_t num_wait_semaphores, const GnSemaphore* wait_semaphores) noexcept
 {
-    if (command_buffer_queue.size() > 0)
+    if (command_buffer_queue.size() > 0 || signal_semaphore_queue.size() > 0)
         if (!GroupSubmissionPacket())
             return GnError_OutOfHostMemory;
 
-    if (!wait_semaphore_queue.reserve(wait_semaphore_queue.num_items_written() + num_wait_semaphores))
+    uint32_t reserve_size = (uint32_t)wait_semaphore_queue.num_items_written() + num_wait_semaphores;
+
+    if (!(wait_semaphore_queue.reserve(reserve_size) && wait_dst_stage_queue.reserve(reserve_size)))
         return GnError_OutOfHostMemory;
 
     for (uint32_t i = 0; i < num_wait_semaphores; i++) {
@@ -2089,23 +3143,55 @@ GnResult GnQueueVK::EnqueueWaitSemaphore(uint32_t num_wait_semaphores, const GnS
 
 GnResult GnQueueVK::EnqueueCommandLists(uint32_t num_command_lists, const GnCommandList* command_lists) noexcept
 {
+    if (signal_semaphore_queue.size() > 0)
+        if (!GroupSubmissionPacket())
+            return GnError_OutOfHostMemory;
+
     if (!command_buffer_queue.reserve(command_buffer_queue.num_items_written() + num_command_lists))
         return GnError_OutOfHostMemory;
 
     for (uint32_t i = 0; i < num_command_lists; i++)
-        command_buffer_queue.push((VkCommandBuffer)GN_TO_VULKAN(GnCommandList, command_lists[i])->draw_cmd_private_data);
+        // NOTE: draw_cmd_private_data is VkCommandBuffer
+        command_buffer_queue.push((VkCommandBuffer)GN_TO_VULKAN(GnCommandList, command_lists[i])->cmd_private_data);
 
     return GnSuccess;
 }
 
 GnResult GnQueueVK::EnqueueSignalSemaphore(uint32_t num_signal_semaphores, const GnSemaphore* signal_semaphores) noexcept
 {
-    return GnResult();
+    if (!signal_semaphore_queue.reserve(signal_semaphore_queue.num_items_written() + num_signal_semaphores))
+        return GnError_OutOfHostMemory;
+
+    for (uint32_t i = 0; i < num_signal_semaphores; i++)
+        signal_semaphore_queue.push(GN_TO_VULKAN(GnSemaphore, signal_semaphores[i])->semaphore);
+
+    return GnSuccess;
 }
 
 GnResult GnQueueVK::Flush(GnFence fence, bool wait) noexcept
 {
-    return GnResult();
+    if (!GroupSubmissionPacket())
+        return GnError_OutOfHostMemory;
+
+    const auto& fn = parent_device->fn;
+    GnResult result = GnConvertFromVkResult(
+        fn.vkQueueSubmit(queue, (uint32_t)submission_queue.size(), submission_queue.data, GN_TO_VULKAN(GnFence, fence)->fence));
+
+    if (GN_FAILED(result))
+        return result;
+
+    if (wait)
+        if (GN_FAILED(result = GnConvertFromVkResult(fn.vkQueueWaitIdle(queue))))
+            return result;
+
+    // Wipe all queued items.
+    wait_semaphore_queue.clear();
+    wait_dst_stage_queue.clear();
+    command_buffer_queue.clear();
+    signal_semaphore_queue.clear();
+    submission_queue.clear();
+
+    return result;
 }
 
 GnResult GnQueueVK::PresentSwapchain(GnSwapchain swapchain) noexcept
@@ -2207,7 +3293,25 @@ GnResult GnQueueVK::PresentSwapchain(GnSwapchain swapchain) noexcept
 
 bool GnQueueVK::GroupSubmissionPacket() noexcept
 {
-    return false;
+    if (wait_semaphore_queue.empty() && command_buffer_queue.empty() && signal_semaphore_queue.empty())
+        return true;
+
+    auto submission = submission_queue.emplace();
+
+    if (!submission.has_value())
+        return false;
+
+    auto& submit_info = submission->get();
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.waitSemaphoreCount = (uint32_t)wait_semaphore_queue.size();
+    submit_info.pWaitSemaphores = wait_semaphore_queue.pop_all();
+    submit_info.pWaitDstStageMask = wait_dst_stage_queue.pop_all();
+    submit_info.commandBufferCount = (uint32_t)command_buffer_queue.size();
+    submit_info.pCommandBuffers = command_buffer_queue.pop_all();
+    submit_info.signalSemaphoreCount = (uint32_t)signal_semaphore_queue.size();
+    submit_info.pSignalSemaphores = signal_semaphore_queue.pop_all();
+
+    return true;
 }
 
 // -- [GnSwapchainVK] --
@@ -2418,60 +3522,149 @@ void GnSwapchainVK::DestroyFrameData(GnDeviceVK* impl_device) noexcept
     }
 }
 
-VkDescriptorSet GnDescriptorStreamVK::AllocateForWrite(GnDeviceVK* device, VkDescriptorSetLayout set_layout) noexcept
+// -- [GnDescriptorStreamVK] --
+
+GnDescriptorStreamVK::~GnDescriptorStreamVK()
 {
-    return VK_NULL_HANDLE;
 }
 
-GnCommandPoolVK::GnCommandPoolVK(GnDeviceVK* impl_device, VkCommandPool cmd_pool) noexcept :
+VkDescriptorSet GnDescriptorStreamVK::AllocateDescriptorSet(GnDeviceVK* impl_device, GnPipelineLayoutVK* pipeline_layout) noexcept
+{
+    if (current_chunk == nullptr) {
+        first_chunk = CreateChunk(impl_device, 32, 64);
+        
+        if (first_chunk == nullptr)
+            return VK_NULL_HANDLE;
+
+        current_chunk = first_chunk;
+    }
+    else {
+        uint32_t free_uniform_buffers = current_chunk->max_descriptors - current_chunk->num_uniform_buffers;
+        uint32_t free_storage_buffers = current_chunk->max_descriptors - current_chunk->num_storage_buffers;
+
+        // Create new descriptor pool if there is not enough storage for allocating new descriptor set
+        if (pipeline_layout->num_global_uniform_buffers > free_uniform_buffers ||
+            pipeline_layout->num_global_storage_buffers > free_storage_buffers ||
+            current_chunk->max_descriptor_sets - current_chunk->num_descriptor_sets == 0)
+        {
+            const uint32_t max_descriptor_sets = current_chunk->max_descriptor_sets + current_chunk->max_descriptor_sets / 2;
+            const uint32_t max_descriptors = current_chunk->max_descriptors + current_chunk->max_descriptors / 2;
+            GnDescriptorStreamChunkVK* new_chunk = CreateChunk(impl_device, max_descriptor_sets, max_descriptors);
+
+            if (new_chunk == nullptr)
+                return VK_NULL_HANDLE;
+
+            current_chunk->next = new_chunk;
+            current_chunk = new_chunk;
+        }
+    }
+
+    VkDescriptorSetAllocateInfo alloc_info;
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.pNext = nullptr;
+    alloc_info.descriptorPool = current_chunk->descriptor_pool;
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &pipeline_layout->global_resource_layout;
+
+    VkDescriptorSet descriptor_set;
+
+    if (GN_VULKAN_FAILED(impl_device->fn.vkAllocateDescriptorSets(impl_device->device, &alloc_info, &descriptor_set)))
+        return VK_NULL_HANDLE;
+
+    current_chunk->num_uniform_buffers += pipeline_layout->num_global_uniform_buffers;
+    current_chunk->num_storage_buffers += pipeline_layout->num_global_storage_buffers;
+
+    return descriptor_set;
+}
+
+GnDescriptorStreamChunkVK* GnDescriptorStreamVK::CreateChunk(GnDeviceVK* impl_device, uint32_t max_descriptor_sets, uint32_t max_descriptors) noexcept
+{
+    GnDescriptorStreamChunkVK* chunk = (GnDescriptorStreamChunkVK*)chunk_pool.allocate();
+
+    if (chunk == nullptr)
+        return nullptr;
+
+    VkDescriptorPoolSize pool_sizes[2];
+    pool_sizes[0].type              = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    pool_sizes[0].descriptorCount   = max_descriptors;
+    pool_sizes[1].type              = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+    pool_sizes[1].descriptorCount   = max_descriptors;
+
+    VkDescriptorPoolCreateInfo pool_info;
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.pNext = nullptr;
+    pool_info.flags = 0;
+    pool_info.maxSets = max_descriptor_sets;
+    pool_info.poolSizeCount = 2;
+    pool_info.pPoolSizes = pool_sizes;
+
+    VkDescriptorPool pool;
+
+    if (GN_VULKAN_FAILED(impl_device->fn.vkCreateDescriptorPool(impl_device->device, &pool_info, nullptr, &pool))) {
+        chunk_pool.free(chunk);
+        return nullptr;
+    }
+
+    chunk->descriptor_pool = pool;
+    chunk->num_descriptor_sets = 0;
+    chunk->num_uniform_buffers = 0;
+    chunk->num_storage_buffers = 0;
+    chunk->max_descriptor_sets = max_descriptor_sets;
+    chunk->max_descriptors = max_descriptors;
+    chunk->next = nullptr;
+
+    return chunk;
+}
+
+// -- [GnCommandPoolVK] --
+
+GnCommandPoolVK::GnCommandPoolVK(GnDeviceVK* impl_device, uint32_t max_command_lists, VkCommandBufferLevel level, VkCommandPool cmd_pool) noexcept :
     parent_device(impl_device),
-    cmd_pool(cmd_pool)
+    cmd_pool(cmd_pool),
+    level(level)
 {
-
 }
 
-VkDescriptorSet GnCommandPoolVK::AllocateDescriptorSet(VkDescriptorSetLayout set_layout) noexcept
-{
-    return descriptor_stream.AllocateForWrite(parent_device, set_layout);
-}
-
-GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK* impl_cmd_list,
-                                             VkCommandBuffer cmd_buf,
-                                             uint32_t& compute_descriptor_write_mask,
-                                             GnPipelineState& pipeline_state)
+GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*   impl_cmd_list,
+                                             VkCommandBuffer    cmd_buf,
+                                             uint32_t&          global_descriptor_write_mask,
+                                             GnPipelineState&   pipeline_state)
 {
     GnPipelineLayoutVK* pipeline_layout = GN_TO_VULKAN(GnPipelineLayout, pipeline_state.pipeline_layout);
     VkPipelineLayout vk_pipeline_layout = pipeline_layout->pipeline_layout;
-    GnSmallVector<VkDescriptorSet, 32> descriptor_sets;
-
-    if (!descriptor_sets.resize(pipeline_layout->num_resource_tables))
-        GN_ASSERT(false && "Cannot allocate memory");
-
+    
     // ---- Bind resource table ----
     const uint32_t first_rtable_index = pipeline_state.resource_tables_upd_range.first;
-    const uint32_t rtable_update_count = pipeline_state.resource_tables_upd_range.last - first_rtable_index;
+    const uint32_t num_rtable_updates = pipeline_state.resource_tables_upd_range.last - first_rtable_index;
 
-    for (uint32_t i = 0; i < rtable_update_count; i++) {
-        GnResourceTableVK* impl_rtable = GN_TO_VULKAN(GnResourceTable, pipeline_state.resource_tables[first_rtable_index + i]);
-        if (impl_rtable != nullptr)
-            descriptor_sets[i] = impl_rtable->descriptor_set;
+    if (num_rtable_updates > 0) {
+        GnSmallVector<VkDescriptorSet, 32> descriptor_sets;
+
+        if (!descriptor_sets.resize(pipeline_layout->num_resource_tables))
+            GN_ASSERT(false && "Cannot allocate memory");
+
+        for (uint32_t i = 0; i < num_rtable_updates; i++) {
+            GnResourceTableVK* impl_rtable = GN_TO_VULKAN(GnResourceTable, pipeline_state.resource_tables[first_rtable_index + i]);
+            if (impl_rtable != nullptr)
+                descriptor_sets[i] = impl_rtable->descriptor_set;
+        }
+
+        impl_cmd_list->cmd_bind_descriptor_sets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline_layout,
+                                                first_rtable_index, num_rtable_updates,
+                                                descriptor_sets.storage, 0, nullptr);
     }
-
-    impl_cmd_list->cmd_bind_descriptor_sets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline_layout,
-                                            first_rtable_index, rtable_update_count,
-                                            descriptor_sets.storage, 0, nullptr);
 
     // ---- Bind global resource ----
     const uint32_t global_resource_binding_mask = pipeline_layout->global_resource_binding_mask;
-    const uint32_t descriptor_write_mask = pipeline_state.global_buffers_upd_mask & global_resource_binding_mask;
-    const uint32_t offset_write_mask = pipeline_state.global_buffer_offsets_upd_mask & global_resource_binding_mask;
-    const bool should_write_global_descriptors = descriptor_write_mask != 0;
+    const uint32_t updated_descriptor_mask = pipeline_state.global_buffers_upd_mask & global_resource_binding_mask;
+    const uint32_t updated_offset_mask = pipeline_state.global_buffer_offsets_upd_mask & global_resource_binding_mask;
+    const bool should_write_global_descriptors = updated_descriptor_mask != 0;
 
     if (should_write_global_descriptors) {
-        compute_descriptor_write_mask |= descriptor_write_mask;
+        global_descriptor_write_mask |= updated_descriptor_mask;
 
         // Should we check for global_descriptor_write_mask?
-        if (compute_descriptor_write_mask != 0) {
+        if (global_descriptor_write_mask != 0) {
             GnSmallVector<VkDescriptorBufferInfo, 32> buffer_descriptors;
             GnSmallVector<VkWriteDescriptorSet, 32> write_descriptors;
 
@@ -2479,12 +3672,13 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK* impl_cmd_list,
                 GN_ASSERT(false && "Cannot allocate memory");
 
             GnCommandPoolVK* impl_cmd_pool = impl_cmd_list->parent_cmd_pool;
-            VkDescriptorSet descriptor_set = impl_cmd_pool->AllocateDescriptorSet(pipeline_layout->global_resource_layout);
-            VkDevice device = impl_cmd_pool->parent_device->device;
+            VkDescriptorSet descriptor_set = impl_cmd_pool->descriptor_stream.AllocateDescriptorSet(impl_cmd_pool->parent_device, pipeline_layout);
+
+            GN_ASSERT(descriptor_set != nullptr && "Cannot allocate descriptor set for global resource.");
 
             for (uint32_t i = 0; i < 32; i++) {
                 const uint32_t write_mask = 1 << i;
-                if (GnContainsBit(compute_descriptor_write_mask, write_mask)) {
+                if (GnContainsBit(global_descriptor_write_mask, write_mask)) {
                     VkDescriptorBufferInfo buffer_descriptor;
                     buffer_descriptor.buffer = GN_TO_VULKAN(GnBuffer, pipeline_state.global_buffers[i])->buffer;
                     buffer_descriptor.offset = 0;
@@ -2501,10 +3695,10 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK* impl_cmd_list,
                     write_descriptor.pBufferInfo = &buffer_descriptor;
                     write_descriptor.pTexelBufferView = nullptr;
 
-                    if (GnContainsBit(pipeline_state.global_buffers_type_mask, write_mask))
-                        write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    if (GnContainsBit(pipeline_state.global_buffers_type_bits, write_mask))
+                        write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
                     else
-                        write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                        write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 
                     // TODO(native-m): Replace with emplace_back
                     buffer_descriptors.push_back(buffer_descriptor);
@@ -2512,14 +3706,14 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK* impl_cmd_list,
                 }
             }
 
-            impl_cmd_list->fn.vkUpdateDescriptorSets(device, (uint32_t)write_descriptors.size, write_descriptors.storage, 0, nullptr);
+            impl_cmd_list->fn.vkUpdateDescriptorSets(impl_cmd_pool->parent_device->device, (uint32_t)write_descriptors.size, write_descriptors.storage, 0, nullptr);
             impl_cmd_list->current_descriptor_set = descriptor_set;
         }
 
         pipeline_state.global_buffers_upd_mask = 0;
     }
 
-    if (should_write_global_descriptors || offset_write_mask != 0) {
+    if (should_write_global_descriptors || updated_offset_mask != 0) {
         pipeline_state.global_buffer_offsets_upd_mask = 0;
         impl_cmd_list->cmd_bind_descriptor_sets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline_layout,
                                                 pipeline_layout->num_resource_tables, 1, &impl_cmd_list->current_descriptor_set,
@@ -2530,7 +3724,7 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK* impl_cmd_list,
 GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcept
 {
     GnCommandListVK* impl_cmd_list = GN_TO_VULKAN(GnCommandList, command_list);
-    VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->draw_cmd_private_data;
+    VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->cmd_private_data;
     GnCommandListState& state = impl_cmd_list->state;
 
     // Update graphics pipeline
@@ -2543,11 +3737,12 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
 
     // Update graphics shader constants
     if (state.update_flags.graphics_shader_constants) {
-        VkPipelineLayout layout = GN_TO_VULKAN(GnPipelineLayout, state.graphics.pipeline_layout)->pipeline_layout;
+        GnPipelineLayoutVK* impl_pipeline_layout = GN_TO_VULKAN(GnPipelineLayout, state.graphics.pipeline_layout);
+        VkPipelineLayout layout = impl_pipeline_layout->pipeline_layout;
         GnUpdateRange& update_range = state.graphics.shader_constants_upd_range;
 
-        impl_cmd_list->cmd_push_constants(cmd_buf, layout, VK_PIPELINE_BIND_POINT_GRAPHICS, update_range.first,
-                                          update_range.last - update_range.first,
+        impl_cmd_list->cmd_push_constants(cmd_buf, layout, impl_pipeline_layout->push_constants_stage_flags,
+                                          update_range.first, update_range.last - update_range.first,
                                           state.graphics.shader_constants);
 
         update_range.Flush();
@@ -2605,7 +3800,7 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
 GN_SAFEBUFFERS void GnComputeStateFlusherVK(GnCommandList command_list) noexcept
 {
     GnCommandListVK* impl_cmd_list = (GnCommandListVK*)command_list;
-    VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->draw_cmd_private_data;
+    VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->cmd_private_data;
     GnCommandListState& state = impl_cmd_list->state;
 
     if (state.update_flags.compute_pipeline)
@@ -2628,14 +3823,10 @@ GN_SAFEBUFFERS void GnComputeStateFlusherVK(GnCommandList command_list) noexcept
 
 // -- [GnCommandListVK] --
 
-GnCommandListVK::GnCommandListVK(GnDeviceVK* impl_device, GnCommandPool parent_cmd_pool, VkCommandBuffer cmd_buffer) noexcept :
-    fn(impl_device->fn)
+GnCommandListVK::GnCommandListVK(GnCommandPoolVK* parent_cmd_pool) noexcept :
+    parent_cmd_pool(parent_cmd_pool),
+    fn(parent_cmd_pool->parent_device->fn)
 {
-    // Set VkCommandBuffer as command private data.
-    draw_cmd_private_data = (void*)cmd_buffer;
-    draw_indexed_cmd_private_data = (void*)cmd_buffer;
-    dispatch_cmd_private_data = (void*)cmd_buffer;
-
     // Bind functions
     cmd_bind_pipeline = fn.vkCmdBindPipeline;
     cmd_bind_descriptor_sets = fn.vkCmdBindDescriptorSets;
@@ -2667,7 +3858,7 @@ GnResult GnCommandListVK::Begin(const GnCommandListBeginDesc* desc) noexcept
     begin_info.flags = desc->flags; // No need to convert, they both are compatible (unless we add another flags)
     begin_info.pInheritanceInfo = nullptr;
 
-    return GnConvertFromVkResult(fn.vkBeginCommandBuffer(static_cast<VkCommandBuffer>(draw_cmd_private_data), &begin_info));
+    return GnConvertFromVkResult(fn.vkBeginCommandBuffer(static_cast<VkCommandBuffer>(cmd_private_data), &begin_info));
 }
 
 void GnCommandListVK::BeginRenderPass() noexcept
@@ -2689,7 +3880,7 @@ void GnCommandListVK::EndRenderPass() noexcept
 
 GnResult GnCommandListVK::End() noexcept
 {
-    return GnConvertFromVkResult(fn.vkEndCommandBuffer(static_cast<VkCommandBuffer>(draw_cmd_private_data)));
+    return GnConvertFromVkResult(fn.vkEndCommandBuffer(static_cast<VkCommandBuffer>(cmd_private_data)));
 }
 
 #endif

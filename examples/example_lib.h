@@ -1,6 +1,9 @@
 #pragma once
 #include <gn/gn.h>
 #include <memory>
+#include <vector>
+#include <fstream>
+#include <optional>
 #include "example_def.h"
 
 struct GnExampleWindow
@@ -206,11 +209,16 @@ struct GnExampleApp
 
         queue = GnGetDeviceQueue(device, direct_queue_group, 0);
 
-        // Find BGRA8Unorm surface format
+        // Find BGRA8Unorm/RGBA8Unorm surface format
         GnEnumerateSurfaceFormats(adapter, surface,
                                   [this](GnFormat format) {
-                                      if (surface_format == GnFormat_Unknown && format == GnFormat_BGRA8Unorm) {
-                                          surface_format = format;
+                                      switch (format) {
+                                          case GnFormat_BGRA8Unorm:
+                                          case GnFormat_RGBA8Unorm:
+                                              surface_format = format;
+                                              break;
+                                          default:
+                                              break;
                                       }
                                   });
 
@@ -239,4 +247,25 @@ struct GnExampleApp
 
         return 0;
     }
+
+    virtual void OnStart() { }
 };
+
+static std::optional<std::vector<uint32_t>> GnLoadSPIRV(const char* path)
+{
+    std::vector<uint32_t> content;
+    std::ifstream file(path, std::ios::binary);
+
+    if (!file.is_open())
+        return {};
+
+    file.seekg(0, std::ios::end);
+    auto length = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    content.resize(length / sizeof(uint32_t));
+    file.read((char*)content.data(), length);
+
+    file.close();
+    return content;
+}

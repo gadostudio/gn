@@ -1,0 +1,16 @@
+void fn0(int v0, int v1) { }
+
+void fn1()
+{
+}
+
+void fn2() {
+}
+
+void fn3(int v0) { }
+
+void fn3(int v0, int v1, int v2) { }
+
+void main()
+{
+}

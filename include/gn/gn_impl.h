@@ -1,6 +1,13 @@
 #ifndef GN_IMPL_H_
 #define GN_IMPL_H_
 
+#define GN_MAX_QUEUE 4
+
+// The maximum number of bound resources of each type on resource table here to prevent resource table abuse
+// We may change this number in the future
+#define GN_MAX_RESOURCE_TABLE_SAMPLERS 2048u
+#define GN_MAX_RESOURCE_TABLE_DESCRIPTORS 1048576u
+
 #include <gn/gn.h>
 #include <gn/gn_core.h>
 
@@ -58,10 +65,13 @@ struct GnDevice_t
     virtual GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept = 0;
     virtual GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept = 0;
     virtual GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept = 0;
+    virtual GnResult CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept = 0;
     virtual GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept = 0;
     virtual GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept = 0;
     virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
+    virtual GnResult CreateCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, GnCommandList* command_lists) noexcept = 0;
     virtual void DestroySwapchain(GnSwapchain swapchain) noexcept = 0;
+    virtual void DestroyFence(GnFence fence) noexcept = 0;
     virtual void DestroyMemory(GnMemory memory) noexcept = 0;
     virtual void DestroyBuffer(GnBuffer buffer) noexcept = 0;
     virtual void DestroyTexture(GnTexture texture) noexcept = 0;
@@ -72,11 +82,12 @@ struct GnDevice_t
     virtual void DestroyPipeline(GnPipeline pipeline) noexcept = 0;
     virtual void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept = 0;
     virtual void DestroyCommandPool(GnCommandPool command_pool) noexcept = 0;
+    virtual void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept = 0;
     virtual void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept = 0;
     virtual GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept = 0;
     virtual GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept = 0;
     virtual void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept = 0;
-    virtual void WriteBuffer(GnBuffer buffer, GnDeviceSize size, const void* data) noexcept = 0;
+    virtual GnResult WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept = 0;
     virtual GnQueue GetQueue(uint32_t queue_group_id, uint32_t queue_index) noexcept = 0;
     virtual GnResult DeviceWaitIdle() noexcept = 0;
 };
@@ -130,7 +141,7 @@ struct GnTexture_t
 
 struct GnTextureView_t
 {
-    GnTextureViewDesc desc;
+    GnTextureViewDesc                   desc;
 };
 
 struct GnRenderPass_t
@@ -164,7 +175,7 @@ struct GnResourceTable_t
 
 struct GnCommandPool_t
 {
-    GnCommandList command_lists; // linked-list
+    virtual ~GnCommandPool_t() { }
 };
 
 struct GnPipelineState
@@ -176,7 +187,7 @@ struct GnPipelineState
     GnBuffer            global_buffers[32];
     uint32_t            global_buffer_offsets[32];
     uint32_t            global_buffers_upd_mask;
-    uint32_t            global_buffers_type_mask;
+    uint32_t            global_buffers_type_bits;
     uint32_t            global_buffer_offsets_upd_mask;
     std::byte           shader_constants[256];
     GnUpdateRange       shader_constants_upd_range;
@@ -191,8 +202,7 @@ struct GnCommandListState
         ComputeStateUpdate = ~GraphicsStateUpdate
     };
 
-    GnPipelineState     graphics;
-    GnPipelineState     compute;
+    GnPipelineState     graphics, compute;
 
     // Input-Assembler state
     GnBuffer            index_buffer;
@@ -237,7 +247,6 @@ struct GnCommandListState
     
     inline bool graphics_state_updated() const noexcept
     {
-        auto s = sizeof(index_buffer_offset);
         return (update_flags.u32 & GraphicsStateUpdate) > 0;
     }
 
@@ -255,21 +264,19 @@ typedef void (GN_FPTR* GnDispatchCmdFn)(void* cmd_data, uint32_t num_thread_grou
 
 struct GnCommandList_t
 {
+    GnCommandList               next = nullptr, prev = nullptr;
     GnCommandListState          state{};
 
     // Function pointer for certain functions are defined here to avoid vtables and function call indirections.
     GnFlushStateFn              flush_gfx_state_fn;
     GnFlushComputeStateFn       flush_compute_state_fn;
-    void*                       draw_cmd_private_data;
     GnDrawCmdFn                 draw_cmd_fn;
-    void*                       draw_indexed_cmd_private_data;
     GnDrawIndexedCmdFn          draw_indexed_cmd_fn;
-    void*                       dispatch_cmd_private_data;
     GnDispatchCmdFn             dispatch_cmd_fn;
+    void*                       cmd_private_data;
 
-    bool                        recording;
-    bool                        inside_render_pass;
-    GnCommandList               next_command_list;
+    bool                        recording = false;
+    bool                        inside_render_pass = false;
 
     virtual GnResult Begin(const GnCommandListBeginDesc* desc) noexcept = 0;
     virtual void BeginRenderPass() noexcept = 0;
@@ -330,6 +337,12 @@ inline static void GnSafeComRelease(T*& ptr) noexcept
     ptr = nullptr;
 }
 #endif
+
+inline static constexpr bool GnIsColorFormat(GnFormat format) noexcept
+{
+    return format >= GnFormat_R8Unorm && format <= GnFormat_RGBA32Float;
+}
+
 
 // -- [GnInstance] --
 
@@ -720,9 +733,19 @@ void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain)
 
 // -- [GnQueue] --
 
+GnResult GnEnqueueWaitSemaphore(GnQueue queue, uint32_t num_wait_semaphores, const GnSemaphore* wait_semaphores)
+{
+    return queue->EnqueueWaitSemaphore(num_wait_semaphores, wait_semaphores);
+}
+
 GnResult GnEnqueueCommandLists(GnQueue queue, uint32_t num_command_lists, const GnCommandList* command_lists)
 {
-    return GnError_Unimplemented;
+    return queue->EnqueueCommandLists(num_command_lists, command_lists);
+}
+
+GnResult GnEnqueueSignalSemaphore(GnQueue queue, uint32_t num_signal_semaphores, const GnSemaphore* signal_semaphores)
+{
+    return queue->EnqueueSignalSemaphore(num_signal_semaphores, signal_semaphores);
 }
 
 GnResult GnFlushQueue(GnQueue queue, GnFence fence)
@@ -847,9 +870,17 @@ void GnUnmapBuffer(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory
     device->UnmapBuffer(buffer, memory_range);
 }
 
-GnResult GnWriteBuffer(GnDevice device, GnBuffer buffer, GnDeviceSize size, const void* data)
+GnResult GnWriteBuffer(GnDevice device, GnBuffer buffer, GnDeviceSize offset, GnDeviceSize size, const void* data)
 {
-    return GnResult();
+    GnMemoryRange memory_range;
+    memory_range.offset = offset;
+    memory_range.size = size;
+    return device->WriteBufferRange(buffer, &memory_range, data);
+}
+
+GnResult GnWriteBufferRange(GnDevice device, GnBuffer buffer, const GnMemoryRange* memory_range, const void* data)
+{
+    return device->WriteBufferRange(buffer, memory_range, data);
 }
 
 // -- [GnTexture] --
@@ -941,7 +972,7 @@ GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc*
 
 GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* desc, GnPipeline* compute_pipeline)
 {
-    return GnResult();
+    return device->CreateComputePipeline(desc, compute_pipeline);
 }
 
 GnResult GnCreateGraphicsPipelineFromStream(GnDevice device, const GnPipelineStreamDesc* desc, GnPipeline* graphics_pipeline)
@@ -974,24 +1005,28 @@ void GnDestroyResourceTablePool(GnDevice device, GnResourceTablePool resource_ta
 
 GnResult GnCreateCommandPool(GnDevice device, const GnCommandPoolDesc* desc, GnCommandPool* command_pool)
 {
-    return GnError_Unimplemented;
+    return device->CreateCommandPool(desc, command_pool);
 }
 
-void GnDestroyCommandPool(GnCommandPool command_pool)
+void GnDestroyCommandPool(GnDevice device, GnCommandPool command_pool)
 {
+    device->DestroyCommandPool(command_pool);
+}
 
+GnResult GnResetCommandPool(GnDevice device, GnCommandPool command_pool)
+{
+    return GnError_Unimplemented;
 }
 
 void GnTrimCommandPool(GnCommandPool command_pool)
 {
 }
 
-
 // -- [GnCommandList] --
 
 GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists)
 {
-    return GnError_Unimplemented;
+    return device->CreateCommandLists()
 }
 
 void GnDestroyCommandList(GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists)
@@ -1047,20 +1082,20 @@ inline bool GnTryUpdateBufferAndOffset(GnPipelineState& pipeline_state, uint32_t
 {
     GnBuffer& current_buffer = pipeline_state.global_buffers[slot];
     uint32_t& current_offset = pipeline_state.global_buffer_offsets[slot];
-    uint32_t new_type_mask = pipeline_state.global_buffers_type_mask;
+    uint32_t new_type_bits = pipeline_state.global_buffers_type_bits;
 
     if (is_storage_buffer)
-        new_type_mask |= 1 << slot;
+        new_type_bits |= 1 << slot;
     else
-        new_type_mask &= ~(1 << slot);
+        new_type_bits &= ~(1 << slot);
 
-    const bool buffer_updated = current_buffer == buffer || pipeline_state.global_buffers_type_mask != new_type_mask;
+    const bool buffer_updated = current_buffer == buffer || pipeline_state.global_buffers_type_bits != new_type_bits;
     const bool offset_updated = current_offset == offset;
 
     if (buffer_updated) {
         current_buffer = buffer;
         pipeline_state.global_buffers_upd_mask |= 1 << slot;
-        pipeline_state.global_buffers_type_mask = new_type_mask;
+        pipeline_state.global_buffers_type_bits = new_type_bits;
     }
 
     if (offset_updated) {
@@ -1213,13 +1248,13 @@ void GnCmdBeginRenderPass(GnCommandList command_list)
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
-    command_list->draw_cmd_fn(command_list->draw_cmd_private_data, num_vertices, 1, 0, 0);
+    command_list->draw_cmd_fn(command_list->cmd_private_data, num_vertices, 1, 0, 0);
 }
 
 void GnCmdDrawInstanced(GnCommandList command_list, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
-    command_list->draw_cmd_fn(command_list->draw_cmd_private_data, num_vertices, num_instances, first_vertex, first_instance);
+    command_list->draw_cmd_fn(command_list->cmd_private_data, num_vertices, num_instances, first_vertex, first_instance);
 }
 
 void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands)
@@ -1230,13 +1265,13 @@ void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnD
 void GnCmdDrawIndexed(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, int32_t vertex_offset)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
-    command_list->draw_indexed_cmd_fn(command_list->draw_indexed_cmd_private_data, num_indices, first_index, 1, 0, 0);
+    command_list->draw_indexed_cmd_fn(command_list->cmd_private_data, num_indices, first_index, 1, 0, 0);
 }
 
 void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
-    command_list->draw_indexed_cmd_fn(command_list->draw_indexed_cmd_private_data, num_indices, first_index, num_instances, vertex_offset, first_instance);
+    command_list->draw_indexed_cmd_fn(command_list->cmd_private_data, num_indices, first_index, num_instances, vertex_offset, first_instance);
 }
 
 void GnCmdDrawIndexedIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands)
@@ -1283,7 +1318,7 @@ void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t offset,
 void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z)
 {
     if (command_list->state.compute_state_updated()) command_list->flush_compute_state_fn(command_list);
-    command_list->dispatch_cmd_fn(command_list->dispatch_cmd_private_data, num_thread_group_x, num_thread_group_y, num_thread_group_z);
+    command_list->dispatch_cmd_fn(command_list->cmd_private_data, num_thread_group_x, num_thread_group_y, num_thread_group_z);
 }
 
 void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset)
@@ -1317,9 +1352,7 @@ void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const
 
 GnCommandListFallback::GnCommandListFallback() noexcept
 {
-    draw_cmd_private_data = this;
-    draw_indexed_cmd_private_data = this;
-    dispatch_cmd_private_data = this;
+    cmd_private_data = this;
 
     flush_gfx_state_fn = [](GnCommandList command_list) {
         if (command_list->state.update_flags.index_buffer) {}

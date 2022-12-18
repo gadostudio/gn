@@ -8,9 +8,11 @@ endfunction()
 
 function(gn_add_compute_example _NAME _SOURCE)
     add_executable(${_NAME} ${_SOURCE})
-    target_link_libraries(${_NAME} PRIVATE gn-static)
+    target_link_libraries(${_NAME} PRIVATE gn-example-lib)
+    target_compile_definitions(${_NAME} PUBLIC GN_EXAMPLE_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endfunction()
 
 gn_add_graphics_example(gn-example-helloworld 01_helloworld.cpp)
+gn_add_graphics_example(gn-example-hellotriangle 02_hellotriangle.cpp)
 
 gn_add_compute_example(gn_example_compute_basic_hellocompute compute_basic/01_hellocompute.cpp)

@@ -73,24 +73,6 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
     endif()
 
     if(GN_BUILD_TESTS)
-        set(GN_TEST_SOURCES
-            test/instance_test.cpp
-            test/device_test.cpp
-            test/test_driver.cpp)
-
-        add_executable(gn-test-d3d12 ${GN_TEST_SOURCES})
-        target_compile_definitions(gn-test-d3d12 PUBLIC GN_TEST_BACKEND_D3D12)
-        target_link_libraries(gn-test-d3d12 PRIVATE gn-static)
-
-        add_executable(gn-test-vulkan ${GN_TEST_SOURCES})
-        target_compile_definitions(gn-test-vulkan PUBLIC GN_TEST_BACKEND_VULKAN)
-        target_link_libraries(gn-test-vulkan PRIVATE gn-static ${GN_STATIC_DEPS})
-
-        add_executable(gn-barrier-test-vulkan test/barrier_conv_test.cpp)
-        target_compile_definitions(gn-barrier-test-vulkan PUBLIC GN_TEST_BACKEND_VULKAN)
-        target_link_libraries(gn-barrier-test-vulkan PRIVATE gn-static ${GN_STATIC_DEPS})
-
-        add_executable(gnsl-test-bootstrapper test/gnsl_test_bootstrapper.cpp)
-        target_link_libraries(gnsl-test-bootstrapper PRIVATE gnsl-static)
+        add_subdirectory(test)
     endif()
 endif()

@@ -4,10 +4,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#define GNSL_INVALID_CHAR (~0U)
+
 #ifdef __cplusplus
 extern "C"
 {
 #endif
+
+typedef unsigned char GnslByte;
 
 typedef struct GnslCompiler_t* GnslCompiler;
 typedef struct GnslCompilationResult_t* GnslCompilationResult;
@@ -17,7 +21,8 @@ typedef enum
     GnslSuccess,
     GnslError_Unknown           = -1,
     GnslError_Unimplemented     = -2,
-    GnslError_CompilationFailed = -3
+    GnslError_CannotOpenFile    = -3,
+    GnslError_CompilationFailed = -4
 } GnslResult;
 
 typedef enum
@@ -36,7 +41,8 @@ typedef enum
 GnslResult GnslCreateCompiler(GnslCompiler* compiler);
 void GnslDestroyCompiler(GnslCompiler compiler);
 
-GnslResult GnslCompileFromString(GnslCompiler compiler, GnslShaderType shader_type, size_t size, const char* str, GnslCompilationResult* compilation_result);
+GnslResult GnslCompileFromFile(GnslCompiler compiler, GnslShaderType shader_type, const char* path, GnslCompilationResult* compilation_result);
+GnslResult GnslCompileFromMemory(GnslCompiler compiler, GnslShaderType shader_type, size_t size, const GnslByte* str, GnslCompilationResult* compilation_result);
 void GnslDestroyCompilationResult(GnslCompilationResult compilation_result);
 
 #ifdef __cplusplus
