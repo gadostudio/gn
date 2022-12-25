@@ -70,6 +70,9 @@ int main()
     GnBuffer src_buffer;
     EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &src_buffer));
 
+    GnBuffer dst_buffer;
+    EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &dst_buffer));
+
     GnMemoryRequirements requirements{};
     GnGetBufferMemoryRequirements(device, src_buffer, &requirements);
 
@@ -91,6 +94,7 @@ int main()
     // Put values into the input buffer
     float* mapped_buffer = nullptr;
     GnMapBuffer(device, src_buffer, nullptr, (void**)&mapped_buffer);
+    std::memcpy(mapped_buffer, buffer_data.data(), buffer_data.size() * sizeof(float));
     GnUnmapBuffer(device, src_buffer, nullptr);
 
     GnCommandPoolDesc command_pool_desc{};
@@ -102,16 +106,42 @@ int main()
     GnCommandPool command_pool;
     EX_THROW_IF_FAILED(GnCreateCommandPool(device, &command_pool_desc, &command_pool));
 
-    GnCommandListDesc command_list_desc{};
-    command_list_desc.command_pool = command_pool;
-    command_list_desc.num_cmd_lists = 3;
+    GnCommandList command_list;
+    EX_THROW_IF_FAILED(GnCreateCommandLists(device, command_pool, 1, &command_list));
 
-    GnCommandList command_list[8]{};
-    GnCreateCommandList(device, &command_list_desc, command_list);
+    GnCommandListBeginDesc begin_desc;
+    begin_desc.flags = GnCommandListBegin_OneTimeUse;
+    begin_desc.inheritance = nullptr;
+
+    GnBeginCommandList(command_list, &begin_desc);
+    
+    GnBufferBarrier buffer_barrier{};
+    buffer_barrier.buffer = src_buffer;
+    buffer_barrier.offset = 0;
+    buffer_barrier.size = GN_WHOLE_SIZE;
+    buffer_barrier.access_before = GnResourceAccess_HostWrite;
+    buffer_barrier.access_after = GnResourceAccess_CSRead;
+    buffer_barrier.queue_group_index_before = 0;
+    buffer_barrier.queue_group_index_after = 0;
+
+    GnCmdBarrier(command_list, 1, &buffer_barrier, 0, nullptr);
+
+    /*GnCmdSetComputePipeline(command_list, compute_pipeline);
+    GnCmdSetComputePipelineLayout(command_list, pipeline_layout);
+    GnCmdSetComputeStorageBuffer(command_list, 0, src_buffer, 0);
+    GnCmdSetComputeStorageBuffer(command_list, 1, src_buffer, 0);
+    GnCmdDispatch(command_list, 1, 1, 1);*/
+    GnEndCommandList(command_list);
+
+    GnEnqueueCommandLists(queue, 1, &command_list);
+    GnFlushQueueAndWait(queue);
 
     //GnBuffer dst_buffer;
     //EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &dst_buffer));
 
+    GnDestroyCommandLists(device, command_pool, 1, &command_list);
+    GnDestroyCommandPool(device, command_pool);
+    GnDestroyBuffer(device, dst_buffer);
     GnDestroyBuffer(device, src_buffer);
     GnDestroyMemory(device, src_buffer_memory);
     GnDestroyPipeline(device, compute_pipeline);

@@ -173,11 +173,6 @@ struct GnResourceTable_t
 {
 };
 
-struct GnCommandPool_t
-{
-    virtual ~GnCommandPool_t() { }
-};
-
 struct GnPipelineState
 {
     GnPipeline          pipeline;
@@ -198,7 +193,7 @@ struct GnCommandListState
 {
     enum
     {
-        GraphicsStateUpdate = (1 << 7) - 1,
+        GraphicsStateUpdate = (1 << 10) - 1,
         ComputeStateUpdate = ~GraphicsStateUpdate
     };
 
@@ -262,9 +257,8 @@ typedef void (GN_FPTR* GnDrawCmdFn)(void* cmd_data, uint32_t num_vertices, uint3
 typedef void (GN_FPTR* GnDrawIndexedCmdFn)(void* cmd_data, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance);
 typedef void (GN_FPTR* GnDispatchCmdFn)(void* cmd_data, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z);
 
-struct GnCommandList_t
+struct GnCommandList_t : public GnTrackedResource<GnCommandList_t>
 {
-    GnCommandList               next = nullptr, prev = nullptr;
     GnCommandListState          state{};
 
     // Function pointer for certain functions are defined here to avoid vtables and function call indirections.
@@ -273,7 +267,7 @@ struct GnCommandList_t
     GnDrawCmdFn                 draw_cmd_fn;
     GnDrawIndexedCmdFn          draw_indexed_cmd_fn;
     GnDispatchCmdFn             dispatch_cmd_fn;
-    void*                       cmd_private_data;
+    void*                       cmd_private_data = nullptr;
 
     bool                        recording = false;
     bool                        inside_render_pass = false;
@@ -281,7 +275,16 @@ struct GnCommandList_t
     virtual GnResult Begin(const GnCommandListBeginDesc* desc) noexcept = 0;
     virtual void BeginRenderPass() noexcept = 0;
     virtual void EndRenderPass() noexcept = 0;
+    virtual void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept = 0;
     virtual GnResult End() noexcept = 0;
+};
+
+struct GnCommandPool_t
+{
+    GnTrackedResource<GnCommandList_t>  free_command_lists{};
+    GnTrackedResource<GnCommandList_t>  allocated_command_lists{};
+
+    virtual ~GnCommandPool_t() { }
 };
 
 constexpr uint32_t clsize = sizeof(GnCommandList_t); // TODO: delete this
@@ -755,7 +758,7 @@ GnResult GnFlushQueue(GnQueue queue, GnFence fence)
 
 GnResult GnFlushQueueAndWait(GnQueue queue) 
 {
-    return GnError_Unimplemented;
+    return queue->Flush(nullptr, true);
 }
 
 GnResult GnWaitQueue(GnQueue queue)
@@ -987,6 +990,7 @@ GnResult GnCreateComputePipelineFromStream(GnDevice device, const GnPipelineStre
 
 void GnDestroyPipeline(GnDevice device, GnPipeline pipeline)
 {
+    device->DestroyPipeline(pipeline);
 }
 
 GnPipelineType GnGetPipelineType(GnPipeline pipeline)
@@ -1024,14 +1028,14 @@ void GnTrimCommandPool(GnCommandPool command_pool)
 
 // -- [GnCommandList] --
 
-GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists)
+GnResult GnCreateCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists)
 {
-    return device->CreateCommandLists()
+    return device->CreateCommandLists(command_pool, num_cmd_lists, command_lists);
 }
 
-void GnDestroyCommandList(GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists)
+void GnDestroyCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists)
 {
-
+    device->DestroyCommandLists(command_pool, num_cmd_lists, command_lists);
 }
 
 GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc)
@@ -1344,6 +1348,12 @@ void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture,
 
 void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture)
 {
+}
+
+void GnCmdBarrier(GnCommandList command_list, uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers)
+{
+    if (num_buffer_barriers > 0 && num_texture_barriers > 0) return; // Early exit
+    command_list->Barrier(num_buffer_barriers, buffer_barriers, num_texture_barriers, texture_barriers);
 }
 
 void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles)

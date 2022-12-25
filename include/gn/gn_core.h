@@ -266,10 +266,9 @@ struct GnVector
         if (n >= size()) {
             if (!reserve(n))
                 return false;
-
-            last_ptr = first_ptr + n;
         }
 
+        last_ptr = first_ptr + n;
         return true;
     }
 
@@ -473,7 +472,7 @@ struct GnSmallQueue
     {
         PODType* tmp = read_ptr;
         read_ptr = write_ptr;
-        return read_ptr;
+        return tmp;
     }
 
     size_t size() const noexcept
@@ -522,6 +521,43 @@ struct GnSmallQueue
         }
 
         return true;
+    }
+};
+
+template<typename T>
+struct GnTrackedResource
+{
+    GnTrackedResource<T>* prev = nullptr;
+    GnTrackedResource<T>* next = nullptr;
+
+    void PushTrackedResource(GnTrackedResource<T>* item) noexcept
+    {
+        item->next = next;
+        item->prev = this;
+        if (next) next->prev = item;
+        next = item;
+    }
+
+    GnTrackedResource<T>* PopTrackedResource() noexcept
+    {
+        auto ret = next;
+
+        if (ret == nullptr) return nullptr;
+
+        next = next->next;
+        next->prev = ret->prev;
+        ret->prev = nullptr;
+        ret->next = nullptr;
+
+        return ret;
+    }
+
+    void RemoveTrackedResource() noexcept
+    {
+        prev->next = next;
+        if (next) next->prev = prev;
+        prev = nullptr;
+        next = nullptr;
     }
 };
 

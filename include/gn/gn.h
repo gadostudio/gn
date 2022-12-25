@@ -1165,8 +1165,8 @@ typedef struct
     const GnCommandListInheritance* inheritance;
 } GnCommandListBeginDesc;
 
-GnResult GnCreateCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists);
-void GnDestroyCommandList(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
+GnResult GnCreateCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists);
+void GnDestroyCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
 GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc);
 GnResult GnEndCommandList(GnCommandList command_list);
 GnBool GnIsRecordingCommandList(GnCommandList command_list);

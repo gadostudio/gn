@@ -148,11 +148,12 @@ struct GnCommandListD3D12 : public GnCommandList_t
     //ID3D12GraphicsCommandList_OMSetStencilRef       om_set_stencil_ref;
     GnPipelineType current_pipeline_type = GnPipelineType_Graphics;
 
-    GnCommandListD3D12(GnQueueType queue_type, const GnCommandListDesc* desc, ID3D12GraphicsCommandList* cmd_list) noexcept;
+    GnCommandListD3D12(GnQueueType queue_type, ID3D12GraphicsCommandList* cmd_list) noexcept;
 
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
     void BeginRenderPass() noexcept override;
     void EndRenderPass() noexcept override;
+    void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept override;
     GnResult End() noexcept override;
 };
 
@@ -201,7 +202,7 @@ struct GnDeviceD3D12 : public GnDevice_t
     GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept override;
     GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
-    GnResult CreateCommandLists(const GnCommandListDesc* desc, GnCommandList* command_lists) noexcept override;
+    GnResult CreateCommandLists(GnCommandPool comamnd_pool, uint32_t num_command_lists, GnCommandList* command_lists) noexcept override;
     void DestroySwapchain(GnSwapchain swapchain) noexcept override;
     void DestroyFence(GnFence fence) noexcept override;
     void DestroyMemory(GnMemory memory) noexcept override;
@@ -1095,7 +1096,7 @@ GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnComma
     return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateCommandLists(const GnCommandListDesc* desc, GnCommandList* command_lists) noexcept
+GnResult GnDeviceD3D12::CreateCommandLists(GnCommandPool comamnd_pool, uint32_t num_command_lists, GnCommandList* command_lists) noexcept
 {
     return GnResult();
 }
@@ -1223,7 +1224,7 @@ GnResult GnQueueD3D12::PresentSwapchain(GnSwapchain swapchain) noexcept
 
 // -- [GnCommandListD3D12] --
 
-GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandListDesc* desc, ID3D12GraphicsCommandList* cmd_list) noexcept
+GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, ID3D12GraphicsCommandList* cmd_list) noexcept
 {
     cmd_private_data = (void*)cmd_list; // We use this to store ID3D12GraphicsCommandList to save space
 
@@ -1238,7 +1239,7 @@ GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, const GnCommandLi
         }
 
         if (state.update_flags.graphics_pipeline_layout) {
-
+            d3d12_cmd_list->SetGraphicsRootSignature(GN_TO_D3D12(GnPipelineLayout, state.graphics.pipeline_layout)->root_signature);
         }
 
         if (state.update_flags.graphics_resource_binding) {
@@ -1322,6 +1323,10 @@ void GnCommandListD3D12::BeginRenderPass() noexcept
 }
 
 void GnCommandListD3D12::EndRenderPass() noexcept
+{
+}
+
+void GnCommandListD3D12::Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept
 {
 }
 
