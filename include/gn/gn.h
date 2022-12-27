@@ -676,13 +676,13 @@ typedef enum
 typedef enum
 {
     GnResourceAccess_Undefined                      = 0,
-    GnResourceAccess_Common                         = 1 << 0,
+    GnResourceAccess_GeneralLayout                  = 1 << 0,
     GnResourceAccess_IndirectBuffer                 = 1 << 1,
     GnResourceAccess_IndexBuffer                    = 1 << 2,
     GnResourceAccess_VertexBuffer                   = 1 << 3,
-    GnResourceAccess_VSUniformRead                  = 1 << 4,
-    GnResourceAccess_FSUniformRead                  = 1 << 5,
-    GnResourceAccess_CSUniformRead                  = 1 << 6,
+    GnResourceAccess_VSUniformBuffer                = 1 << 4,
+    GnResourceAccess_FSUniformBuffer                = 1 << 5,
+    GnResourceAccess_CSUniformBuffer                = 1 << 6,
     GnResourceAccess_VSRead                         = 1 << 7,
     GnResourceAccess_FSRead                         = 1 << 8,
     GnResourceAccess_CSRead                         = 1 << 9,
@@ -703,7 +703,7 @@ typedef enum
     GnResourceAccess_HostRead                       = 1 << 24,
     GnResourceAccess_HostWrite                      = 1 << 25,
 
-    GnResourceAccess_UniformRead                    = GnResourceAccess_VSUniformRead | GnResourceAccess_FSUniformRead | GnResourceAccess_CSUniformRead,
+    GnResourceAccess_UniformRead                    = GnResourceAccess_VSUniformBuffer | GnResourceAccess_FSUniformBuffer | GnResourceAccess_CSUniformBuffer,
     GnResourceAccess_ShaderRead                     = GnResourceAccess_VSRead | GnResourceAccess_FSRead | GnResourceAccess_CSRead,
     GnResourceAccess_ShaderWrite                    = GnResourceAccess_VSWrite | GnResourceAccess_FSWrite | GnResourceAccess_CSWrite,
     GnResourceAccess_ShaderReadAndWrite             = GnResourceAccess_ShaderRead | GnResourceAccess_ShaderWrite,
@@ -1240,7 +1240,7 @@ void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t 
 void GnCmdSetBlendConstants(GnCommandList command_list, const float blend_constants[4]);
 void GnCmdSetBlendConstants2(GnCommandList command_list, float r, float g, float b, float a);
 void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref);
-void GnCmdBeginRenderPass(GnCommandList command_list);
+void GnCmdBeginRenderPass(GnCommandList command_list, GnRenderPass render_pass);
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex);
 void GnCmdDrawInstanced(GnCommandList command_list, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance);
 void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands);

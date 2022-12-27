@@ -385,6 +385,18 @@ struct GnSmallVector
         return { std::ref(*ptr) };
     }
 
+    template<typename... Args>
+    PODType* emplace_back_ptr(Args&&... args) noexcept
+    {
+        if (size == capacity)
+            if (!reserve(capacity + (capacity / 2)))
+                return nullptr;
+
+        auto ptr = new(storage + size++) PODType{ std::forward<Args>(args)... };
+
+        return ptr;
+    }
+
     bool resize(size_t n) noexcept
     {
         size = n;

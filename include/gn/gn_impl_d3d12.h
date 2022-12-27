@@ -151,7 +151,7 @@ struct GnCommandListD3D12 : public GnCommandList_t
     GnCommandListD3D12(GnQueueType queue_type, ID3D12GraphicsCommandList* cmd_list) noexcept;
 
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
-    void BeginRenderPass() noexcept override;
+    void BeginRenderPass(GnRenderPass render_pass) noexcept override;
     void EndRenderPass() noexcept override;
     void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept override;
     GnResult End() noexcept override;
@@ -314,6 +314,56 @@ inline UINT GnConvertToD3D12ComponentMapping(GnComponentSwizzle swizzle, D3D12_S
 
     return identity;
 };
+
+inline D3D12_RESOURCE_STATES GnConvertToD3D12ResourceStates(GnResourceAccessFlags access)
+{
+    static constexpr GnResourceAccessFlags vertex_or_uniform_buffer_access =
+        GnResourceAccess_VertexBuffer |
+        GnResourceAccess_VSUniformBuffer |
+        GnResourceAccess_FSUniformBuffer |
+        GnResourceAccess_CSUniformBuffer;
+
+    static constexpr GnResourceAccessFlags storage_access =
+        GnResourceAccess_VSWrite |
+        GnResourceAccess_FSWrite |
+        GnResourceAccess_CSWrite;
+
+    static constexpr GnResourceAccessFlags color_attachment_access =
+        GnResourceAccess_ColorAttachmentRead |
+        GnResourceAccess_ColorAttachmentWrite;
+
+    static constexpr D3D12_RESOURCE_STATES d3d12_depth_states =
+        D3D12_RESOURCE_STATE_DEPTH_READ |
+        D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+    D3D12_RESOURCE_STATES ret = D3D12_RESOURCE_STATE_COMMON;
+
+    // Convert depth-stencil attachment access flags to D3D12_RESOURCE_STATES equivalent
+    ret |= (D3D12_RESOURCE_STATES)(access >> 11) & d3d12_depth_states;
+
+    if (access & vertex_or_uniform_buffer_access)
+        ret |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+
+    if (access & GnResourceAccess_IndexBuffer)
+        ret |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
+
+    if (access & (GnResourceAccess_ColorAttachmentRead | GnResourceAccess_ColorAttachmentWrite))
+        ret |= D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    if (access & storage_access)
+        ret |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+    if (access & (GnResourceAccess_VSRead | GnResourceAccess_CSRead))
+        ret |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+    if (access & GnResourceAccess_FSRead)
+        ret |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    if (access & GnResourceAccess_IndirectBuffer)
+        ret |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+
+    return ret;
+}
 
 inline UINT GnCalcSubresourceD3D12(uint32_t mip_slice, uint32_t array_slice, uint32_t plane_slice, uint32_t mip_levels, uint32_t array_size) noexcept
 {
@@ -1318,7 +1368,7 @@ GnResult GnCommandListD3D12::Begin(const GnCommandListBeginDesc* desc) noexcept
     return GnResult();
 }
 
-void GnCommandListD3D12::BeginRenderPass() noexcept
+void GnCommandListD3D12::BeginRenderPass(GnRenderPass render_pass) noexcept
 {
 }
 

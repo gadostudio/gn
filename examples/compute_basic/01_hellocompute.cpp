@@ -13,6 +13,8 @@ int main()
     auto compute_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/compute_basic/01_hellocompute.comp.spv");
     EX_THROW_IF(!compute_shader.has_value());
 
+    std::cout << "Basic GPU Compute Shader Sample" << std::endl;
+
     // Preparation
     GnInstanceDesc instance_desc{};
     instance_desc.backend = GnBackend_Vulkan;
@@ -76,20 +78,32 @@ int main()
     GnMemoryRequirements requirements{};
     GnGetBufferMemoryRequirements(device, src_buffer, &requirements);
 
-    uint32_t memory_type = GnFindSupportedMemoryType(adapter,
-                                                     requirements.supported_memory_type_bits,
-                                                     GnMemoryAttribute_HostVisible,
-                                                     GnMemoryAttribute_HostVisible,
-                                                     0);
-
     GnMemoryDesc memory_desc{};
     memory_desc.size = requirements.size;
-    memory_desc.memory_type_index = memory_type;
+    memory_desc.memory_type_index = GnFindSupportedMemoryType(
+        adapter, requirements.supported_memory_type_bits,
+        GnMemoryAttribute_HostVisible, GnMemoryAttribute_HostVisible,
+        0);
     
     GnMemory src_buffer_memory;
     EX_THROW_IF_FAILED(GnCreateMemory(device, &memory_desc, &src_buffer_memory));
 
+    memory_desc.memory_type_index = GnFindSupportedMemoryType(
+        adapter, requirements.supported_memory_type_bits,
+        GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCached,
+        GnMemoryAttribute_HostVisible,
+        0);
+
+    GnMemory dst_buffer_memory;
+    EX_THROW_IF_FAILED(GnCreateMemory(device, &memory_desc, &dst_buffer_memory));
+
     GnBindBufferMemory(device, src_buffer, src_buffer_memory, 0);
+    GnBindBufferMemory(device, dst_buffer, dst_buffer_memory, 0);
+
+    std::cout << "Input: " << std::endl;
+
+    for (auto v : buffer_data) std::cout << v << " ";
+    std::cout << std::endl;
 
     // Put values into the input buffer
     float* mapped_buffer = nullptr;
@@ -115,26 +129,57 @@ int main()
 
     GnBeginCommandList(command_list, &begin_desc);
     
-    GnBufferBarrier buffer_barrier{};
-    buffer_barrier.buffer = src_buffer;
-    buffer_barrier.offset = 0;
-    buffer_barrier.size = GN_WHOLE_SIZE;
-    buffer_barrier.access_before = GnResourceAccess_HostWrite;
-    buffer_barrier.access_after = GnResourceAccess_CSRead;
-    buffer_barrier.queue_group_index_before = 0;
-    buffer_barrier.queue_group_index_after = 0;
+    GnBufferBarrier buffer_barrier[2]{};
+    buffer_barrier[0].buffer = src_buffer;
+    buffer_barrier[0].offset = 0;
+    buffer_barrier[0].size = GN_WHOLE_SIZE;
+    buffer_barrier[0].access_before = GnResourceAccess_HostWrite;
+    buffer_barrier[0].access_after = GnResourceAccess_CSRead;
+    buffer_barrier[0].queue_group_index_before = 0;
+    buffer_barrier[0].queue_group_index_after = 0;
+    buffer_barrier[1].buffer = dst_buffer;
+    buffer_barrier[1].offset = 0;
+    buffer_barrier[1].size = GN_WHOLE_SIZE;
+    buffer_barrier[1].access_before = GnResourceAccess_Undefined;
+    buffer_barrier[1].access_after = GnResourceAccess_CSWrite;
+    buffer_barrier[1].queue_group_index_before = 0;
+    buffer_barrier[1].queue_group_index_after = 0;
 
-    GnCmdBarrier(command_list, 1, &buffer_barrier, 0, nullptr);
+    GnCmdBarrier(command_list, 2, buffer_barrier, 0, nullptr);
 
-    /*GnCmdSetComputePipeline(command_list, compute_pipeline);
+    // Bind pipeline and its layout
+    GnCmdSetComputePipeline(command_list, compute_pipeline);
     GnCmdSetComputePipelineLayout(command_list, pipeline_layout);
+    
+    // Bind resource
     GnCmdSetComputeStorageBuffer(command_list, 0, src_buffer, 0);
-    GnCmdSetComputeStorageBuffer(command_list, 1, src_buffer, 0);
-    GnCmdDispatch(command_list, 1, 1, 1);*/
+    GnCmdSetComputeStorageBuffer(command_list, 1, dst_buffer, 0);
+
+    GnCmdDispatch(command_list, 8, 1, 1);
+
+    buffer_barrier[0].buffer = dst_buffer;
+    buffer_barrier[0].offset = 0;
+    buffer_barrier[0].size = GN_WHOLE_SIZE;
+    buffer_barrier[0].access_before = GnResourceAccess_CSWrite;
+    buffer_barrier[0].access_after = GnResourceAccess_HostRead;
+    buffer_barrier[0].queue_group_index_before = 0;
+    buffer_barrier[0].queue_group_index_after = 0;
+
+    GnCmdBarrier(command_list, 1, buffer_barrier, 0, nullptr);
+
     GnEndCommandList(command_list);
 
     GnEnqueueCommandLists(queue, 1, &command_list);
     GnFlushQueueAndWait(queue);
+
+    std::cout << "Result:" << std::endl;
+
+    GnMapBuffer(device, dst_buffer, nullptr, (void**)&mapped_buffer);
+
+    for (uint32_t i = 0; i < 8; i++)
+        std::cout << mapped_buffer[i] << " ";
+
+    GnUnmapBuffer(device, dst_buffer, nullptr);
 
     //GnBuffer dst_buffer;
     //EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &dst_buffer));
@@ -143,6 +188,7 @@ int main()
     GnDestroyCommandPool(device, command_pool);
     GnDestroyBuffer(device, dst_buffer);
     GnDestroyBuffer(device, src_buffer);
+    GnDestroyMemory(device, dst_buffer_memory);
     GnDestroyMemory(device, src_buffer_memory);
     GnDestroyPipeline(device, compute_pipeline);
     GnDestroyPipelineLayout(device, pipeline_layout);
