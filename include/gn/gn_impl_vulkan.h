@@ -221,10 +221,11 @@ struct GnAdapterVK : public GnAdapter_t
     GnInstanceVK*                               parent_instance = nullptr;
     VkPhysicalDevice                            physical_device = VK_NULL_HANDLE;
     uint32_t                                    api_version = 0;
+    GnVector<VkExtensionProperties>             extensions;
     VkPhysicalDeviceDepthClipEnableFeaturesEXT  depth_clip_enable_feature{};
     VkPhysicalDeviceFeatures2                   supported_features{};
     VkPhysicalDeviceMemoryProperties            vk_memory_properties{};
-    GnVector<VkExtensionProperties>             extensions;
+    VkDeviceSize                                non_coherent_atom_size = 0;
 
     GnAdapterVK(GnInstanceVK*                       instance,
                 const GnVulkanInstanceFunctions&    fn,
@@ -371,6 +372,7 @@ struct GnPipelineLayoutVK : public GnPipelineLayout_t
 struct GnPipelineVK : public GnPipeline_t
 {
     VkPipeline pipeline;
+    VkIndexType index_type;
 };
 
 struct GnResourceTablePoolVK : public GnResourceTablePool_t
@@ -421,7 +423,8 @@ struct GnCommandListVK : public GnCommandList_t
     PFN_vkCmdSetViewport            cmd_set_viewport;
     PFN_vkCmdSetScissor             cmd_set_scissor;
 
-    VkDescriptorSet                 current_descriptor_set          = VK_NULL_HANDLE;
+    VkDescriptorSet                 current_graphics_descriptor_set = VK_NULL_HANDLE;
+    VkDescriptorSet                 current_compute_descriptor_set  = VK_NULL_HANDLE;
     uint32_t                        graphics_descriptor_write_mask  = 0;
     uint32_t                        compute_descriptor_write_mask   = 0;
 
@@ -478,6 +481,7 @@ struct GnDeviceVK : public GnDevice_t
     VkDevice                        device = VK_NULL_HANDLE;
     GnQueueVK*                      enabled_queues = nullptr;
     GnObjectPool<GnObjectTypesVK>   pool;
+    VkDeviceSize                    non_coherent_atom_size = 0;
 
     ~GnDeviceVK();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
@@ -848,7 +852,7 @@ inline static VkBlendOp GnConvertToVkBlendOp(GnBlendOp blend_op) noexcept
 }
 
 template<bool AfterAccess>
-inline VkPipelineStageFlags GnGetPipelineStageFromAccessVK(GnResourceAccessFlags access)
+inline VkPipelineStageFlags GnGetPipelineStageFromAccessVK(GnResourceAccessFlags access) noexcept
 {
     static constexpr GnResourceAccessFlags vs_access =
         GnResourceAccess_VSUniformBuffer |
@@ -905,7 +909,7 @@ inline VkPipelineStageFlags GnGetPipelineStageFromAccessVK(GnResourceAccessFlags
     return stage;
 }
 
-inline VkAccessFlags GnGetAccessVK(GnResourceAccessFlags access)
+inline VkAccessFlags GnGetAccessVK(GnResourceAccessFlags access) noexcept
 {
     static constexpr GnResourceAccessFlags uniform_read_access =
         GnResourceAccess_VSUniformBuffer |
@@ -963,7 +967,7 @@ inline VkAccessFlags GnGetAccessVK(GnResourceAccessFlags access)
     return vk_access;
 }
 
-inline VkImageLayout GnGetImageLayoutFromAccessVK(GnResourceAccessFlags access)
+inline VkImageLayout GnGetImageLayoutFromAccessVK(GnResourceAccessFlags access) noexcept
 {
     static constexpr GnResourceAccessFlags read_access =
         GnResourceAccess_VSRead |
@@ -1022,7 +1026,17 @@ static int32_t GnFindMemoryTypeVk(const VkPhysicalDeviceMemoryProperties& vk_mem
     return -1;
 }
 
-inline static VkMappedMemoryRange GnConvertMemoryRange(VkDeviceMemory memory, const GnMemoryRange* memory_range, GnDeviceSize res_offset, GnDeviceSize res_size) noexcept
+inline static VkDeviceSize GnAlignSizeVK(GnDeviceSize size, VkDeviceSize alignment)
+{
+    return size - (size % alignment) + alignment;
+}
+
+inline static VkMappedMemoryRange GnConvertMemoryRange(
+    VkDeviceMemory memory,
+    VkDeviceSize alignment,
+    const GnMemoryRange* memory_range,
+    GnDeviceSize res_offset,
+    GnDeviceSize res_size) noexcept
 {
     VkMappedMemoryRange range;
     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
@@ -1030,7 +1044,6 @@ inline static VkMappedMemoryRange GnConvertMemoryRange(VkDeviceMemory memory, co
     range.memory = memory;
     range.offset = res_offset;
 
-    // Should this be a multiply of nonCoherentAtomSize?
     if (memory_range != nullptr) {
         range.offset += memory_range->offset;
         if (memory_range->size == GN_WHOLE_SIZE)
@@ -1040,6 +1053,9 @@ inline static VkMappedMemoryRange GnConvertMemoryRange(VkDeviceMemory memory, co
     }
     else
         range.size = res_size;
+
+    range.offset = GnAlignSizeVK(range.offset, alignment);
+    range.size = GnAlignSizeVK(range.size, alignment);
 
     return range;
 }
@@ -1488,6 +1504,8 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK*                      instance,
                                                                       limits.max_per_stage_sampled_texture_resources +
                                                                       limits.max_per_stage_storage_texture_resources;
 
+    non_coherent_atom_size = vk_limits.nonCoherentAtomSize;
+
     depth_clip_enable_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT;
     depth_clip_enable_feature.pNext = nullptr;
     supported_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -1800,6 +1818,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
     new_device->device = vk_device;
     new_device->num_enabled_queue_groups = desc->num_enabled_queue_groups;
     new_device->enabled_queues = queues;
+    new_device->non_coherent_atom_size = non_coherent_atom_size;
 
     // Initialize queues
     for (uint32_t i = 0; i < desc->num_enabled_queue_groups; ++i) {
@@ -1936,8 +1955,10 @@ GnResult GnDeviceVK::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) no
 
     GnBufferVK* impl_buffer = (GnBufferVK*)pool.buffer->allocate();
 
-    if (!impl_buffer)
+    if (!impl_buffer) {
+        fn.vkDestroyBuffer(device, vk_buffer, nullptr);
         return GnError_OutOfHostMemory;
+    }
 
     impl_buffer->buffer = vk_buffer;
     impl_buffer->desc = *desc;
@@ -2076,6 +2097,14 @@ struct GnSubpassImplicitDepVK
 
 GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept
 {
+    if (!pool.render_pass)
+        pool.render_pass.emplace(64);
+
+    GnRenderPassVK* impl_render_pass = (GnRenderPassVK*)pool.render_pass->allocate();
+
+    if (impl_render_pass == nullptr)
+        return GnError_OutOfHostMemory;
+
     GnSmallVector<VkAttachmentDescription, 32> attachments;
     GnSmallVector<VkSubpassDescription, 16> subpasses;
     GnSmallVector<VkAttachmentReference, 32> color_att_refs;
@@ -2272,6 +2301,14 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
     rp_info.dependencyCount = (uint32_t)dependencies.size;
     rp_info.pDependencies = dependencies.storage;
 
+    VkRenderPass vk_render_pass;
+    if (GN_VULKAN_FAILED(fn.vkCreateRenderPass(device, &rp_info, nullptr, &vk_render_pass))) {
+        pool.render_pass->free(impl_render_pass);
+        return GnError_InternalError;
+    }
+
+    impl_render_pass->render_pass = vk_render_pass;
+
     return GnError_Unimplemented;
 }
 
@@ -2407,7 +2444,7 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
 
     GnPipelineLayoutVK* impl_pipeline_layout = (GnPipelineLayoutVK*)pool.pipeline_layout->allocate();
 
-    if (pipeline_layout == nullptr) {
+    if (impl_pipeline_layout == nullptr) {
         fn.vkDestroyPipelineLayout(device, layout, nullptr);
         if (global_resource_layout == VK_NULL_HANDLE)
             fn.vkDestroyDescriptorSetLayout(device, global_resource_layout, nullptr);
@@ -2431,6 +2468,117 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
 
 GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept
 {
+    if (!pool.pipeline)
+        pool.pipeline.emplace(128);
+
+    GnPipelineVK* impl_pipeline = (GnPipelineVK*)pool.pipeline->allocate();
+
+    if (impl_pipeline == nullptr)
+        return GnError_OutOfHostMemory;
+
+    const GnFragmentInterfaceStateDesc* fragment = desc->fragment_interface;
+
+    bool has_depth_stencil = desc->depth_stencil != nullptr && fragment->depth_stencil_attachment_format != GnFormat_Unknown;
+    bool has_color_attachment = fragment->num_color_attachments > 0 && fragment->color_attachment_formats != nullptr;
+    VkSampleCountFlagBits sample_count = (VkSampleCountFlagBits)desc->multisample->num_samples;
+
+    // First, create a pipeline-compatible render pass.
+    // This will only be used for render pass compatibility validation.
+    GnSmallVector<VkAttachmentDescription, 32> attachments;
+    VkAttachmentReference color_att_refs[32];
+    VkAttachmentReference resolve_att_refs[32];
+    VkAttachmentReference depth_stencil_att_ref;
+
+    for (uint32_t i = 0; i < fragment->num_color_attachments; i++) {
+        auto color_att = attachments.emplace_back_ptr();
+        color_att->flags = 0;
+        color_att->format = GnConvertToVkFormat(fragment->color_attachment_formats[i]);
+        color_att->samples = sample_count;
+        color_att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        color_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color_att->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color_att->finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        auto& color_att_ref = color_att_refs[i];
+        color_att_ref.attachment = i;
+        color_att_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+
+    if (fragment->resolve_attachment_mask != 0) {
+        uint32_t current_resolve_attachment = (uint32_t)attachments.size;
+        uint32_t resolve_mask = fragment->resolve_attachment_mask;
+
+        for (uint32_t i = 0; i < fragment->num_color_attachments; i++) {
+            auto& resolve_att_ref = resolve_att_refs[i];
+            resolve_att_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+            if (!GnContainsBit(resolve_mask, 1 << i)) {
+                resolve_att_ref.attachment = VK_ATTACHMENT_UNUSED;
+                continue;
+            }
+
+            resolve_att_ref.attachment = current_resolve_attachment++;
+
+            auto resolve_att = attachments.emplace_back_ptr();
+            resolve_att->flags = 0;
+            resolve_att->format = GnConvertToVkFormat(fragment->color_attachment_formats[i]);
+            resolve_att->samples = VK_SAMPLE_COUNT_1_BIT;
+            resolve_att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            resolve_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            resolve_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            resolve_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            resolve_att->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            resolve_att->finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+    }
+    
+    if (has_depth_stencil) {
+        auto ds_att = attachments.emplace_back_ptr();
+        ds_att->flags = 0;
+        ds_att->format = GnConvertToVkFormat(fragment->depth_stencil_attachment_format);
+        ds_att->samples = sample_count;
+        ds_att->loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        ds_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        ds_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        ds_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+        ds_att->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ds_att->finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        depth_stencil_att_ref.attachment = (uint32_t)attachments.size;
+        depth_stencil_att_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+
+    VkSubpassDescription subpass;
+    subpass.flags = 0;
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.inputAttachmentCount = {};
+    subpass.pInputAttachments = {};
+    subpass.colorAttachmentCount = fragment->num_color_attachments;
+    subpass.pColorAttachments = color_att_refs;
+    subpass.pResolveAttachments = resolve_att_refs;
+    subpass.pDepthStencilAttachment = has_depth_stencil ? &depth_stencil_att_ref : nullptr;
+    subpass.preserveAttachmentCount = {};
+    subpass.pPreserveAttachments = {};
+
+    VkRenderPassCreateInfo rp_info;
+    rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rp_info.pNext = nullptr;
+    rp_info.flags = 0;
+    rp_info.attachmentCount = (uint32_t)attachments.size;
+    rp_info.pAttachments = attachments.storage;
+    rp_info.subpassCount = 1;
+    rp_info.pSubpasses = &subpass;
+    rp_info.dependencyCount = 0;
+    rp_info.pDependencies = nullptr;
+
+    VkRenderPass compatible_rp;
+    if (GN_VULKAN_FAILED(fn.vkCreateRenderPass(device, &rp_info, nullptr, &compatible_rp))) {
+        pool.pipeline->free(impl_pipeline);
+        return GnError_InternalError;
+    }
+
     VkShaderModuleCreateInfo module_infos[2];
     module_infos[0].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     module_infos[0].pNext = nullptr;
@@ -2624,45 +2772,65 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     multisample_state.alphaToOneEnable = VK_FALSE;
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil_state;
-    depth_stencil_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth_stencil_state.pNext = nullptr;
-    depth_stencil_state.flags = 0;
-    depth_stencil_state.depthTestEnable = desc->depth_stencil->depth_test;
-    depth_stencil_state.depthWriteEnable = desc->depth_stencil->depth_write;
-    depth_stencil_state.depthCompareOp = GnConvertToVkCompareOp(desc->depth_stencil->depth_compare_op);
-    depth_stencil_state.depthBoundsTestEnable = VK_FALSE;
-    depth_stencil_state.stencilTestEnable = desc->depth_stencil->stencil_test;
-    depth_stencil_state.front.failOp = GnConvertToVkStencilOp(desc->depth_stencil->front.fail_op);
-    depth_stencil_state.front.passOp = GnConvertToVkStencilOp(desc->depth_stencil->front.pass_op);
-    depth_stencil_state.front.depthFailOp = GnConvertToVkStencilOp(desc->depth_stencil->front.depth_fail_op);
-    depth_stencil_state.front.compareOp = GnConvertToVkCompareOp(desc->depth_stencil->front.compare_op);
-    depth_stencil_state.front.compareMask = desc->depth_stencil->stencil_read_mask;
-    depth_stencil_state.front.writeMask = desc->depth_stencil->stencil_write_mask;
-    depth_stencil_state.front.reference = 0;
-    depth_stencil_state.back.failOp = GnConvertToVkStencilOp(desc->depth_stencil->front.fail_op);
-    depth_stencil_state.back.passOp = GnConvertToVkStencilOp(desc->depth_stencil->front.pass_op);
-    depth_stencil_state.back.depthFailOp = GnConvertToVkStencilOp(desc->depth_stencil->front.depth_fail_op);
-    depth_stencil_state.back.compareOp = GnConvertToVkCompareOp(desc->depth_stencil->front.compare_op);
-    depth_stencil_state.back.compareMask = desc->depth_stencil->stencil_read_mask;
-    depth_stencil_state.back.writeMask = desc->depth_stencil->stencil_write_mask;
-    depth_stencil_state.back.reference = 0;
-    depth_stencil_state.minDepthBounds = 0.0f;
-    depth_stencil_state.maxDepthBounds = 1.0f;
 
-    uint32_t num_color_attachments = desc->blend->num_color_attachments;
+    if (has_depth_stencil) {
+        depth_stencil_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depth_stencil_state.pNext = nullptr;
+        depth_stencil_state.flags = 0;
+        depth_stencil_state.depthTestEnable = desc->depth_stencil->depth_test;
+        depth_stencil_state.depthWriteEnable = desc->depth_stencil->depth_write;
+        depth_stencil_state.depthCompareOp = GnConvertToVkCompareOp(desc->depth_stencil->depth_compare_op);
+        depth_stencil_state.depthBoundsTestEnable = VK_FALSE;
+        depth_stencil_state.stencilTestEnable = desc->depth_stencil->stencil_test;
+        depth_stencil_state.front.failOp = GnConvertToVkStencilOp(desc->depth_stencil->front.fail_op);
+        depth_stencil_state.front.passOp = GnConvertToVkStencilOp(desc->depth_stencil->front.pass_op);
+        depth_stencil_state.front.depthFailOp = GnConvertToVkStencilOp(desc->depth_stencil->front.depth_fail_op);
+        depth_stencil_state.front.compareOp = GnConvertToVkCompareOp(desc->depth_stencil->front.compare_op);
+        depth_stencil_state.front.compareMask = desc->depth_stencil->stencil_read_mask;
+        depth_stencil_state.front.writeMask = desc->depth_stencil->stencil_write_mask;
+        depth_stencil_state.front.reference = 0;
+        depth_stencil_state.back.failOp = GnConvertToVkStencilOp(desc->depth_stencil->back.fail_op);
+        depth_stencil_state.back.passOp = GnConvertToVkStencilOp(desc->depth_stencil->back.pass_op);
+        depth_stencil_state.back.depthFailOp = GnConvertToVkStencilOp(desc->depth_stencil->back.depth_fail_op);
+        depth_stencil_state.back.compareOp = GnConvertToVkCompareOp(desc->depth_stencil->back.compare_op);
+        depth_stencil_state.back.compareMask = desc->depth_stencil->stencil_read_mask;
+        depth_stencil_state.back.writeMask = desc->depth_stencil->stencil_write_mask;
+        depth_stencil_state.back.reference = 0;
+        depth_stencil_state.minDepthBounds = 0.0f;
+        depth_stencil_state.maxDepthBounds = 1.0f;
+    }
+
+    uint32_t num_blend_states = desc->blend->num_blend_states;
+    bool independent_blend = desc->blend->independent_blend && GnIsAdapterFeaturePresent(parent_adapter, GnFeature_IndependentBlend);
     VkPipelineColorBlendAttachmentState vk_attachments[8]{};
 
-    for (uint32_t i = 0; i < num_color_attachments; i++) {
-        VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
-        GnColorAttachmentBlendStateDesc& attachment = desc->blend->color_attachments[i];
-        vk_attachment.blendEnable = attachment.blend_enable;
-        vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(attachment.src_color_blend_factor);
-        vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(attachment.dst_color_blend_factor);
-        vk_attachment.colorBlendOp = GnConvertToVkBlendOp(attachment.color_blend_op);
-        vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.src_alpha_blend_factor);
-        vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.dst_alpha_blend_factor);
-        vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(attachment.alpha_blend_op);
-        vk_attachment.colorWriteMask = attachment.color_write_mask;
+    if (independent_blend) {
+        for (uint32_t i = 0; i < num_blend_states; i++) {
+            VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
+            GnColorAttachmentBlendStateDesc& attachment = desc->blend->blend_states[i];
+            vk_attachment.blendEnable = attachment.blend_enable;
+            vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(attachment.src_color_blend_factor);
+            vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(attachment.dst_color_blend_factor);
+            vk_attachment.colorBlendOp = GnConvertToVkBlendOp(attachment.color_blend_op);
+            vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.src_alpha_blend_factor);
+            vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.dst_alpha_blend_factor);
+            vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(attachment.alpha_blend_op);
+            vk_attachment.colorWriteMask = attachment.color_write_mask;
+        }
+    }
+    else {
+        for (uint32_t i = 0; i < fragment->num_color_attachments; i++) {
+            VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
+            GnColorAttachmentBlendStateDesc& attachment = desc->blend->blend_states[0];
+            vk_attachment.blendEnable = attachment.blend_enable;
+            vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(attachment.src_color_blend_factor);
+            vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(attachment.dst_color_blend_factor);
+            vk_attachment.colorBlendOp = GnConvertToVkBlendOp(attachment.color_blend_op);
+            vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.src_alpha_blend_factor);
+            vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.dst_alpha_blend_factor);
+            vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(attachment.alpha_blend_op);
+            vk_attachment.colorWriteMask = attachment.color_write_mask;
+        }
     }
 
     VkPipelineColorBlendStateCreateInfo color_blend_state;
@@ -2671,7 +2839,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     color_blend_state.flags = 0;
     color_blend_state.logicOpEnable = VK_FALSE;
     color_blend_state.logicOp = VK_LOGIC_OP_CLEAR;
-    color_blend_state.attachmentCount = num_color_attachments;
+    color_blend_state.attachmentCount = independent_blend ? num_blend_states : fragment->num_color_attachments;
     color_blend_state.pAttachments = vk_attachments;
     color_blend_state.blendConstants[0] = 0.0f;
     color_blend_state.blendConstants[1] = 0.0f;
@@ -2689,8 +2857,8 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamic_state.pNext = nullptr;
     dynamic_state.flags = 0;
-    dynamic_state.dynamicStateCount = {};
-    dynamic_state.pDynamicStates = {};
+    dynamic_state.dynamicStateCount = GN_ARRAY_SIZE(dynamic_states);
+    dynamic_state.pDynamicStates = dynamic_states;
 
     VkGraphicsPipelineCreateInfo pipeline_info;
     pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -2704,16 +2872,33 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     pipeline_info.pViewportState = &viewport_state;
     pipeline_info.pRasterizationState = &rasterization_state;
     pipeline_info.pMultisampleState = &multisample_state;
-    pipeline_info.pDepthStencilState = &depth_stencil_state;
+    pipeline_info.pDepthStencilState = has_depth_stencil ? &depth_stencil_state : nullptr;
     pipeline_info.pColorBlendState = &color_blend_state;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = GN_TO_VULKAN(GnPipelineLayout, desc->layout)->pipeline_layout;
-    pipeline_info.renderPass = {};
-    pipeline_info.subpass = {};
-    pipeline_info.basePipelineHandle = {};
-    pipeline_info.basePipelineIndex = {};
+    pipeline_info.renderPass = compatible_rp;
+    pipeline_info.subpass = 0;
+    pipeline_info.basePipelineHandle = nullptr;
+    pipeline_info.basePipelineIndex = 0;
 
-    return GnResult();
+    VkPipeline vk_pipeline;
+
+    if (GN_VULKAN_FAILED(fn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &vk_pipeline))) {
+        pool.pipeline->free(impl_pipeline);
+        return GnError_InternalError;
+    }
+
+    fn.vkDestroyShaderModule(device, vs_module, nullptr);
+    fn.vkDestroyShaderModule(device, fs_module, nullptr);
+    fn.vkDestroyRenderPass(device, compatible_rp, nullptr);
+
+    impl_pipeline->type = GnPipelineType_Graphics;
+    impl_pipeline->num_viewports = desc->num_viewports;
+    impl_pipeline->pipeline = vk_pipeline;
+
+    *pipeline = impl_pipeline;
+
+    return GnSuccess;
 }
 
 GnResult GnDeviceVK::CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept
@@ -3036,7 +3221,10 @@ GnResult GnDeviceVK::MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_rang
 
     // Non-host-coherent memory needs to be invalidated manually.
     if (!GnHasBit(impl_memory->memory_attribute, GnMemoryAttribute_HostCoherent)) {
-        VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
+        VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, non_coherent_atom_size,
+                                                         memory_range, impl_buffer->aligned_offset,
+                                                         impl_buffer->memory_requirements.size);
+
         fn.vkInvalidateMappedMemoryRanges(device, 1, &range);
     }
 
@@ -3060,9 +3248,12 @@ void GnDeviceVK::UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range)
 
     std::scoped_lock lock(impl_memory->mapping_lock);
 
-    // Non-host-coherent memory needs to be invalidated manually.
+    // Non-host-coherent memory needs to be flushed manually.
     if (!GnHasBit(impl_memory->memory_attribute, GnMemoryAttribute_HostCoherent)) {
-        VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
+        VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, non_coherent_atom_size,
+                                                         memory_range, impl_buffer->aligned_offset,
+                                                         impl_buffer->memory_requirements.size);
+
         fn.vkFlushMappedMemoryRanges(device, 1, &range);
     }
 
@@ -3098,10 +3289,15 @@ GnResult GnDeviceVK::WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memo
             impl_memory->mapped_address = mapped_address;
     }
 
-    VkMappedMemoryRange range = GnConvertMemoryRange(impl_memory->memory, memory_range, impl_buffer->aligned_offset, impl_buffer->memory_requirements.size);
+    VkMappedMemoryRange range;
+    
+    if (is_non_host_coherent) {
+        range = GnConvertMemoryRange(impl_memory->memory, non_coherent_atom_size,
+                                     memory_range, impl_buffer->aligned_offset,
+                                     impl_buffer->memory_requirements.size);
 
-    if (is_non_host_coherent)
         fn.vkInvalidateMappedMemoryRanges(device, 1, &range);
+    }
 
     GnDeviceSize offset = impl_buffer->aligned_offset + memory_range->offset;
     std::memcpy(reinterpret_cast<std::byte*>(mapped_address) + offset, data, memory_range->size);
@@ -3673,6 +3869,7 @@ GnCommandPoolVK::GnCommandPoolVK(GnDeviceVK* impl_device, uint32_t max_command_l
 GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_list,
                                              VkCommandBuffer        cmd_buf,
                                              uint32_t&              global_descriptor_write_mask,
+                                             VkDescriptorSet&       global_descriptor_set,
                                              GnPipelineState&       pipeline_state,
                                              VkPipelineBindPoint    bind_point)
 {
@@ -3713,9 +3910,10 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
         if (global_descriptor_write_mask != 0) {
             GnSmallVector<VkDescriptorBufferInfo, 32> buffer_descriptors;
             GnSmallVector<VkWriteDescriptorSet, 32> write_descriptors;
+            uint32_t num_global_descriptors = pipeline_layout->num_resources;
 
             // TODO(native-m): Should allocation error be handled?
-            if (!(write_descriptors.reserve(pipeline_layout->num_resources) && buffer_descriptors.reserve(pipeline_layout->num_resources)))
+            if (!(write_descriptors.reserve(num_global_descriptors) && buffer_descriptors.reserve(num_global_descriptors)))
                 GN_ASSERT(false && "Cannot allocate memory");
 
             GnCommandPoolVK* impl_cmd_pool = impl_cmd_list->parent_cmd_pool;
@@ -3723,7 +3921,8 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
 
             GN_ASSERT(descriptor_set != nullptr && "Cannot allocate descriptor set for global resource.");
 
-            for (uint32_t i = 0; i < 32; i++) {
+
+            for (uint32_t i = 0; i < 32 && num_global_descriptors != 0; i++) {
                 const uint32_t write_mask = 1 << i;
 
                 if (!GnContainsBit(global_descriptor_write_mask, write_mask))
@@ -3735,28 +3934,25 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
                 buffer_descriptor->offset = 0;
                 buffer_descriptor->range = VK_WHOLE_SIZE;
 
-                VkWriteDescriptorSet write_descriptor;
-                write_descriptor.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write_descriptor.pNext = nullptr;
-                write_descriptor.dstSet = descriptor_set;
-                write_descriptor.dstBinding = i;
-                write_descriptor.dstArrayElement = 0;
-                write_descriptor.descriptorCount = 1;
-                write_descriptor.pImageInfo = nullptr;
-                write_descriptor.pBufferInfo = buffer_descriptor;
-                write_descriptor.pTexelBufferView = nullptr;
+                auto write_descriptor = write_descriptors.emplace_back_ptr();
+                write_descriptor->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write_descriptor->pNext = nullptr;
+                write_descriptor->dstSet = descriptor_set;
+                write_descriptor->dstBinding = i;
+                write_descriptor->dstArrayElement = 0;
+                write_descriptor->descriptorCount = 1;
+                write_descriptor->pImageInfo = nullptr;
+                write_descriptor->pBufferInfo = buffer_descriptor;
+                write_descriptor->pTexelBufferView = nullptr;
+                write_descriptor->descriptorType = GnContainsBit(pipeline_state.global_buffers_type_bits, write_mask) ?
+                    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC :
+                    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 
-                if (GnContainsBit(pipeline_state.global_buffers_type_bits, write_mask))
-                    write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-                else
-                    write_descriptor.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-
-                // TODO(native-m): Replace with emplace_back
-                write_descriptors.push_back(write_descriptor);
+                num_global_descriptors--;
             }
 
             impl_cmd_list->fn.vkUpdateDescriptorSets(impl_cmd_pool->parent_device->device, (uint32_t)write_descriptors.size, write_descriptors.storage, 0, nullptr);
-            impl_cmd_list->current_descriptor_set = descriptor_set;
+            global_descriptor_set = descriptor_set;
         }
 
         pipeline_state.global_buffers_upd_mask = 0;
@@ -3765,7 +3961,7 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
     if (should_write_global_descriptors || updated_offset_mask != 0) {
         pipeline_state.global_buffer_offsets_upd_mask = 0;
         impl_cmd_list->cmd_bind_descriptor_sets(cmd_buf, bind_point, vk_pipeline_layout, pipeline_layout->num_resource_tables,
-                                                1, &impl_cmd_list->current_descriptor_set, pipeline_layout->num_resources,
+                                                1, &global_descriptor_set, pipeline_layout->num_resources,
                                                 pipeline_state.global_buffer_offsets);
     }
 }
@@ -3782,7 +3978,11 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
 
     // Update graphics resource binding
     if (state.update_flags.graphics_resource_binding)
-        GnFlushResourceBindingVK(impl_cmd_list, cmd_buf, impl_cmd_list->graphics_descriptor_write_mask, impl_cmd_list->state.graphics, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        GnFlushResourceBindingVK(impl_cmd_list, cmd_buf,
+                                 impl_cmd_list->graphics_descriptor_write_mask,
+                                 impl_cmd_list->current_graphics_descriptor_set,
+                                 impl_cmd_list->state.graphics,
+                                 VK_PIPELINE_BIND_POINT_GRAPHICS);
 
     // Update graphics shader constants
     if (state.update_flags.graphics_shader_constants) {
@@ -3798,10 +3998,17 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
     }
 
     // Update index buffer
-    if (state.update_flags.index_buffer)
-        impl_cmd_list->cmd_bind_index_buffer(cmd_buf, GN_TO_VULKAN(GnBuffer, state.index_buffer)->buffer,
-                                             state.index_buffer_offset,
-                                             VK_INDEX_TYPE_UINT32);
+    if (state.update_flags.index_buffer) {
+        VkIndexType type{};
+
+        switch (state.index_format) {
+            case GnIndexFormat_Uint16:  type = VK_INDEX_TYPE_UINT16;
+            case GnIndexFormat_Uint32:  type = VK_INDEX_TYPE_UINT32;
+            default:                    GN_UNREACHABLE();
+        }
+
+        impl_cmd_list->cmd_bind_index_buffer(cmd_buf, GN_TO_VULKAN(GnBuffer, state.index_buffer)->buffer, state.index_buffer_offset, type);
+    }
 
     // Update vertex buffer
     if (state.update_flags.vertex_buffers) {
@@ -3812,9 +4019,7 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
         for (uint32_t i = 0; i < count; i++)
             vtx_buffers[i] = GN_TO_VULKAN(GnBuffer, state.vertex_buffers[update_range.first + i])->buffer;
 
-        impl_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers,
-                                               &state.vertex_buffer_offsets[update_range.first]);
-
+        impl_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers, &state.vertex_buffer_offsets[update_range.first]);
         state.vertex_buffer_upd_range.Flush();
     }
 
@@ -3828,10 +4033,22 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
 
     // Update viewports
     if (state.update_flags.viewports) {
-        // TODO: Allow negative viewport with VK_KHR_maintenance1
         const uint32_t first = state.viewport_upd_range.first;
         const uint32_t count = state.viewport_upd_range.last - first;
-        impl_cmd_list->cmd_set_viewport(cmd_buf, first, count, (const VkViewport*)&state.viewports[first]);
+        VkViewport viewports[16];
+
+        for (uint32_t i = 0; i < count; i++) {
+            const auto& viewport = state.viewports[i + first];
+            auto& vk_viewport = viewports[i];
+            vk_viewport.x = viewport.x;
+            vk_viewport.y = viewport.y + viewport.height;
+            vk_viewport.width = viewport.width;
+            vk_viewport.height = -viewport.height;
+            vk_viewport.minDepth = viewport.min_depth;
+            vk_viewport.maxDepth = viewport.max_depth;
+        }
+
+        impl_cmd_list->cmd_set_viewport(cmd_buf, first, count, viewports);
         state.viewport_upd_range.Flush();
     }
 
@@ -3856,7 +4073,11 @@ GN_SAFEBUFFERS void GnComputeStateFlusherVK(GnCommandList command_list) noexcept
         impl_cmd_list->cmd_bind_pipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, GN_TO_VULKAN(GnPipeline, state.compute.pipeline)->pipeline);
 
     if (state.update_flags.compute_resource_binding)
-        GnFlushResourceBindingVK(impl_cmd_list, cmd_buf, impl_cmd_list->compute_descriptor_write_mask, impl_cmd_list->state.compute, VK_PIPELINE_BIND_POINT_COMPUTE);
+        GnFlushResourceBindingVK(impl_cmd_list, cmd_buf,
+                                 impl_cmd_list->compute_descriptor_write_mask,
+                                 impl_cmd_list->current_compute_descriptor_set,
+                                 impl_cmd_list->state.compute,
+                                 VK_PIPELINE_BIND_POINT_COMPUTE);
 
     if (state.update_flags.compute_shader_constants) {
         GnPipelineLayoutVK* impl_pipeline_layout = GN_TO_VULKAN(GnPipelineLayout, state.compute.pipeline_layout);
@@ -3913,9 +4134,6 @@ GnResult GnCommandListVK::Begin(const GnCommandListBeginDesc* desc) noexcept
 
 void GnCommandListVK::BeginRenderPass(GnRenderPass render_pass) noexcept
 {
-    // When the render pass started, force flush graphics resource binding.
-    state.update_flags.graphics_resource_binding = true;
-
     VkRenderPassBeginInfo rp_begin_info;
     rp_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rp_begin_info.pNext = nullptr;
@@ -3930,8 +4148,6 @@ void GnCommandListVK::BeginRenderPass(GnRenderPass render_pass) noexcept
 
 void GnCommandListVK::EndRenderPass() noexcept
 {
-    // When the render pass ended, force flush compute resource binding.
-    state.update_flags.compute_resource_binding = false;
     fn.vkCmdEndRenderPass(static_cast<VkCommandBuffer>(cmd_private_data));
 }
 

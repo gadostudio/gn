@@ -439,11 +439,11 @@ typedef struct
 
 typedef struct
 {
-    uint32_t            width;
-    uint32_t            height;
-    uint32_t            max_buffers;
-    uint32_t            min_buffers;
-    bool                immediate_presentable;
+    uint32_t    width;
+    uint32_t    height;
+    uint32_t    max_buffers;
+    uint32_t    min_buffers;
+    GnBool      immediate_presentable;
 } GnSurfaceProperties;
 
 typedef void (*GnGetSurfaceFormatCallbackFn)(void* userdata, GnFormat format);
@@ -849,8 +849,8 @@ typedef enum
 typedef enum
 {
     GnPrimitiveRestart_Disable,
-    GnPrimitiveRestart_0xFFFF,
-    GnPrimitiveRestart_0xFFFFFFFF,
+    GnPrimitiveRestart_Uint16Max,
+    GnPrimitiveRestart_Uint32Max,
 } GnPrimitiveRestart;
 
 typedef enum
@@ -977,13 +977,13 @@ typedef struct
     const GnVertexInputSlotDesc*    input_slots;
     uint32_t                        num_attributes;
     const GnVertexAttributeDesc*    attribute;
-} GnPipelineVertexInputDesc;
+} GnVertexInputStateDesc;
 
 typedef struct
 {
     GnPrimitiveTopology topology;
     GnPrimitiveRestart  primitive_restart;
-} GnPipelineInputAssemblyDesc;
+} GnInputAssemblyStateDesc;
 
 typedef struct
 {
@@ -994,14 +994,22 @@ typedef struct
     int32_t         depth_bias;
     float           depth_bias_clamp;
     float           depth_bias_slope_scale;
-} GnPipelineRasterizationStateDesc;
+} GnRasterizationStateDesc;
 
 typedef struct
 {
     GnSampleCount   num_samples;
     uint32_t        sample_mask;
     GnBool          alpha_to_coverage;
-} GnPipelineMultisampleDesc;
+} GnMultisampleStateDesc;
+
+typedef struct
+{
+    uint32_t    num_color_attachments;
+    GnFormat*   color_attachment_formats;
+    uint32_t    resolve_attachment_mask;
+    GnFormat    depth_stencil_attachment_format;
+} GnFragmentInterfaceStateDesc;
 
 typedef struct
 {
@@ -1021,7 +1029,7 @@ typedef struct
     uint32_t            stencil_write_mask;
     GnStencilFaceDesc   front;
     GnStencilFaceDesc   back;
-} GnPipelineDepthStencilStateDesc;
+} GnDepthStencilStateDesc;
 
 typedef struct
 {
@@ -1038,22 +1046,23 @@ typedef struct
 typedef struct
 {
     GnBool                              independent_blend;
-    uint32_t                            num_color_attachments;
-    GnColorAttachmentBlendStateDesc*    color_attachments;
-} GnPipelineBlendStateDesc;
+    uint32_t                            num_blend_states;
+    GnColorAttachmentBlendStateDesc*    blend_states;
+} GnBlendStateDesc;
 
 typedef struct
 {
-    const GnShaderBytecode*                 vs;
-    const GnShaderBytecode*                 fs;
-    const GnPipelineVertexInputDesc*        vertex_input;
-    const GnPipelineInputAssemblyDesc*      input_assembly;
-    const GnPipelineRasterizationStateDesc* rasterization;
-    const GnPipelineMultisampleDesc*        multisample;
-    const GnPipelineDepthStencilStateDesc*  depth_stencil;
-    const GnPipelineBlendStateDesc*         blend;
-    uint32_t                                num_viewports;
-    GnPipelineLayout                        layout;
+    const GnShaderBytecode*             vs;
+    const GnShaderBytecode*             fs;
+    const GnVertexInputStateDesc*       vertex_input;
+    const GnInputAssemblyStateDesc*     input_assembly;
+    const GnRasterizationStateDesc*     rasterization;
+    const GnMultisampleStateDesc*       multisample;
+    const GnFragmentInterfaceStateDesc* fragment_interface;
+    const GnDepthStencilStateDesc*      depth_stencil;
+    const GnBlendStateDesc*             blend;
+    uint32_t                            num_viewports;
+    GnPipelineLayout                    layout;
 } GnGraphicsPipelineDesc;
 
 typedef struct
@@ -1067,14 +1076,14 @@ typedef struct
     GnPipelineStreamTokenType type;
     union
     {
-        GnShaderBytecode                    shader;
-        GnVertexAttributeDesc               vertex_attribute;
-        GnPipelineInputAssemblyDesc         input_assembly;
-        GnPipelineRasterizationStateDesc    rasterization;
-        GnPipelineDepthStencilStateDesc     depth_stencil;
-        GnPipelineMultisampleDesc           multisample;
-        GnColorAttachmentBlendStateDesc     attachment_blend;
-        GnPipelineLayout                    layout;
+        GnShaderBytecode                shader;
+        GnVertexAttributeDesc           vertex_attribute;
+        GnInputAssemblyStateDesc        input_assembly;
+        GnRasterizationStateDesc        rasterization;
+        GnDepthStencilStateDesc         depth_stencil;
+        GnMultisampleStateDesc          multisample;
+        GnColorAttachmentBlendStateDesc attachment_blend;
+        GnPipelineLayout                layout;
     } token;
 } GnPipelineStreamToken;
 
@@ -1082,7 +1091,7 @@ typedef struct
 {
     size_t      stream_size;
     const void* stream_data;
-    bool        tight_stream;
+    GnBool      tight_stream;
 } GnPipelineStreamDesc;
 
 GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GnPipeline* graphics_pipeline);
@@ -1172,6 +1181,12 @@ GnResult GnEndCommandList(GnCommandList command_list);
 GnBool GnIsRecordingCommandList(GnCommandList command_list);
 GnBool GnIsInsideRenderPass(GnCommandList command_list);
 
+typedef enum
+{
+    GnIndexFormat_Uint16,
+    GnIndexFormat_Uint32,
+} GnIndexFormat;
+
 typedef struct
 {
     float x;
@@ -1228,7 +1243,7 @@ void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset
 void GnCmdSetGraphicsShaderConstantI(GnCommandList command_list, uint32_t slot, int32_t value);
 void GnCmdSetGraphicsShaderConstantU(GnCommandList command_list, uint32_t slot, uint32_t value);
 void GnCmdSetGraphicsShaderConstantF(GnCommandList command_list, uint32_t slot, float value);
-void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset);
+void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset, GnIndexFormat index_format);
 void GnCmdSetVertexBuffer(GnCommandList command_list, uint32_t slot, GnBuffer vertex_buffer, GnDeviceSize offset);
 void GnCmdSetVertexBuffers(GnCommandList command_list, uint32_t first_slot, uint32_t num_vertex_buffers, const GnBuffer* vertex_buffer, const GnDeviceSize* offsets);
 void GnCmdSetViewport(GnCommandList command_list, uint32_t slot, float x, float y, float width, float height, float min_depth, float max_depth);

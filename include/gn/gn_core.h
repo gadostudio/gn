@@ -157,7 +157,7 @@ struct GnPool
         // One extra storage is required for the pool header. It may waste space a bit if the object is too large.
         std::size_t size = alloc_size * (objects_per_block + 1);
         uint8_t* pool = (uint8_t*)::operator new[](size, std::align_val_t{ alloc_alignment }, std::nothrow);
-
+        
         if (pool == nullptr)
             return false;
 
@@ -216,22 +216,22 @@ struct GnVector
             ::operator delete[](first_ptr, std::align_val_t{ alignof(T) }, std::nothrow);
     }
 
-    T& operator[](size_t n) noexcept
+    inline T& operator[](size_t n) noexcept
     {
         return first_ptr[n];
     }
 
-    const T& operator[](size_t n) const noexcept
+    inline const T& operator[](size_t n) const noexcept
     {
         return first_ptr[n];
     }
 
-    T* data() noexcept
+    inline T* data() noexcept
     {
         return first_ptr;
     }
 
-    const T* data() const noexcept
+    inline const T* data() const noexcept
     {
         return first_ptr;
     }
@@ -353,17 +353,17 @@ struct GnSmallVector
         return *this;
     }
 
-    PODType& operator[](size_t n) noexcept
+    inline PODType& operator[](size_t n) noexcept
     {
         return storage[n];
     }
 
-    const PODType& operator[](size_t n) const noexcept
+    inline const PODType& operator[](size_t n) const noexcept
     {
         return storage[n];
     }
 
-    bool push_back(const PODType& value) noexcept
+    inline bool push_back(const PODType& value) noexcept
     {
         if (size == capacity)
             if (!reserve(capacity + (capacity / 2)))
@@ -397,7 +397,7 @@ struct GnSmallVector
         return ptr;
     }
 
-    bool resize(size_t n) noexcept
+    inline bool resize(size_t n) noexcept
     {
         size = n;
         return reserve(n);
@@ -448,7 +448,7 @@ struct GnSmallQueue
             ::operator delete[](data, std::align_val_t{ alignof(PODType) }, std::nothrow);
     }
 
-    bool push(const PODType& value) noexcept
+    inline bool push(const PODType& value) noexcept
     {
         if (num_items_written() == capacity)
             if (!reserve(capacity + (capacity / 2)))
@@ -472,7 +472,7 @@ struct GnSmallQueue
         return { std::ref(*ptr) };
     }
 
-    PODType* pop() noexcept
+    inline PODType* pop() noexcept
     {
         if (write_ptr == read_ptr)
             return nullptr;
@@ -480,34 +480,34 @@ struct GnSmallQueue
         return read_ptr++;
     }
 
-    PODType* pop_all() noexcept
+    inline PODType* pop_all() noexcept
     {
         PODType* tmp = read_ptr;
         read_ptr = write_ptr;
         return tmp;
     }
 
-    size_t size() const noexcept
+    inline size_t size() const noexcept
     {
         return write_ptr - read_ptr;
     }
 
-    size_t num_items_written() const noexcept
+    inline size_t num_items_written() const noexcept
     {
         return write_ptr - data;
     }
 
-    size_t num_items_read() const noexcept
+    inline size_t num_items_read() const noexcept
     {
         return read_ptr - data;
     }
 
-    bool empty() const noexcept
+    inline bool empty() const noexcept
     {
         return size() == 0;
     }
 
-    void clear() noexcept
+    inline void clear() noexcept
     {
         write_ptr = data;
         read_ptr = data;
@@ -571,6 +571,12 @@ struct GnTrackedResource
         prev = nullptr;
         next = nullptr;
     }
+};
+
+template<typename Hash, typename T>
+struct GnCachedItem
+{
+
 };
 
 struct GnUpdateRange

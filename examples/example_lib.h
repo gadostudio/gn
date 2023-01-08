@@ -151,15 +151,16 @@ struct GnExampleApp
 
         adapter = GnGetDefaultAdapter(instance);
 
-        GnEnumerateAdapters(instance,
-                            [this](GnAdapter candidate_adapter) {
-                                GnAdapterProperties properties;
-                                GnGetAdapterProperties(candidate_adapter, &properties);
+        GnEnumerateAdapters(
+            instance,
+            [this](GnAdapter candidate_adapter) {
+                GnAdapterProperties properties;
+                GnGetAdapterProperties(candidate_adapter, &properties);
 
-                                if (properties.type == GnAdapterType_Integrated) {
-                                    adapter = candidate_adapter;
-                                }
-                            });
+                if (properties.type == GnAdapterType_Integrated) {
+                    adapter = candidate_adapter;
+                }
+            });
 
         if (!window->Init(window_width, window_height)) {
             EX_ERROR("Cannot initialize window");
@@ -210,17 +211,18 @@ struct GnExampleApp
         queue = GnGetDeviceQueue(device, direct_queue_group, 0);
 
         // Find BGRA8Unorm/RGBA8Unorm surface format
-        GnEnumerateSurfaceFormats(adapter, surface,
-                                  [this](GnFormat format) {
-                                      switch (format) {
-                                          case GnFormat_BGRA8Unorm:
-                                          case GnFormat_RGBA8Unorm:
-                                              surface_format = format;
-                                              break;
-                                          default:
-                                              break;
-                                      }
-                                  });
+        GnEnumerateSurfaceFormats(
+            adapter, surface,
+            [this](GnFormat format) {
+                switch (format) {
+                    case GnFormat_BGRA8Unorm:
+                    case GnFormat_RGBA8Unorm:
+                        surface_format = format;
+                        break;
+                    default:
+                        break;
+                }
+            });
 
         GnSwapchainDesc swapchain_desc{};
         swapchain_desc.surface = surface;

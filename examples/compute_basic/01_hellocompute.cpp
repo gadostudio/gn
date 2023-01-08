@@ -64,7 +64,7 @@ int main()
     GnPipeline compute_pipeline;
     EX_THROW_IF_FAILED(GnCreateComputePipeline(device, &pipeline_desc, &compute_pipeline));
 
-    // --- Allocate input and output buffer ---
+    // --- Create input and output buffer ---
     GnBufferDesc buffer_desc{};
     buffer_desc.size = sizeof(buffer_data);
     buffer_desc.usage = GnBufferUsage_Storage;
@@ -75,6 +75,7 @@ int main()
     GnBuffer dst_buffer;
     EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &dst_buffer));
 
+    // --- Allocate memory for input and output buffer ---
     GnMemoryRequirements requirements{};
     GnGetBufferMemoryRequirements(device, src_buffer, &requirements);
 
@@ -151,12 +152,13 @@ int main()
     GnCmdSetComputePipeline(command_list, compute_pipeline);
     GnCmdSetComputePipelineLayout(command_list, pipeline_layout);
     
-    // Bind resource
+    // Bind resources
     GnCmdSetComputeStorageBuffer(command_list, 0, src_buffer, 0);
     GnCmdSetComputeStorageBuffer(command_list, 1, dst_buffer, 0);
 
     GnCmdDispatch(command_list, 8, 1, 1);
 
+    // Insert a barrier to make sure everything is done before we read dst_buffer.
     buffer_barrier[0].buffer = dst_buffer;
     buffer_barrier[0].offset = 0;
     buffer_barrier[0].size = GN_WHOLE_SIZE;
@@ -169,11 +171,13 @@ int main()
 
     GnEndCommandList(command_list);
 
+    // Submit!
     GnEnqueueCommandLists(queue, 1, &command_list);
     GnFlushQueueAndWait(queue);
 
     std::cout << "Result:" << std::endl;
 
+    // Print result
     GnMapBuffer(device, dst_buffer, nullptr, (void**)&mapped_buffer);
 
     for (uint32_t i = 0; i < 8; i++)
@@ -181,9 +185,7 @@ int main()
 
     GnUnmapBuffer(device, dst_buffer, nullptr);
 
-    //GnBuffer dst_buffer;
-    //EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &dst_buffer));
-
+    // Cleanup
     GnDestroyCommandLists(device, command_pool, 1, &command_list);
     GnDestroyCommandPool(device, command_pool);
     GnDestroyBuffer(device, dst_buffer);

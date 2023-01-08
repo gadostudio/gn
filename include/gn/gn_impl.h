@@ -1,10 +1,14 @@
 #ifndef GN_IMPL_H_
 #define GN_IMPL_H_
 
+#ifdef _MSC_VER
+#pragma warning(disable : )
+#endif
+
 #define GN_MAX_QUEUE 4
 
-// The maximum number of bound resources of each type on resource table here to prevent resource table abuse
-// We may change this number in the future
+// The maximum number of bound resources for each resource type on resource table currently is hardcoded.
+// We may change this number in the future.
 #define GN_MAX_RESOURCE_TABLE_SAMPLERS 2048u
 #define GN_MAX_RESOURCE_TABLE_DESCRIPTORS 1048576u
 
@@ -162,7 +166,8 @@ struct GnPipelineLayout_t
 
 struct GnPipeline_t
 {
-    GnPipelineType type;
+    GnPipelineType  type;
+    uint32_t        num_viewports;
 };
 
 struct GnResourceTablePool_t
@@ -202,6 +207,7 @@ struct GnCommandListState
     // Input-Assembler state
     GnBuffer            index_buffer;
     GnDeviceSize        index_buffer_offset;
+    GnIndexFormat       index_format;
     GnBuffer            vertex_buffers[32];
     GnDeviceSize        vertex_buffer_offsets[32];
     GnUpdateRange       vertex_buffer_upd_range;
@@ -242,12 +248,12 @@ struct GnCommandListState
     
     inline bool graphics_state_updated() const noexcept
     {
-        return (update_flags.u32 & GraphicsStateUpdate) > 0;
+        return (update_flags.u32 & GraphicsStateUpdate) != 0;
     }
 
     inline bool compute_state_updated() const noexcept
     {
-        return (update_flags.u32 & ComputeStateUpdate) > 0;
+        return (update_flags.u32 & ComputeStateUpdate) != 0;
     }
 };
 
@@ -515,9 +521,8 @@ void GnGetAdapterQueueGroupProperties(GnAdapter adapter, uint32_t num_queues, Gn
 
 void GnEnumerateAdapterQueueGroupProperties(GnAdapter adapter, void* userdata, GnGetAdapterQueueGroupPropertiesCallbackFn callback_fn)
 {
-    for (uint32_t i = 0; i < adapter->num_queue_groups; i++) {
+    for (uint32_t i = 0; i < adapter->num_queue_groups; i++)
         callback_fn(userdata, &adapter->queue_group_properties[i]);
-    }
 }
 
 void GnGetAdapterMemoryProperties(GnAdapter adapter, GnMemoryProperties* memory_properties)
@@ -596,11 +601,9 @@ GnBool GnIsSurfacePresentationSupported(GnAdapter adapter, uint32_t queue_group_
 
 void GnEnumeratePresentationQueueGroup(GnAdapter adapter, GnSurface surface, void* userdata, GnGetAdapterQueueGroupPropertiesCallbackFn callback_fn)
 {
-    for (uint32_t i = 0; i < adapter->num_queue_groups; i++) {
-        if (adapter->IsSurfacePresentationSupported(i, surface)) {
+    for (uint32_t i = 0; i < adapter->num_queue_groups; i++)
+        if (adapter->IsSurfacePresentationSupported(i, surface))
             callback_fn(userdata, &adapter->queue_group_properties[i]);
-        }
-    }
 }
 
 void GnGetSurfaceProperties(GnAdapter adapter, GnSurface surface, GnSurfaceProperties* properties)
@@ -622,9 +625,8 @@ GnResult GnGetSurfaceFormats(GnAdapter adapter, GnSurface surface, uint32_t num_
 
 GnResult GnEnumerateSurfaceFormats(GnAdapter adapter, GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn)
 {
-    if (adapter == nullptr || surface == nullptr || callback_fn == nullptr) {
+    if (adapter == nullptr || surface == nullptr || callback_fn == nullptr)
         return GnError_InvalidArgs;
-    }
 
     return adapter->GnEnumerateSurfaceFormats(surface, userdata, callback_fn);
 }
@@ -646,9 +648,8 @@ bool GnValidateCreateDeviceParam(GnAdapter adapter, const GnDeviceDesc* desc, Gn
 
         uint32_t group_index[GN_MAX_QUEUE];
 
-        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++) {
+        for (uint32_t i = 0; i < desc->num_enabled_queue_groups; i++)
             group_index[i] = desc->queue_group_descs[i].index;
-        }
 
         // Check if each queue group index is valid
         bool has_invalid_index = false;
@@ -722,13 +723,11 @@ void GnDestroyDevice(GnDevice device)
 
 GnQueue GnGetDeviceQueue(GnDevice device, uint32_t queue_group_index, uint32_t queue_index)
 {
-    if (queue_group_index > device->num_enabled_queue_groups - 1) {
+    if (queue_group_index > device->num_enabled_queue_groups - 1)
         return nullptr;
-    }
 
-    if (queue_index > device->num_enabled_queues[queue_group_index]) {
+    if (queue_index > device->num_enabled_queues[queue_group_index])
         return nullptr;
-    }
 
     return device->GetQueue(queue_group_index, queue_index);
 }
@@ -982,11 +981,42 @@ void GnDestroyPipelineLayout(GnDevice device, GnPipelineLayout pipeline_layout)
     device->DestroyPipelineLayout(pipeline_layout);
 }
 
-// -- [GnCommandPool] --
-
 GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GnPipeline* graphics_pipeline)
 {
-    return GnResult();
+    // We can't use desc directly because there are some conditions that requires changing the desc at the creation time.
+    GnGraphicsPipelineDesc tmp_desc = *desc;
+    GnMultisampleStateDesc default_multisample_desc;
+
+    if (tmp_desc.multisample == nullptr) {
+        default_multisample_desc.num_samples = GnSampleCount_X1;
+        default_multisample_desc.sample_mask = 0;
+        default_multisample_desc.alpha_to_coverage = GN_FALSE;
+
+        tmp_desc.multisample = &default_multisample_desc;
+    }
+
+    GnColorAttachmentBlendStateDesc default_color_blend_state;
+    GnBlendStateDesc default_blend_state;
+
+    // When blend is NULL, we provide the default values for the color blend state
+    if (tmp_desc.blend == nullptr) {
+        default_color_blend_state.blend_enable = GN_FALSE;
+        default_color_blend_state.src_color_blend_factor = GnBlendFactor_One;
+        default_color_blend_state.dst_color_blend_factor = GnBlendFactor_Zero;
+        default_color_blend_state.color_blend_op = GnBlendOp_Add;
+        default_color_blend_state.src_alpha_blend_factor = GnBlendFactor_One;
+        default_color_blend_state.dst_alpha_blend_factor = GnBlendFactor_Zero;
+        default_color_blend_state.alpha_blend_op = GnBlendOp_Add;
+        default_color_blend_state.color_write_mask = GnColorComponent_All;
+
+        default_blend_state.independent_blend = false;
+        default_blend_state.num_blend_states = 1;
+        default_blend_state.blend_states = &default_color_blend_state;
+
+        tmp_desc.blend = &default_blend_state;
+    }
+
+    return device->CreateGraphicsPipeline(&tmp_desc, graphics_pipeline);
 }
 
 GnResult GnCreateComputePipeline(GnDevice device, const GnComputePipelineDesc* desc, GnPipeline* compute_pipeline)
@@ -1145,12 +1175,13 @@ void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset
     command_list->state.update_flags.graphics_shader_constants = true;
 }
 
-void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset)
+void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset, GnIndexFormat index_format)
 {
     // Don't update if it's the same
     if (index_buffer == command_list->state.index_buffer || offset == command_list->state.index_buffer_offset) return;
     command_list->state.index_buffer = index_buffer;
     command_list->state.index_buffer_offset = offset;
+    command_list->state.index_format = index_format;
     command_list->state.update_flags.index_buffer = true;
 }
 
