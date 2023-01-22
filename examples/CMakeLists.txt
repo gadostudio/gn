@@ -12,7 +12,6 @@ function(gn_add_compute_example _NAME _SOURCE)
     target_compile_definitions(${_NAME} PUBLIC GN_EXAMPLE_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endfunction()
 
-gn_add_graphics_example(gn-example-helloworld 01_helloworld.cpp)
-gn_add_graphics_example(gn-example-hellotriangle 02_hellotriangle.cpp)
-
-gn_add_compute_example(gn_example_compute_basic_hellocompute compute_basic/01_hellocompute.cpp)
+gn_add_graphics_example(gn_example_hello_world basic/hello_world/hello_world.cpp)
+gn_add_graphics_example(gn_example_hello_triangle basic/hello_triangle/hello_triangle.cpp)
+gn_add_compute_example(gn_example_hello_compute compute_basic/hello_compute/hello_compute.cpp)

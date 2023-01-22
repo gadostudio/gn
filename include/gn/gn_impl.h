@@ -98,9 +98,10 @@ struct GnDevice_t
 
 struct GnSwapchain_t
 {
-    GnSwapchainDesc swapchain_desc;
+    GnSwapchainDesc swapchain_desc{};
 
     virtual ~GnSwapchain_t() { }
+    virtual GnResult Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept = 0;
 };
 
 struct GnQueue_t
@@ -747,6 +748,11 @@ GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GnSwapc
 void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain)
 {
     device->DestroySwapchain(swapchain);
+}
+
+GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync)
+{
+    return swapchain->Update(format, width, height, num_buffers, vsync);
 }
 
 // -- [GnQueue] --
@@ -1404,8 +1410,18 @@ void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTextu
 
 void GnCmdBarrier(GnCommandList command_list, uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers)
 {
-    if (num_buffer_barriers > 0 && num_texture_barriers > 0) return; // Early exit
-    command_list->Barrier(num_buffer_barriers, buffer_barriers, num_texture_barriers, texture_barriers);
+    if (num_buffer_barriers > 0 && num_texture_barriers > 0)
+        command_list->Barrier(num_buffer_barriers, buffer_barriers, num_texture_barriers, texture_barriers);
+}
+
+void GnCmdBufferBarrier(GnCommandList command_list, uint32_t num_barriers, const GnBufferBarrier* barriers)
+{
+    if (num_barriers > 0) command_list->Barrier(num_barriers, barriers, 0, nullptr);
+}
+
+void GnCmdTextureBarrier(GnCommandList command_list, uint32_t num_barriers, const GnTextureBarrier* barriers)
+{
+    if (num_barriers > 0) command_list->Barrier(0, nullptr, num_barriers, barriers);
 }
 
 void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles)

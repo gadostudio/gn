@@ -19,7 +19,22 @@
 #define GN_ASSERT(x) assert(x)
 
 #define GN_CHECK(x) GN_DBG_ASSERT(x)
-#define GN_UNREACHABLE() GN_ASSERT(false && "Unreachable")
+
+#ifdef _MSC_VER
+#define GN_SAFEBUFFERS __declspec(safebuffers)
+#define GN_COMPILER_UNREACHABLE __assume(0)
+#else
+#define GN_SAFEBUFFERS
+#define GN_COMPILER_UNREACHABLE
+#endif
+
+#ifdef NDEBUG
+#define GN_UNREACHABLE() GN_COMPILER_UNREACHABLE
+#else
+#define GN_UNREACHABLE() \
+    GN_ASSERT(false && "Unreachable"); \
+    GN_COMPILER_UNREACHABLE
+#endif
 
 #if defined(_WIN32)
 #include <unknwn.h>
@@ -34,12 +49,6 @@
 #define GN_ALLOCA(size) _alloca(size)
 #else
 #define GN_ALLOCA(size) alloca(size)
-#endif
-
-#ifdef _MSC_VER
-#define GN_SAFEBUFFERS __declspec(safebuffers)
-#else
-#define GN_SAFEBUFFERS
 #endif
 
 #undef min
@@ -316,7 +325,7 @@ struct GnSmallVector
     size_t size = 0;
     size_t capacity = Size;
 
-    GnSmallVector() noexcept :
+    inline GnSmallVector() noexcept :
         storage(local_storage)
     {
     }
@@ -374,7 +383,7 @@ struct GnSmallVector
     }
 
     template<typename... Args>
-    std::optional<std::reference_wrapper<PODType>> emplace_back(Args&&... args) noexcept
+    inline std::optional<std::reference_wrapper<PODType>> emplace_back(Args&&... args) noexcept
     {
         if (size == capacity)
             if (!reserve(capacity + (capacity / 2)))
@@ -386,7 +395,7 @@ struct GnSmallVector
     }
 
     template<typename... Args>
-    PODType* emplace_back_ptr(Args&&... args) noexcept
+    inline PODType* emplace_back_ptr(Args&&... args) noexcept
     {
         if (size == capacity)
             if (!reserve(capacity + (capacity / 2)))
@@ -407,12 +416,11 @@ struct GnSmallVector
     {
         if (n > capacity) {
             PODType* new_storage = (PODType*)::operator new[](n * sizeof(PODType), std::align_val_t{ alignof(PODType) }, std::nothrow);
-            
-            //std::memset(new_storage, 0, n * sizeof(PODType));
 
             if (new_storage == nullptr)
                 return false;
 
+            std::memset(new_storage, 0, n * sizeof(PODType));
             std::memcpy(new_storage, storage, size * sizeof(PODType));
 
             if (storage != local_storage)

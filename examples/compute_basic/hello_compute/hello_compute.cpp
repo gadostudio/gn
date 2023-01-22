@@ -10,7 +10,7 @@ const std::array<float, 8> buffer_data = {
 int main()
 {
     // Load shader
-    auto compute_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/compute_basic/01_hellocompute.comp.spv");
+    auto compute_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/compute_basic/hello_compute/hello_compute.comp.spv");
     EX_THROW_IF(!compute_shader.has_value());
 
     std::cout << "Basic GPU Compute Shader Sample" << std::endl;
@@ -173,7 +173,7 @@ int main()
 
     // Submit!
     GnEnqueueCommandLists(queue, 1, &command_list);
-    GnFlushQueueAndWait(queue);
+    GnFlushQueueAndWait(queue); // Wait until the GPU finishes its job.
 
     std::cout << "Result:" << std::endl;
 

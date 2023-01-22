@@ -338,29 +338,31 @@ inline D3D12_RESOURCE_STATES GnConvertToD3D12ResourceStates(GnResourceAccessFlag
 
     D3D12_RESOURCE_STATES ret = D3D12_RESOURCE_STATE_COMMON;
 
-    // Convert depth-stencil attachment access flags to D3D12_RESOURCE_STATES equivalent
-    ret |= (D3D12_RESOURCE_STATES)(access >> 11) & d3d12_depth_states;
+    if ((access & GnResourceAccess_Present) == 0) {
+        // Convert depth-stencil attachment access flags to D3D12_RESOURCE_STATES equivalent
+        ret |= (D3D12_RESOURCE_STATES)(access >> 11) & d3d12_depth_states;
 
-    if (access & vertex_or_uniform_buffer_access)
-        ret |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+        if (access & vertex_or_uniform_buffer_access)
+            ret |= D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 
-    if (access & GnResourceAccess_IndexBuffer)
-        ret |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
+        if (access & GnResourceAccess_IndexBuffer)
+            ret |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
 
-    if (access & (GnResourceAccess_ColorAttachmentRead | GnResourceAccess_ColorAttachmentWrite))
-        ret |= D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (access & (GnResourceAccess_ColorAttachmentRead | GnResourceAccess_ColorAttachmentWrite))
+            ret |= D3D12_RESOURCE_STATE_RENDER_TARGET;
 
-    if (access & storage_access)
-        ret |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        if (access & storage_access)
+            ret |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
-    if (access & (GnResourceAccess_VSRead | GnResourceAccess_CSRead))
-        ret |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if (access & (GnResourceAccess_VSRead | GnResourceAccess_CSRead))
+            ret |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-    if (access & GnResourceAccess_FSRead)
-        ret |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        if (access & GnResourceAccess_FSRead)
+            ret |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    if (access & GnResourceAccess_IndirectBuffer)
-        ret |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        if (access & GnResourceAccess_IndirectBuffer)
+            ret |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    }
 
     return ret;
 }

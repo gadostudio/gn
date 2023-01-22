@@ -11,9 +11,13 @@ struct GnExampleWindow
     bool open = true;
 
     virtual ~GnExampleWindow() { }
-    virtual bool Init(uint32_t width, uint32_t height) = 0;
+    virtual bool InitWindow(uint32_t width, uint32_t height) = 0;
     virtual void ProcessEvent() = 0;
     virtual void* GetNativeHandle() const = 0;
+
+    virtual void OnResize(uint32_t width, uint32_t height)
+    {
+    }
 };
 
 #ifdef WIN32
@@ -22,13 +26,14 @@ struct GnExampleWindow
 struct GnExampleWindowWin32 : public GnExampleWindow
 {
     HWND hwnd = nullptr;
+    bool swapchain_ready = false;
     
     virtual ~GnExampleWindowWin32()
     {
         if (hwnd) DestroyWindow(hwnd);
     }
 
-    bool Init(uint32_t width, uint32_t height) override
+    bool InitWindow(uint32_t width, uint32_t height) override
     {
         HINSTANCE hinstance = (HINSTANCE)GetModuleHandle(nullptr);
 
@@ -50,12 +55,12 @@ struct GnExampleWindowWin32 : public GnExampleWindow
             return false;
         }
 
-        static constexpr DWORD style = WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_SIZEBOX);
+        static constexpr DWORD style = WS_OVERLAPPEDWINDOW;// &~(WS_MAXIMIZEBOX | WS_SIZEBOX);
 
         hwnd = CreateWindowEx(WS_EX_APPWINDOW, "gnsamples", "Gn Samples",
                               style, CW_USEDEFAULT, CW_USEDEFAULT,
                               width, height, nullptr, nullptr,
-                              hinstance, nullptr);
+                              hinstance, this);
 
         if (!hwnd) return false;
 
@@ -78,9 +83,8 @@ struct GnExampleWindowWin32 : public GnExampleWindow
         MSG msg;
 
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
+            if (msg.message == WM_QUIT)
                 open = false;
-            }
 
             TranslateMessage(&msg);
             DispatchMessage(&msg);
@@ -94,9 +98,21 @@ struct GnExampleWindowWin32 : public GnExampleWindow
 
     static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     {
+        if (msg == WM_NCCREATE) {
+            LPCREATESTRUCT create_struct = reinterpret_cast<LPCREATESTRUCT>(lparam);
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)create_struct->lpCreateParams);
+            return DefWindowProc(hwnd, msg, wparam, lparam);
+        }
+
+        GnExampleWindowWin32* window = reinterpret_cast<GnExampleWindowWin32*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+
         switch (msg) {
             case WM_CLOSE:
                 PostQuitMessage(0);
+                return 0;
+            case WM_SIZE:
+                if (window->swapchain_ready)
+                    window->OnResize(LOWORD(lparam), HIWORD(lparam));
                 return 0;
         }
 
@@ -105,13 +121,12 @@ struct GnExampleWindowWin32 : public GnExampleWindow
 };
 #endif
 
-struct GnExampleApp
+struct GnExampleApp : private GnExampleWindowWin32
 {
     static constexpr uint32_t window_width = 640;
     static constexpr uint32_t window_height = 480;
 
     static GnExampleApp* g_app;
-    std::unique_ptr<GnExampleWindow> window;
     GnInstance instance = nullptr;
     GnAdapter adapter = nullptr;
     GnDevice device = nullptr;
@@ -120,11 +135,11 @@ struct GnExampleApp
     GnSwapchain swapchain = nullptr;
 
     GnFormat surface_format{};
+    uint32_t num_swapchain_buffers = 2;
     int32_t direct_queue_group = -1;
     int32_t present_queue_group = -1;
 
-    GnExampleApp() :
-        window(std::make_unique<GnExampleWindowWin32>())
+    GnExampleApp()
     {
         g_app = this;
     }
@@ -162,14 +177,14 @@ struct GnExampleApp
                 }
             });
 
-        if (!window->Init(window_width, window_height)) {
+        if (!InitWindow(window_width, window_height)) {
             EX_ERROR("Cannot initialize window");
             return false;
         }
 
         GnSurfaceDesc desc{};
         desc.type = GnSurfaceType_Win32;
-        desc.hwnd = (HWND)window->GetNativeHandle();
+        desc.hwnd = (HWND)GetNativeHandle();
 
         if (GnCreateSurface(instance, &desc, &surface) != GnSuccess) {
             EX_ERROR("Cannot create surface");
@@ -226,24 +241,27 @@ struct GnExampleApp
 
         GnSwapchainDesc swapchain_desc{};
         swapchain_desc.surface = surface;
+        swapchain_desc.usage = GnTextureUsage_ColorAttachment;
         swapchain_desc.format = GnFormat_BGRA8Unorm;
         swapchain_desc.width = window_width;
         swapchain_desc.height = window_height;
-        swapchain_desc.num_buffers = 2;
-        swapchain_desc.vsync = true;
+        swapchain_desc.num_buffers = num_swapchain_buffers;
+        swapchain_desc.vsync = false;
 
         if (GnCreateSwapchain(device, &swapchain_desc, &swapchain)) {
             EX_ERROR("Cannot create swapchain");
             return false;
         }
 
+        swapchain_ready = true;
+
         return true;
     }
 
     int Run()
     {
-        while (window->open) {
-            window->ProcessEvent();
+        while (open) {
+            ProcessEvent();
             GnPresentSwapchain(queue, swapchain);
         }
 

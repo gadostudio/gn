@@ -37,7 +37,7 @@ TEST_CASE("Create device", "[device]")
         GnDestroyDevice(device);
     }
 
-    SECTION("Create device with zeros in desc")
+    SECTION("Create device with empty desc")
     {
         GnDeviceDesc desc{};
         GnDevice device;

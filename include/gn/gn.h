@@ -485,16 +485,18 @@ GnResult GnPresentSwapchain(GnQueue queue, GnSwapchain swapchain);
 
 typedef struct
 {
-    GnSurface   surface;
-    GnFormat    format;
-    uint32_t    width;
-    uint32_t    height;
-    uint32_t    num_buffers;
-    bool        vsync;
+    GnSurface           surface;
+    GnTextureUsageFlags usage;
+    GnFormat            format;
+    uint32_t            width;
+    uint32_t            height;
+    uint32_t            num_buffers;
+    GnBool              vsync;
 } GnSwapchainDesc;
 
 GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GnSwapchain* swapchain);
 void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain);
+GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync);
 
 typedef enum
 {
@@ -1165,7 +1167,30 @@ typedef uint32_t GnCommandListBeginFlags;
 
 typedef struct
 {
-    
+    float x;
+    float y;
+    float width;
+    float height;
+    float min_depth;
+    float max_depth;
+} GnViewport;
+
+typedef struct
+{
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} GnScissorRect;
+
+typedef struct
+{
+    GnRenderPass*           render_pass;
+    uint32_t                subpass;
+    uint32_t                num_viewports;
+    const GnViewport*       viewports;
+    uint32_t                num_scissors;
+    const GnScissorRect*    scissors;
 } GnCommandListInheritance;
 
 typedef struct
@@ -1189,21 +1214,36 @@ typedef enum
 
 typedef struct
 {
-    float x;
-    float y;
-    float width;
-    float height;
-    float min_depth;
-    float max_depth;
-} GnViewport;
+    GnDeviceSize src_offset;
+    GnDeviceSize dst_offset;
+    GnDeviceSize size;
+} GnBufferCopy;
 
 typedef struct
 {
-    uint32_t x;
-    uint32_t y;
-    uint32_t width;
-    uint32_t height;
-} GnScissorRect;
+    int32_t x;
+    int32_t y;
+    int32_t z;
+} GnOffset3;
+
+typedef struct
+{
+    int32_t width;
+    int32_t height;
+    int32_t depth;
+} GnExtent3;
+
+typedef struct
+{
+    GnOffset3 src_offset;
+    GnOffset3 dst_offset;
+    GnExtent3 extent;
+} GnTextureCopy;
+
+typedef struct
+{
+    
+} GnTextureBlit;
 
 typedef struct
 {
@@ -1275,13 +1315,17 @@ void GnCmdSetComputeShaderConstantF(GnCommandList command_list, uint32_t slot, f
 void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z);
 void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset);
 void GnCmdCopyBuffer(GnCommandList command_list, GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size);
-void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture);
-void GnCmdCopyBufferToTexture(GnCommandList command_list, GnBuffer src_buffer, GnTexture dst_texture);
-void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture, GnBuffer dst_buffer);
-void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture);
+void GnCmdCopyBufferRegions(GnCommandList command_list, GnBuffer src_buffer, GnBuffer dst_buffer, uint32_t num_regions, const GnBufferCopy* regions);
+void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access);
+void GnCmdCopyTextureRegions(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access, uint32_t num_regions, const GnTextureCopy* regions);
+void GnCmdCopyBufferToTexture(GnCommandList command_list, GnBuffer src_buffer, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access);
+void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnBuffer dst_buffer);
+void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access);
+void GnCmdBlitTextureRegions(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access, uint32_t region, const GnTextureBlit* regions);
+void GnCmdGenerateMipmap(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture);
+void GnCmdBarrier(GnCommandList command_list, uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers);
 void GnCmdBufferBarrier(GnCommandList command_list, uint32_t num_barriers, const GnBufferBarrier* barriers);
 void GnCmdTextureBarrier(GnCommandList command_list, uint32_t num_barriers, const GnTextureBarrier* barriers);
-void GnCmdBarrier(GnCommandList command_list, uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers);
 void GnCmdExecuteBundles(GnCommandList command_list, uint32_t num_bundles, const GnCommandList* bundles);
 
 // [HELPERS]
