@@ -317,23 +317,22 @@ struct GnVector
 };
 
 // Only use this for POD structs!!
-template<typename PODType, size_t Size, std::enable_if_t<std::is_pod_v<PODType>, bool> = true>
+template<typename T, size_t Size, std::enable_if_t<std::is_trivial_v<T>, bool> = true>
 struct GnSmallVector
 {
-    PODType local_storage[Size]{};
-    PODType* storage = nullptr;
+    T local_storage[Size]{};
+    T* storage = nullptr;
     size_t size = 0;
     size_t capacity = Size;
 
-    inline GnSmallVector() noexcept :
-        storage(local_storage)
+    inline GnSmallVector() noexcept : storage(local_storage)
     {
     }
 
     ~GnSmallVector()
     {
         if (storage != local_storage)
-            ::operator delete[](storage, std::align_val_t{alignof(PODType)}, std::nothrow);
+            ::operator delete[](storage, std::align_val_t{alignof(T)}, std::nothrow);
     }
 
     GnSmallVector& operator=(const GnSmallVector& other)
@@ -341,7 +340,7 @@ struct GnSmallVector
         if (other.storage != other.local_storage)
             reserve(other.size);
 
-        std::memcpy(storage, other.storage, other.size * sizeof(PODType));
+        std::memcpy(storage, other.storage, other.size * sizeof(T));
         size = other.size;
         capacity = other.capacity;
         return *this;
@@ -350,29 +349,29 @@ struct GnSmallVector
     GnSmallVector& operator=(GnSmallVector&& other)
     {
         if (other.storage == other.local_storage)
-            std::memcpy(storage, other.storage, other.size * sizeof(PODType));
+            std::memcpy(storage, other.storage, other.size * sizeof(T));
         else
             storage = other.storage;
 
         size = other.size;
         capacity = other.capacity;
-        std::memset(other.storage, 0, other.size * sizeof(PODType));
+        std::memset(other.storage, 0, other.size * sizeof(T));
         other.size = 0;
         other.capacity = Size;
         return *this;
     }
 
-    inline PODType& operator[](size_t n) noexcept
+    inline T& operator[](size_t n) noexcept
     {
         return storage[n];
     }
 
-    inline const PODType& operator[](size_t n) const noexcept
+    inline const T& operator[](size_t n) const noexcept
     {
         return storage[n];
     }
 
-    inline bool push_back(const PODType& value) noexcept
+    inline bool push_back(const T& value) noexcept
     {
         if (size == capacity)
             if (!reserve(capacity + (capacity / 2)))
@@ -383,25 +382,25 @@ struct GnSmallVector
     }
 
     template<typename... Args>
-    inline std::optional<std::reference_wrapper<PODType>> emplace_back(Args&&... args) noexcept
+    inline std::optional<std::reference_wrapper<T>> emplace_back(Args&&... args) noexcept
     {
         if (size == capacity)
             if (!reserve(capacity + (capacity / 2)))
                 return {};
 
-        auto ptr = new(storage + size++) PODType{ std::forward<Args>(args)... };
+        auto ptr = new(storage + size++) T{ std::forward<Args>(args)... };
 
         return { std::ref(*ptr) };
     }
 
     template<typename... Args>
-    inline PODType* emplace_back_ptr(Args&&... args) noexcept
+    inline T* emplace_back_ptr(Args&&... args) noexcept
     {
         if (size == capacity)
             if (!reserve(capacity + (capacity / 2)))
                 return nullptr;
 
-        auto ptr = new(storage + size++) PODType{ std::forward<Args>(args)... };
+        auto ptr = new(storage + size++) T{ std::forward<Args>(args)... };
 
         return ptr;
     }
@@ -415,16 +414,16 @@ struct GnSmallVector
     bool reserve(size_t n) noexcept
     {
         if (n > capacity) {
-            PODType* new_storage = (PODType*)::operator new[](n * sizeof(PODType), std::align_val_t{ alignof(PODType) }, std::nothrow);
+            T* new_storage = (T*)::operator new[](n * sizeof(T), std::align_val_t{ alignof(T) }, std::nothrow);
 
             if (new_storage == nullptr)
                 return false;
 
-            std::memset(new_storage, 0, n * sizeof(PODType));
-            std::memcpy(new_storage, storage, size * sizeof(PODType));
+            std::memset(new_storage, 0, n * sizeof(T));
+            std::memcpy(new_storage, storage, size * sizeof(T));
 
             if (storage != local_storage)
-                ::operator delete[](storage, std::align_val_t{alignof(PODType)}, std::nothrow);
+                ::operator delete[](storage, std::align_val_t{alignof(T)}, std::nothrow);
 
             storage = new_storage;
             capacity = n;
@@ -434,13 +433,13 @@ struct GnSmallVector
     }
 };
 
-template<typename PODType, size_t Size, std::enable_if_t<std::is_pod_v<PODType>, bool> = true>
+template<typename T, size_t Size, std::enable_if_t<std::is_pod_v<T>, bool> = true>
 struct GnSmallQueue
 {
-    PODType local_storage[Size]{};
-    PODType* data = nullptr;
-    PODType* read_ptr = nullptr;
-    PODType* write_ptr = nullptr;
+    T local_storage[Size]{};
+    T* data = nullptr;
+    T* read_ptr = nullptr;
+    T* write_ptr = nullptr;
     size_t capacity = Size;
 
     GnSmallQueue() :
@@ -453,10 +452,10 @@ struct GnSmallQueue
     ~GnSmallQueue()
     {
         if (data != local_storage)
-            ::operator delete[](data, std::align_val_t{ alignof(PODType) }, std::nothrow);
+            ::operator delete[](data, std::align_val_t{ alignof(T) }, std::nothrow);
     }
 
-    inline bool push(const PODType& value) noexcept
+    inline bool push(const T& value) noexcept
     {
         if (num_items_written() == capacity)
             if (!reserve(capacity + (capacity / 2)))
@@ -469,18 +468,18 @@ struct GnSmallQueue
     }
 
     template<typename... Args>
-    std::optional<std::reference_wrapper<PODType>> emplace(Args&&... args) noexcept
+    std::optional<std::reference_wrapper<T>> emplace(Args&&... args) noexcept
     {
         if (num_items_written() == capacity)
             if (!reserve(capacity + (capacity / 2)))
                 return {};
 
-        auto ptr = new(write_ptr++) PODType{ std::forward<Args>(args)... };
+        auto ptr = new(write_ptr++) T{ std::forward<Args>(args)... };
 
         return { std::ref(*ptr) };
     }
 
-    inline PODType* pop() noexcept
+    inline T* pop() noexcept
     {
         if (write_ptr == read_ptr)
             return nullptr;
@@ -488,9 +487,9 @@ struct GnSmallQueue
         return read_ptr++;
     }
 
-    inline PODType* pop_all() noexcept
+    inline T* pop_all() noexcept
     {
-        PODType* tmp = read_ptr;
+        T* tmp = read_ptr;
         read_ptr = write_ptr;
         return tmp;
     }
@@ -524,15 +523,15 @@ struct GnSmallQueue
     bool reserve(size_t n) noexcept
     {
         if (n > capacity) {
-            PODType* new_storage = (PODType*)::operator new[](n * sizeof(PODType), std::align_val_t{ alignof(PODType) }, std::nothrow);
+            T* new_storage = (T*)::operator new[](n * sizeof(T), std::align_val_t{ alignof(T) }, std::nothrow);
 
             if (new_storage == nullptr)
                 return false;
 
-            std::memcpy(new_storage, data, num_items_written() * sizeof(PODType));
+            std::memcpy(new_storage, data, num_items_written() * sizeof(T));
 
             if (data != local_storage)
-                ::operator delete[](data, std::align_val_t{ alignof(PODType) }, std::nothrow);
+                ::operator delete[](data, std::align_val_t{ alignof(T) }, std::nothrow);
 
             data = new_storage;
             read_ptr = new_storage + num_items_read();
@@ -634,9 +633,9 @@ struct GnObjectPool
     std::optional<GnPool<typename ObjectTypes::Texture>>                texture;
     std::optional<GnPool<typename ObjectTypes::TextureView>>            texture_view;
     std::optional<GnPool<typename ObjectTypes::RenderPass>>             render_pass;
-    std::optional<GnPool<typename ObjectTypes::ResourceTableLayout>>    resource_table_layout;
+    std::optional<GnPool<typename ObjectTypes::DescriptorTableLayout>>  resource_table_layout;
     std::optional<GnPool<typename ObjectTypes::PipelineLayout>>         pipeline_layout;
-    std::optional<GnPool<typename ObjectTypes::ResourceTablePool>>      resource_table_pool;
+    std::optional<GnPool<typename ObjectTypes::DescriptorPool>>         descriptor_pool;
     std::optional<GnPool<typename ObjectTypes::Pipeline>>               pipeline;
     std::optional<GnPool<typename ObjectTypes::CommandPool>>            command_pool;
 };

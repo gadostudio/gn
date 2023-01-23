@@ -67,13 +67,13 @@ struct GnDevice_t
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
     virtual GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept = 0;
     virtual GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept = 0;
-    virtual GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept = 0;
+    virtual GnResult CreateDescriptorTableLayout(const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* descriptor_table_layout) noexcept = 0;
     virtual GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept = 0;
     virtual GnResult CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept = 0;
     virtual GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept = 0;
-    virtual GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept = 0;
+    virtual GnResult CreateDescriptorPool(const GnDescriptorPoolDesc* desc, GnDescriptorPool* descriptor_pool) noexcept = 0;
     virtual GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept = 0;
-    virtual GnResult CreateCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, GnCommandList* command_lists) noexcept = 0;
+    virtual GnResult CreateCommandLists(const GnCommandListDesc* desc, GnCommandList* command_lists) noexcept = 0;
     virtual void DestroySwapchain(GnSwapchain swapchain) noexcept = 0;
     virtual void DestroyFence(GnFence fence) noexcept = 0;
     virtual void DestroyMemory(GnMemory memory) noexcept = 0;
@@ -81,10 +81,10 @@ struct GnDevice_t
     virtual void DestroyTexture(GnTexture texture) noexcept = 0;
     virtual void DestroyTextureView(GnTextureView texture_view) noexcept = 0;
     virtual void DestroyRenderPass(GnRenderPass render_pass) noexcept = 0;
-    virtual void DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept = 0;
+    virtual void DestroyDescriptorTableLayout(GnDescriptorTableLayout descriptor_table_layout) noexcept = 0;
     virtual void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept = 0;
     virtual void DestroyPipeline(GnPipeline pipeline) noexcept = 0;
-    virtual void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept = 0;
+    virtual void DestroyDescriptorPool(GnDescriptorPool descriptor_pool) noexcept = 0;
     virtual void DestroyCommandPool(GnCommandPool command_pool) noexcept = 0;
     virtual void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept = 0;
     virtual void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept = 0;
@@ -154,7 +154,7 @@ struct GnRenderPass_t
 
 };
 
-struct GnResourceTableLayout_t
+struct GnDescriptorTableLayout_t
 {
 };
 
@@ -171,11 +171,11 @@ struct GnPipeline_t
     uint32_t        num_viewports;
 };
 
-struct GnResourceTablePool_t
+struct GnDescriptorPool_t
 {
 };
 
-struct GnResourceTable_t
+struct GnDescriptorTable_t
 {
 };
 
@@ -183,8 +183,8 @@ struct GnPipelineState
 {
     GnPipeline          pipeline;
     GnPipelineLayout    pipeline_layout;
-    GnResourceTable     resource_tables[32];
-    GnUpdateRange       resource_tables_upd_range;
+    GnDescriptorTable   descriptor_tables[32];
+    GnUpdateRange       descriptor_tables_upd_range;
     GnBuffer            global_buffers[32];
     uint32_t            global_buffer_offsets[32];
     uint32_t            global_buffers_upd_mask;
@@ -278,6 +278,7 @@ struct GnCommandList_t : public GnTrackedResource<GnCommandList_t>
 
     bool                        recording = false;
     bool                        inside_render_pass = false;
+    bool                        standalone = false;
 
     virtual GnResult Begin(const GnCommandListBeginDesc* desc) noexcept = 0;
     virtual void BeginRenderPass(GnRenderPass render_pass) noexcept = 0;
@@ -965,14 +966,14 @@ void GnDestroyRenderPass(GnDevice device, GnRenderPass render_pass)
 
 // -- [GnResourceTableLayout] --
 
-GnResult GnCreateResourceTableLayout(GnDevice device, const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table)
+GnResult GnCreateDescriptorTableLayout(GnDevice device, const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* descriptor_table_layout)
 {
-    return device->CreateResourceTableLayout(desc, resource_table);
+    return device->CreateDescriptorTableLayout(desc, descriptor_table_layout);
 }
 
-void GnDestroyResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table)
+void GnDestroyDescriptorTableLayout(GnDevice device, GnDescriptorTableLayout descriptor_table_layout)
 {
-    device->DestroyResourceTableLayout(resource_table);
+    device->DestroyDescriptorTableLayout(descriptor_table_layout);
 }
 
 // -- [GnPipelineLayout] --
@@ -989,7 +990,6 @@ void GnDestroyPipelineLayout(GnDevice device, GnPipelineLayout pipeline_layout)
 
 GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc* desc, GnPipeline* graphics_pipeline)
 {
-    // We can't use desc directly because there are some conditions that requires changing the desc at the creation time.
     GnGraphicsPipelineDesc tmp_desc = *desc;
     GnMultisampleStateDesc default_multisample_desc;
 
@@ -1050,12 +1050,12 @@ GnPipelineType GnGetPipelineType(GnPipeline pipeline)
     return pipeline->type;
 }
 
-GnResult GnCreateResourceTablePool(GnDevice device, const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool)
+GnResult GnCreateDescriptorPool(GnDevice device, const GnDescriptorPoolDesc* desc, GnDescriptorPool* descriptor_pool)
 {
     return GnResult();
 }
 
-void GnDestroyResourceTablePool(GnDevice device, GnResourceTablePool resource_table_pool)
+void GnDestroyDescriptorPool(GnDevice device, GnDescriptorPool descriptor_pool)
 {
 }
 
@@ -1080,9 +1080,9 @@ void GnTrimCommandPool(GnCommandPool command_pool)
 
 // -- [GnCommandList] --
 
-GnResult GnCreateCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists)
+GnResult GnCreateCommandLists(GnDevice device, const GnCommandListDesc* desc, GnCommandList* command_lists)
 {
-    return device->CreateCommandLists(command_pool, num_cmd_lists, command_lists);
+    return device->CreateCommandLists(desc, command_lists);
 }
 
 void GnDestroyCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists)
@@ -1126,11 +1126,10 @@ void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout
     command_list->state.update_flags.graphics_pipeline_layout = true;
 }
 
-void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table)
+void GnCmdSetGraphicsDescriptorTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table)
 {
-    // Don't update if it's the same
-    if (resource_table == command_list->state.graphics.resource_tables[slot]) return;
-    command_list->state.graphics.resource_tables[slot] = resource_table;
+    if (descriptor_table == command_list->state.graphics.descriptor_tables[slot]) return;
+    command_list->state.graphics.descriptor_tables[slot] = descriptor_table;
     command_list->state.update_flags.graphics_resource_binding = true;
 }
 
@@ -1165,13 +1164,15 @@ inline bool GnUpdateBufferAndOffset(GnPipelineState& pipeline_state, uint32_t sl
 void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.graphics_resource_binding = GnUpdateBufferAndOffset(state.graphics, slot, uniform_buffer, offset, false);
+    if (GnUpdateBufferAndOffset(state.graphics, slot, uniform_buffer, offset, false))
+        state.update_flags.graphics_resource_binding = true;
 }
 
 void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.graphics_resource_binding = GnUpdateBufferAndOffset(state.graphics, slot, storage_buffer, offset, true);
+    if (GnUpdateBufferAndOffset(state.graphics, slot, storage_buffer, offset, true))
+        state.update_flags.graphics_resource_binding = true;
 }
 
 void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data)
@@ -1357,20 +1358,25 @@ void GnCmdSetComputePipelineLayout(GnCommandList command_list, GnPipelineLayout 
     command_list->state.update_flags.compute_pipeline_layout = true;
 }
 
-void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table)
+void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table)
 {
+    if (descriptor_table == command_list->state.compute.descriptor_tables[slot]) return;
+    command_list->state.compute.descriptor_tables[slot] = descriptor_table;
+    command_list->state.update_flags.compute_resource_binding = true;
 }
 
 void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.compute_resource_binding = GnUpdateBufferAndOffset(state.compute, slot, uniform_buffer, offset, false);
+    if (GnUpdateBufferAndOffset(state.compute, slot, uniform_buffer, offset, false))
+        state.update_flags.compute_resource_binding = true;
 }
 
 void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset)
 {
     GnCommandListState& state = command_list->state;
-    state.update_flags.compute_resource_binding = GnUpdateBufferAndOffset(state.compute, slot, storage_buffer, offset, true);
+    if (GnUpdateBufferAndOffset(state.compute, slot, storage_buffer, offset, true))
+        state.update_flags.compute_resource_binding = true;
 }
 
 void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data)

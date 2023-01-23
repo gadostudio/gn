@@ -51,12 +51,12 @@ typedef struct GnTexture_t* GnTexture;
 typedef struct GnTextureView_t* GnTextureView;
 typedef struct GnSwapchain_t* GnSwapchain;
 typedef struct GnRenderPass_t* GnRenderPass;
-typedef struct GnResourceTableLayout_t* GnResourceTableLayout;
+typedef struct GnDescriptorTableLayout_t* GnDescriptorTableLayout;
 typedef struct GnPipelineLayout_t* GnPipelineLayout;
 typedef struct GnPipelineCache_t* GnPipelineCache;
 typedef struct GnPipeline_t* GnPipeline;
-typedef struct GnResourceTablePool_t* GnResourceTablePool;
-typedef struct GnResourceTable_t* GnResourceTable;
+typedef struct GnDescriptorPool_t* GnDescriptorPool;
+typedef struct GnDescriptorTable_t* GnDescriptorTable;
 typedef struct GnCommandPool_t* GnCommandPool;
 typedef struct GnCommandList_t* GnCommandList;
 
@@ -185,22 +185,20 @@ typedef enum
     GnFormat_D32Float,
     GnFormat_D32Float_S8Uint,
 
-    // Vertex Formats
-    // 8-bpc vertex formats
-    GnFormat_Unorm8,
-    GnFormat_Unorm8x2,
-    GnFormat_Unorm8x4,
-    GnFormat_Snorm8,
-    GnFormat_Snorm8x2,
-    GnFormat_Snorm8x4,
-    GnFormat_Uint8,
-    GnFormat_Uint8x2,
-    GnFormat_Uint8x4,
-    GnFormat_Sint8,
-    GnFormat_Sint8x2,
-    GnFormat_Sint8x4,
+    // Alternative format names
+    GnFormat_Unorm8     = GnFormat_R8Unorm,
+    GnFormat_Unorm8x2   = GnFormat_RG8Unorm,
+    GnFormat_Unorm8x4   = GnFormat_RGBA8Unorm,
+    GnFormat_Snorm8     = GnFormat_R8Snorm,
+    GnFormat_Snorm8x2   = GnFormat_RG8Snorm,
+    GnFormat_Snorm8x4   = GnFormat_RGBA8Snorm,
+    GnFormat_Uint8      = GnFormat_R8Uint,
+    GnFormat_Uint8x2    = GnFormat_RG8Uint,
+    GnFormat_Uint8x4    = GnFormat_RGBA8Uint,
+    GnFormat_Sint8      = GnFormat_R8Sint,
+    GnFormat_Sint8x2    = GnFormat_RG8Sint,
+    GnFormat_Sint8x4    = GnFormat_RGBA8Sint,
 
-    // 16-bpc vertex formats
     GnFormat_Float16    = GnFormat_R16Float,
     GnFormat_Float16x2  = GnFormat_RG16Float,
     GnFormat_Float16x4  = GnFormat_RGBA16Float,
@@ -211,7 +209,6 @@ typedef enum
     GnFormat_Sint16x2   = GnFormat_RG16Sint,
     GnFormat_Sint16x4   = GnFormat_RGBA16Sint,
 
-    // 32-bpc vertex formats
     GnFormat_Float32    = GnFormat_R32Float,
     GnFormat_Float32x2  = GnFormat_RG32Float,
     GnFormat_Float32x3  = GnFormat_RGB32Float,
@@ -790,16 +787,16 @@ typedef struct
     GnBool              read_only_storage;
     uint32_t            num_resources;
     GnShaderStageFlags  shader_visibility;
-} GnResourceTableBinding;
+} GnDescriptorTableBinding;
 
 typedef struct
 {
-    uint32_t                num_bindings;
-    GnResourceTableBinding* bindings;
-} GnResourceTableLayoutDesc;
+    uint32_t                    num_bindings;
+    GnDescriptorTableBinding*   bindings;
+} GnDescriptorTableLayoutDesc;
 
-GnResult GnCreateResourceTableLayout(GnDevice device, const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table);
-void GnDestroyResourceTableLayout(GnDevice device, GnResourceTableLayout resource_table);
+GnResult GnCreateDescriptorTableLayout(GnDevice device, const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* descriptor_table_layout);
+void GnDestroyDescriptorTableLayout(GnDevice device, GnDescriptorTableLayout descriptor_table_layout);
 
 typedef struct
 {
@@ -821,7 +818,7 @@ typedef struct
     uint32_t                        num_resources;
     const GnShaderResource*         resources;
     uint32_t                        num_resource_tables;
-    const GnResourceTableLayout*    resource_tables;
+    const GnDescriptorTableLayout*  resource_tables;
     uint32_t                        num_constant_ranges;
     const GnShaderConstantRange*    constant_ranges;
 } GnPipelineLayoutDesc;
@@ -1105,9 +1102,9 @@ GnPipelineType GnGetPipelineType(GnPipeline pipeline);
 
 typedef enum
 {
-    GnResourceTableType_ShaderResource,
-    GnResourceTableType_Sampler,
-} GnResourceTableType;
+    GnDescriptorTableType_Resource,
+    GnDescriptorTableType_Sampler,
+} GnDescriptorTableType;
 
 typedef struct
 {
@@ -1116,17 +1113,17 @@ typedef struct
     uint32_t max_sampled_textures;
     uint32_t max_storage_textures;
     uint32_t max_samplers;
-} GnResourceTablePoolLimits;
+} GnDescriptorTablePoolLimits;
 
 typedef struct
 {
-    GnResourceTableType         type;
-    uint32_t                    max_resource_tables;
-    GnResourceTablePoolLimits   pool_limits;
-} GnResourceTablePoolDesc;
+    GnDescriptorTableType       type;
+    uint32_t                    max_descriptor_tables;
+    GnDescriptorTablePoolLimits pool_limits;
+} GnDescriptorPoolDesc;
 
-GnResult GnCreateResourceTablePool(GnDevice device, const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool);
-void GnDestroyResourceTablePool(GnDevice device, GnResourceTablePool resource_table_pool);
+GnResult GnCreateDescriptorPool(GnDevice device, const GnDescriptorPoolDesc* desc, GnDescriptorPool* descriptor_pool);
+void GnDestroyDescriptorPool(GnDevice device, GnDescriptorPool descriptor_pool);
 
 typedef enum
 {
@@ -1185,6 +1182,14 @@ typedef struct
 
 typedef struct
 {
+    GnCommandPool           command_pool;
+    GnCommandListUsageFlags usage;
+    uint32_t                queue_group_index;
+    uint32_t                num_cmd_lists;
+} GnCommandListDesc;
+
+typedef struct
+{
     GnRenderPass*           render_pass;
     uint32_t                subpass;
     uint32_t                num_viewports;
@@ -1199,7 +1204,7 @@ typedef struct
     const GnCommandListInheritance* inheritance;
 } GnCommandListBeginDesc;
 
-GnResult GnCreateCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, GnCommandList* command_lists);
+GnResult GnCreateCommandLists(GnDevice device, const GnCommandListDesc* desc, GnCommandList* command_lists);
 void GnDestroyCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t num_cmd_lists, const GnCommandList* command_lists);
 GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc);
 GnResult GnEndCommandList(GnCommandList command_list);
@@ -1211,6 +1216,13 @@ typedef enum
     GnIndexFormat_Uint16,
     GnIndexFormat_Uint32,
 } GnIndexFormat;
+
+typedef union
+{
+    float       float32[4];
+    int32_t     int32[4];
+    uint32_t    uint32[4];
+} GnColorValue;
 
 typedef struct
 {
@@ -1274,9 +1286,10 @@ typedef struct
     uint32_t                    queue_group_index_after;
 } GnTextureBarrier;
 
+void GnCmdSetDescriptorPool(GnCommandList command_list, uint32_t num_descriptor_pool, GnDescriptorPool descriptor_pool);
 void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pipeline);
 void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
-void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table);
+void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table);
 void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset);
 void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset);
 void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data);
@@ -1305,7 +1318,7 @@ void GnCmdDrawIndexedIndirect(GnCommandList command_list, GnBuffer indirect_buff
 void GnCmdEndRenderPass(GnCommandList command_list);
 void GnCmdSetComputePipeline(GnCommandList command_list, GnPipeline compute_pipeline);
 void GnCmdSetComputePipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
-void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnResourceTable resource_table);
+void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table);
 void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset);
 void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset);
 void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data);
@@ -1314,6 +1327,7 @@ void GnCmdSetComputeShaderConstantU(GnCommandList command_list, uint32_t slot, u
 void GnCmdSetComputeShaderConstantF(GnCommandList command_list, uint32_t slot, float value);
 void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z);
 void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset);
+void GnCmdClearStorageColorTexture(GnCommandList command_list, GnTexture texture, GnResourceAccessFlags texture_access, const GnColorValue* color, uint32_t num_ranges, const GnTextureSubresourceRange* ranges);
 void GnCmdCopyBuffer(GnCommandList command_list, GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size);
 void GnCmdCopyBufferRegions(GnCommandList command_list, GnBuffer src_buffer, GnBuffer dst_buffer, uint32_t num_regions, const GnBufferCopy* regions);
 void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access);

@@ -166,10 +166,10 @@ struct GnObjectTypesD3D12
     using Texture               = GnTextureD3D12;
     using TextureView           = GnTextureViewD3D12;
     using RenderPass            = GnUnimplementedType;
-    using ResourceTableLayout   = GnUnimplementedType;
+    using DescriptorTableLayout   = GnUnimplementedType;
     using PipelineLayout        = GnPipelineLayoutD3D12;
     using Pipeline              = GnPipelineD3D12;
-    using ResourceTablePool     = GnUnimplementedType;
+    using DescriptorPool     = GnUnimplementedType;
     using ResourceTable         = GnUnimplementedType;
     using CommandPool           = GnCommandPoolD3D12;
     using CommandList           = GnCommandListD3D12;
@@ -196,13 +196,13 @@ struct GnDeviceD3D12 : public GnDevice_t
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
     GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept override;
-    GnResult CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept override;
+    GnResult CreateDescriptorTableLayout(const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* descriptor_table_layout) noexcept override;
     GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept override;
     GnResult CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept override;
     GnResult CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept override;
-    GnResult CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept override;
+    GnResult CreateDescriptorPool(const GnDescriptorPoolDesc* desc, GnDescriptorPool* descriptor_pool) noexcept override;
     GnResult CreateCommandPool(const GnCommandPoolDesc* desc, GnCommandPool* command_pool) noexcept override;
-    GnResult CreateCommandLists(GnCommandPool comamnd_pool, uint32_t num_command_lists, GnCommandList* command_lists) noexcept override;
+    GnResult CreateCommandLists(const GnCommandListDesc* desc, GnCommandList* command_lists) noexcept override;
     void DestroySwapchain(GnSwapchain swapchain) noexcept override;
     void DestroyFence(GnFence fence) noexcept override;
     void DestroyMemory(GnMemory memory) noexcept override;
@@ -210,10 +210,10 @@ struct GnDeviceD3D12 : public GnDevice_t
     void DestroyTexture(GnTexture texture) noexcept override;
     void DestroyTextureView(GnTextureView texture_view) noexcept override;
     void DestroyRenderPass(GnRenderPass render_pass) noexcept override;
-    void DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept override;
+    void DestroyDescriptorTableLayout(GnDescriptorTableLayout descriptor_table_layout) noexcept override;
     void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
     void DestroyPipeline(GnPipeline pipeline) noexcept override;
-    void DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept override;
+    void DestroyDescriptorPool(GnDescriptorPool descriptor_pool) noexcept override;
     void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept;
     void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
     void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept override;
@@ -998,7 +998,7 @@ GnResult GnDeviceD3D12::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderP
     return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateResourceTableLayout(const GnResourceTableLayoutDesc* desc, GnResourceTableLayout* resource_table_layout) noexcept
+GnResult GnDeviceD3D12::CreateDescriptorTableLayout(const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* resource_table_layout) noexcept
 {
     return GnResult();
 }
@@ -1103,14 +1103,14 @@ GnResult GnDeviceD3D12::CreateComputePipeline(const GnComputePipelineDesc* desc,
     return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateResourceTablePool(const GnResourceTablePoolDesc* desc, GnResourceTablePool* resource_table_pool) noexcept
+GnResult GnDeviceD3D12::CreateDescriptorPool(const GnDescriptorPoolDesc* desc, GnDescriptorPool* descriptor_pool) noexcept
 {
     D3D12_DESCRIPTOR_HEAP_DESC heap_desc;
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     heap_desc.NodeMask = 0;
 
     switch (desc->type) {
-        case GnResourceTableType_ShaderResource:
+        case GnDescriptorTableType_Resource:
         {
             heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
             heap_desc.NumDescriptors =
@@ -1120,7 +1120,7 @@ GnResult GnDeviceD3D12::CreateResourceTablePool(const GnResourceTablePoolDesc* d
                 desc->pool_limits.max_storage_textures;
             break;
         }
-        case GnResourceTableType_Sampler:
+        case GnDescriptorTableType_Sampler:
         {
             heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
             heap_desc.NumDescriptors = desc->pool_limits.max_samplers;
@@ -1148,7 +1148,7 @@ GnResult GnDeviceD3D12::CreateCommandPool(const GnCommandPoolDesc* desc, GnComma
     return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateCommandLists(GnCommandPool comamnd_pool, uint32_t num_command_lists, GnCommandList* command_lists) noexcept
+GnResult GnDeviceD3D12::CreateCommandLists(const GnCommandListDesc* desc, GnCommandList* command_lists) noexcept
 {
     return GnResult();
 }
@@ -1184,7 +1184,7 @@ void GnDeviceD3D12::DestroyRenderPass(GnRenderPass render_pass) noexcept
 {
 }
 
-void GnDeviceD3D12::DestroyResourceTableLayout(GnResourceTableLayout resource_table_layout) noexcept
+void GnDeviceD3D12::DestroyDescriptorTableLayout(GnDescriptorTableLayout resource_table_layout) noexcept
 {
 }
 
@@ -1196,7 +1196,7 @@ void GnDeviceD3D12::DestroyPipeline(GnPipeline pipeline) noexcept
 {
 }
 
-void GnDeviceD3D12::DestroyResourceTablePool(GnResourceTablePool resource_table_pool) noexcept
+void GnDeviceD3D12::DestroyDescriptorPool(GnDescriptorPool descriptor_pool) noexcept
 {
 }
 

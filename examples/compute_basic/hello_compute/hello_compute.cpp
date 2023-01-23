@@ -1,7 +1,7 @@
 #include <gn/gn.h>
 #include <array>
 #include <vector>
-#include "../example_lib.h"
+#include "../../example_lib.h"
 
 const std::array<float, 8> buffer_data = {
     1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f
@@ -121,8 +121,14 @@ int main()
     GnCommandPool command_pool;
     EX_THROW_IF_FAILED(GnCreateCommandPool(device, &command_pool_desc, &command_pool));
 
+    GnCommandListDesc command_list_desc{};
+    command_list_desc.command_pool = command_pool;
+    command_list_desc.usage = GnCommandListUsage_Primary;
+    command_list_desc.queue_group_index = direct_queue_group;
+    command_list_desc.num_cmd_lists = 1;
+
     GnCommandList command_list;
-    EX_THROW_IF_FAILED(GnCreateCommandLists(device, command_pool, 1, &command_list));
+    EX_THROW_IF_FAILED(GnCreateCommandLists(device, &command_list_desc, &command_list));
 
     GnCommandListBeginDesc begin_desc;
     begin_desc.flags = GnCommandListBegin_OneTimeUse;
@@ -146,7 +152,7 @@ int main()
     buffer_barrier[1].queue_group_index_before = 0;
     buffer_barrier[1].queue_group_index_after = 0;
 
-    GnCmdBarrier(command_list, 2, buffer_barrier, 0, nullptr);
+    GnCmdBufferBarrier(command_list, 2, buffer_barrier);
 
     // Bind pipeline and its layout
     GnCmdSetComputePipeline(command_list, compute_pipeline);
@@ -159,6 +165,7 @@ int main()
     GnCmdDispatch(command_list, 8, 1, 1);
 
     // Insert a barrier to make sure everything is done before we read dst_buffer.
+    // Note that we don't need to put barrier on src_buffer since it will never be accessed again.
     buffer_barrier[0].buffer = dst_buffer;
     buffer_barrier[0].offset = 0;
     buffer_barrier[0].size = GN_WHOLE_SIZE;
@@ -167,7 +174,7 @@ int main()
     buffer_barrier[0].queue_group_index_before = 0;
     buffer_barrier[0].queue_group_index_after = 0;
 
-    GnCmdBarrier(command_list, 1, buffer_barrier, 0, nullptr);
+    GnCmdBufferBarrier(command_list, 1, buffer_barrier);
 
     GnEndCommandList(command_list);
 

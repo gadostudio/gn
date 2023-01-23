@@ -4,6 +4,7 @@ target_link_libraries(gn-example-lib PUBLIC gn-static)
 function(gn_add_graphics_example _NAME _SOURCE)
     add_executable(${_NAME} ${_SOURCE})
     target_link_libraries(${_NAME} PRIVATE gn-example-lib)
+    target_compile_definitions(${_NAME} PUBLIC GN_EXAMPLE_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endfunction()
 
 function(gn_add_compute_example _NAME _SOURCE)

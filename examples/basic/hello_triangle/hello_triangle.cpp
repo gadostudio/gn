@@ -8,7 +8,8 @@ struct VertexAttrib
 
 struct FrameData
 {
-    GnTexture color_attachment;
+    GnTexture swapchain_texture;
+    GnTextureView swapchain_texture_view;
     GnFence fence;
     GnCommandList command_list;
 };
@@ -18,12 +19,17 @@ struct HelloTriangle : public GnExampleApp
     std::vector<FrameData> frame_data;
     GnRenderPass main_render_pass{};
     GnBuffer vertex_buffer{};
+    GnPipeline pipeline{};
+
+    virtual ~HelloTriangle()
+    {
+        GnDestroyRenderPass(device, main_render_pass);
+        GnDestroyPipeline(device, pipeline);
+    }
 
     void InitFrameData()
     {
-        for (uint32_t i = 0; i < num_swapchain_buffers; i++) {
-
-        }
+        
     }
 
     void CreateRenderPass()
@@ -36,8 +42,11 @@ struct HelloTriangle : public GnExampleApp
 
     }
 
-    virtual void OnStart()
+    void OnStart() override
     {
+        auto vertex_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/basic/hello_triangle/hello_triangle.vert.spv");
+        auto fragment_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/basic/hello_triangle/hello_triangle.frag.spv");
+
         GnAttachmentDesc att_desc{};
         att_desc.format                     = surface_format;
         att_desc.sample_count               = GnSampleCount_X1;
@@ -65,13 +74,13 @@ struct HelloTriangle : public GnExampleApp
         GnCreateRenderPass(device, &render_pass_desc, &main_render_pass);
 
         GnShaderBytecode vs_bytecode{};
-        vs_bytecode.size;
-        vs_bytecode.bytecode;
+        vs_bytecode.size        = vertex_shader->size() * sizeof(uint32_t);
+        vs_bytecode.bytecode    = vertex_shader->data();
         vs_bytecode.entry_point = "main";
 
         GnShaderBytecode fs_bytecode{};
-        fs_bytecode.size;
-        fs_bytecode.bytecode;
+        fs_bytecode.size        = fragment_shader->size() * sizeof(uint32_t);
+        fs_bytecode.bytecode    = fragment_shader->data();
         fs_bytecode.entry_point = "main";
 
         GnVertexInputSlotDesc input_slot{};
@@ -81,7 +90,7 @@ struct HelloTriangle : public GnExampleApp
 
         GnVertexAttributeDesc vertex_attribs[2] = {
             { 0, 0, GnFormat_Float32x2, offsetof(VertexAttrib, x) },
-            { 1, 0, GnFormat_Uint8x4,   offsetof(VertexAttrib, r) }
+            { 1, 0, GnFormat_Unorm8x4,  offsetof(VertexAttrib, r) }
         };
 
         GnVertexInputStateDesc vertex_input{};
@@ -115,7 +124,6 @@ struct HelloTriangle : public GnExampleApp
         graphics_pipeline.num_viewports             = 1;
         graphics_pipeline.layout                    = nullptr;
 
-        GnPipeline pipeline{};
-        //GnCreateGraphicsPipeline(device, &graphics_pipeline, &pipeline);
+        GnCreateGraphicsPipeline(device, &graphics_pipeline, &pipeline);
     }
 } hello_triangle;

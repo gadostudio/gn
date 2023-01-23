@@ -144,10 +144,9 @@ struct GnExampleApp : private GnExampleWindowWin32
         g_app = this;
     }
 
-    ~GnExampleApp()
+    virtual ~GnExampleApp()
     {
         GnDeviceWaitIdle(device);
-
         if (swapchain) GnDestroySwapchain(device, swapchain);
         if (device) GnDestroyDevice(device);
         if (surface) GnDestroySurface(surface);
@@ -254,6 +253,7 @@ struct GnExampleApp : private GnExampleWindowWin32
         }
 
         swapchain_ready = true;
+        OnStart();
 
         return true;
     }

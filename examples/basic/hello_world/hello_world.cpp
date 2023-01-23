@@ -1,5 +1,10 @@
 #include "../../example_lib.h"
 
+struct FrameData
+{
+    GnCommandList command_list;
+};
+
 struct HelloWorld : public GnExampleApp
 {
     void OnResize(uint32_t width, uint32_t height) override
