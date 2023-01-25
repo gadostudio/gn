@@ -296,28 +296,33 @@ struct GnTextureBaseVK : public GnTexture_t
     VkImage image;
 };
 
+struct GnTextureViewVK : public GnTextureView_t
+{
+    VkImageView view;
+};
+
 struct GnSwapchainBlitImageVK : public GnTextureBaseVK
 {
-    VkDeviceMemory          memory;
-    GnSwapchainBlitImageVK* next_image;
+    VkDeviceMemory memory;
 
     void Destroy(GnDeviceVK* impl_device);
 };
 
 struct GnSwapchainVK : public GnSwapchain_t
 {
-    GnDeviceVK*                                     impl_device;
-    VkSwapchainKHR                                  swapchain;
-    VkMemoryRequirements                            image_mem_requirements;
-    GnSmallVector<VkImage, 4>                       swapchain_images;
-    GnSmallVector<GnSwapchainBlitImageVK, 4>        blit_images;
-    GnSmallVector<GnSwapchainFramePresenterVK, 4>   frame_presenters;
-    int32_t                                         swapchain_memtype_index = -1;
-    uint32_t                                        current_frame = 0;
-    uint32_t                                        current_acquired_image = 0;
-    bool                                            should_update = true;
+    GnDeviceVK*                                                             impl_device;
+    VkSwapchainKHR                                                          swapchain;
+    VkMemoryRequirements                                                    image_mem_requirements;
+    int32_t                                                                 swapchain_memtype_index = -1;
+    uint32_t                                                                current_acquired_image = 0;
+    bool                                                                    should_update = true;
+    GnSmallVector<GnSwapchainBlitImageVK, GN_MAX_SWAPCHAIN_BUFFERS>         blit_images;
+    GnSmallVector<VkImage, GN_MAX_SWAPCHAIN_BUFFERS>                        swapchain_images;
+    GnSmallVector<GnSwapchainFramePresenterVK, GN_MAX_SWAPCHAIN_BUFFERS>    frame_presenters;
 
     GnSwapchainVK(GnDeviceVK* impl_device) noexcept;
+    GnTexture GetSwapchainTexture(uint32_t index) noexcept;
+    GnResult GetSwapchainTextures(uint32_t num_textures, GnTexture* textures) noexcept override;
     GnResult Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept override;
 
     GnResult Init(const GnSwapchainDesc* desc, VkSwapchainKHR old_swapchain) noexcept;
@@ -335,6 +340,9 @@ struct GnFenceVK : public GnFence_t
 {
     GnDeviceVK* parent_device;
     VkFence     fence;
+
+    GnResult Wait(uint64_t timeout) noexcept override;
+    GnResult Reset() noexcept override;
 };
 
 struct GnMemoryVK : public GnMemory_t
@@ -356,11 +364,6 @@ struct GnTextureVK : public GnTextureBaseVK
 {
     GnMemoryVK*     memory;
     VkDeviceSize    aligned_offset;
-};
-
-struct GnTextureViewVK : public GnTextureView_t
-{
-    VkImageView view;
 };
 
 struct GnRenderPassVK : public GnRenderPass_t
@@ -484,7 +487,7 @@ struct GnObjectTypesVK
     using PipelineLayout = GnPipelineLayoutVK;
     using Pipeline = GnPipelineVK;
     using DescriptorPool = GnDescriptorPoolVK;
-    using ResourceTable = GnUnimplementedType;
+    using DescriptorTable = GnUnimplementedType;
     using CommandPool = GnCommandPoolVK;
     using CommandList = GnCommandListVK;
 };
@@ -533,6 +536,7 @@ struct GnDeviceVK : public GnDevice_t
     GnResult WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept;
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
     GnResult DeviceWaitIdle() noexcept override;
+    GnResult ResetCommandPool(GnCommandPool command_pool) noexcept override;
 };
 
 // -------------------------------------------------------
@@ -558,6 +562,7 @@ static void GnVisitStructChainVK(BaseStructType* base, VisitFn fn)
 inline static GnResult GnConvertFromVkResult(VkResult result) noexcept
 {
     switch (result) {
+        case VK_TIMEOUT:                    return GnTimeout;
         case VK_SUCCESS:                    return GnSuccess;
         case VK_ERROR_OUT_OF_HOST_MEMORY:   return GnError_OutOfHostMemory;
         case VK_ERROR_OUT_OF_DEVICE_MEMORY: return GnError_OutOfDeviceMemory;
@@ -1503,18 +1508,18 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK*                      instance,
     limits.max_storage_buffer_range = vk_limits.maxStorageBufferRange;
     limits.max_shader_constant_size = vk_limits.maxPushConstantsSize;
     limits.max_bound_pipeline_layout_slots = vk_limits.maxBoundDescriptorSets;
-    limits.max_per_stage_sampler_resources = std::min(GN_MAX_RESOURCE_TABLE_SAMPLERS, vk_limits.maxPerStageDescriptorSamplers);
-    limits.max_per_stage_uniform_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorUniformBuffers);
-    limits.max_per_stage_storage_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageBuffers);
-    limits.max_per_stage_read_only_storage_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageBuffers);
-    limits.max_per_stage_sampled_texture_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorSampledImages);
-    limits.max_per_stage_storage_texture_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageImages);
-    limits.max_resource_table_samplers = std::min(GN_MAX_RESOURCE_TABLE_SAMPLERS, vk_limits.maxDescriptorSetSamplers);
-    limits.max_resource_table_uniform_buffers = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetUniformBuffers);
-    limits.max_resource_table_storage_buffers = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageBuffers);
-    limits.max_resource_table_read_only_storage_buffer_resources = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageBuffers);
-    limits.max_resource_table_sampled_textures = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetSampledImages);
-    limits.max_resource_table_storage_textures = std::min(GN_MAX_RESOURCE_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageImages);
+    limits.max_per_stage_sampler_resources = std::min(GN_MAX_DESCRIPTOR_TABLE_SAMPLERS, vk_limits.maxPerStageDescriptorSamplers);
+    limits.max_per_stage_uniform_buffer_resources = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorUniformBuffers);
+    limits.max_per_stage_storage_buffer_resources = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageBuffers);
+    limits.max_per_stage_read_only_storage_buffer_resources = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageBuffers);
+    limits.max_per_stage_sampled_texture_resources = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorSampledImages);
+    limits.max_per_stage_storage_texture_resources = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxPerStageDescriptorStorageImages);
+    limits.max_descriptor_table_samplers = std::min(GN_MAX_DESCRIPTOR_TABLE_SAMPLERS, vk_limits.maxDescriptorSetSamplers);
+    limits.max_descriptor_table_uniform_buffers = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetUniformBuffers);
+    limits.max_descriptor_table_storage_buffers = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageBuffers);
+    limits.max_descriptor_table_read_only_storage_buffer_resources = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageBuffers);
+    limits.max_descriptor_table_sampled_textures = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetSampledImages);
+    limits.max_descriptor_table_storage_textures = std::min(GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS, vk_limits.maxDescriptorSetStorageImages);
     limits.max_per_stage_resources = limits.max_per_stage_sampler_resources +
         limits.max_per_stage_uniform_buffer_resources +
         limits.max_per_stage_storage_buffer_resources +
@@ -1696,12 +1701,12 @@ GnResult GnAdapterVK::GetSurfaceFormats(GnSurface surface, uint32_t* num_surface
     uint32_t total_formats;
     parent_instance->fn.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, vk_surface, &total_formats, nullptr);
 
-    VkSurfaceFormatKHR* surface_formats = (VkSurfaceFormatKHR*)std::malloc(sizeof(VkSurfaceFormatKHR) * total_formats);
+    GnSmallVector<VkSurfaceFormatKHR, 32> surface_formats;
 
-    if (!surface_formats)
+    if (!surface_formats.resize(total_formats))
         return GnError_OutOfHostMemory;
 
-    parent_instance->fn.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, vk_surface, &total_formats, surface_formats);
+    parent_instance->fn.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, vk_surface, &total_formats, surface_formats.storage);
 
     // There are some unsupported Vulkan formats which we have to inspect it.
     if (formats != nullptr) {
@@ -1730,8 +1735,6 @@ GnResult GnAdapterVK::GetSurfaceFormats(GnSurface surface, uint32_t* num_surface
         }
     }
     
-    std::free(surface_formats);
-
     return GnSuccess;
 }
 
@@ -1940,6 +1943,12 @@ GnResult GnDeviceVK::CreateFence(GnBool signaled, GnFence* fence) noexcept
         fn.vkDestroyFence(device, vk_fence, nullptr);
         return GnError_OutOfHostMemory;
     }
+
+    new(new_fence) GnFenceVK();
+    new_fence->parent_device = this;
+    new_fence->fence = vk_fence;
+
+    *fence = new_fence;
 
     return GnSuccess;
 }
@@ -3389,6 +3398,11 @@ GnResult GnDeviceVK::DeviceWaitIdle() noexcept
     return GnConvertFromVkResult(fn.vkDeviceWaitIdle(device));
 }
 
+GnResult GnDeviceVK::ResetCommandPool(GnCommandPool command_pool) noexcept
+{
+    return GnConvertFromVkResult(fn.vkResetCommandPool(device, GN_TO_VULKAN(GnCommandPool, command_pool)->cmd_pool, 0));
+}
+
 // -- [GnQueueVK] --
 
 VkResult GnQueueVK::Init(GnDeviceVK* impl_device, VkQueue vk_queue) noexcept
@@ -3608,7 +3622,7 @@ bool GnQueueVK::GroupSubmissionPacket() noexcept
 
     auto submission = submission_queue.emplace();
 
-    // Return if can't reserve space submit info
+    // Return if can't reserve space for submit info
     if (!submission.has_value())
         return false;
 
@@ -3655,6 +3669,19 @@ GnSwapchainVK::GnSwapchainVK(GnDeviceVK* impl_device) noexcept :
 {
 }
 
+GnTexture GnSwapchainVK::GetSwapchainTexture(uint32_t index) noexcept
+{
+    return &blit_images[index];
+}
+
+GnResult GnSwapchainVK::GetSwapchainTextures(uint32_t num_textures, GnTexture* textures) noexcept
+{
+    for (uint32_t i = 0; i < num_textures; i++)
+        textures[i] = &blit_images[i];
+
+    return GnSuccess;
+}
+
 GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept
 {
     const GnVulkanDeviceFunctions& fn = impl_device->fn;
@@ -3667,7 +3694,7 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
     bool vsync_changed = vsync != swapchain_desc.vsync;
     bool config_changed = size_changed || num_buffers_changed || format_changed;
     GnFormat used_format = format_changed ? format : swapchain_desc.format;
-    GnSmallVector<GnSwapchainFramePresenterVK, 4> new_frame_presenters;
+    GnSmallVector<GnSwapchainFramePresenterVK, 16> new_frame_presenters;
 
     if (num_buffers_changed) {
         VkSemaphoreCreateInfo semaphore_info;
@@ -3716,10 +3743,23 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
         }
     }
 
+    GnSmallVector<GnSwapchainBlitImageVK, 16> new_blit_images;
     int32_t memtype_index = -1;
-    GnSmallVector<GnSwapchainBlitImageVK, 4> new_blit_images;
 
     if (!failed && config_changed) {
+        // Prepare this for the GnTexture
+        GnTextureDesc swapchain_texture_desc;
+        swapchain_texture_desc.usage = swapchain_desc.usage;
+        swapchain_texture_desc.type = GnTextureType_2D;
+        swapchain_texture_desc.format = used_format;
+        swapchain_texture_desc.width = width;
+        swapchain_texture_desc.height = height;
+        swapchain_texture_desc.depth = 1;
+        swapchain_texture_desc.mip_levels = 1;
+        swapchain_texture_desc.array_layers = 1;
+        swapchain_texture_desc.samples = 1;
+        swapchain_texture_desc.tiling = GnTiling_Optimal;
+
         VkImageCreateInfo image_info;
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image_info.pNext = nullptr;
@@ -3757,7 +3797,6 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
             // Find supported memory type. We only do this once.
             if (memtype_index == -1) {
                 VkMemoryRequirements mem_requirements;
-
                 fn.vkGetImageMemoryRequirements(device, blit_image->image, &mem_requirements);
                 memtype_index = GnFindMemoryTypeVk(impl_adapter->vk_memory_properties,
                                                    mem_requirements.memoryTypeBits,
@@ -3778,6 +3817,8 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
             }
 
             fn.vkBindImageMemory(device, blit_image->image, blit_image->memory, 0);
+            blit_image->swapchain_owned = true;
+            blit_image->desc = swapchain_texture_desc;
         }
     }
 
@@ -3794,6 +3835,7 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
     }
 
     if (num_buffers_changed) {
+        // TODO: Use delayed destroy
         if (frame_presenters.size > 0)
             for (uint32_t i = 0; i < swapchain_desc.num_buffers; i++)
                 frame_presenters[i].Destroy(impl_device);
@@ -3802,6 +3844,7 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
     }
 
     if (config_changed) {
+        // TODO: Use delayed destroy
         if (blit_images.size > 0)
             for (uint32_t i = 0; i < swapchain_desc.num_buffers; i++)
                 blit_images[i].Destroy(impl_device);
@@ -3854,7 +3897,7 @@ GnResult GnSwapchainVK::Init(const GnSwapchainDesc* desc, VkSwapchainKHR old_swa
     if (GN_VULKAN_FAILED(fn.vkCreateSwapchainKHR(device, &swapchain_info, nullptr, &new_swapchain)))
         return GnError_InternalError;
 
-    GnSmallVector<VkImage, 4> new_swapchain_images;
+    GnSmallVector<VkImage, 16> new_swapchain_images;
     uint32_t num_images = desc->num_buffers;
 
     if (!(new_swapchain_images.resize(desc->num_buffers) &&
@@ -3900,6 +3943,18 @@ void GnSwapchainVK::Destroy(GnDeviceVK* impl_device) noexcept
 
     if (swapchain)
         impl_device->fn.vkDestroySwapchainKHR(impl_device->device, swapchain, nullptr);
+}
+
+// -- [GnFenceVK] --
+
+GnResult GnFenceVK::Wait(uint64_t timeout) noexcept
+{
+    return GnConvertFromVkResult(parent_device->fn.vkWaitForFences(parent_device->device, 1, &fence, VK_FALSE, timeout));
+}
+
+GnResult GnFenceVK::Reset() noexcept
+{
+    return GnConvertFromVkResult(parent_device->fn.vkResetFences(parent_device->device, 1, &fence));
 }
 
 // -- [GnDescriptorStreamVK] --
@@ -4071,7 +4126,6 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
             VkDescriptorSet descriptor_set = impl_cmd_pool->descriptor_stream.AllocateDescriptorSet(pipeline_layout);
 
             GN_ASSERT(descriptor_set != nullptr && "Cannot allocate descriptor set for global resource.");
-
 
             for (uint32_t i = 0; i < 32 && num_global_descriptors != 0; i++) {
                 const uint32_t write_mask = 1 << i;

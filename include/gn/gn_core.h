@@ -564,7 +564,7 @@ struct GnTrackedResource
         if (ret == nullptr) return nullptr;
 
         next = next->next;
-        next->prev = ret->prev;
+        if (next) next->prev = ret->prev;
         ret->prev = nullptr;
         ret->next = nullptr;
 

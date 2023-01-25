@@ -66,6 +66,7 @@ typedef uint64_t GnDeviceSize;
 typedef enum
 {
     GnSuccess,
+    GnTimeout,
     GnError_Unknown             = -1,
     GnError_Unimplemented       = -2,
     GnError_InvalidArgs         = -3,
@@ -301,12 +302,12 @@ typedef struct
     uint32_t max_per_stage_sampled_texture_resources;
     uint32_t max_per_stage_storage_texture_resources;
     uint32_t max_per_stage_resources;
-    uint32_t max_resource_table_samplers;
-    uint32_t max_resource_table_uniform_buffers;
-    uint32_t max_resource_table_storage_buffers;
-    uint32_t max_resource_table_read_only_storage_buffer_resources;
-    uint32_t max_resource_table_sampled_textures;
-    uint32_t max_resource_table_storage_textures;
+    uint32_t max_descriptor_table_samplers;
+    uint32_t max_descriptor_table_uniform_buffers;
+    uint32_t max_descriptor_table_storage_buffers;
+    uint32_t max_descriptor_table_read_only_storage_buffer_resources;
+    uint32_t max_descriptor_table_sampled_textures;
+    uint32_t max_descriptor_table_storage_textures;
 } GnAdapterLimits;
 
 typedef struct
@@ -493,6 +494,10 @@ typedef struct
 
 GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GnSwapchain* swapchain);
 void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain);
+uint32_t GnGetSwapchainTextureCount(GnSwapchain swapchain);
+GnTexture GnGetSwapchainTexture(GnSwapchain swapchain, uint32_t index);
+GnResult GnGetSwapchainTextures(GnSwapchain swapchain, uint32_t num_textures, GnTexture* textures);
+uint32_t GnGetCurrentSwapchainTextureIndex(GnSwapchain swapchain);
 GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync);
 
 typedef enum
@@ -508,7 +513,7 @@ GnResult GnCreateFence(GnDevice device, GnBool signaled, GnFence* fence);
 void GnDestroyFence(GnDevice device, GnFence fence);
 GnResult GnGetFenceStatus(GnFence fence);
 GnResult GnWaitFence(GnFence fence, uint64_t timeout);
-void GnResetFence(GnFence fence);
+GnResult GnResetFence(GnFence fence);
 
 typedef enum
 {
@@ -1156,7 +1161,7 @@ void GnTrimCommandPool(GnCommandPool command_pool);
 
 typedef enum
 {
-    GnCommandListBegin_OneTimeUse = 1 << 0,
+    GnCommandListBegin_OneTimeSubmit = 1 << 0,
     GnCommandListBegin_RenderPassContinue = 1 << 1,
     GnCommandListBegin_SimultaneousUse = 1 << 2,
 } GnCommandListBegin;
@@ -1289,7 +1294,7 @@ typedef struct
 void GnCmdSetDescriptorPool(GnCommandList command_list, uint32_t num_descriptor_pool, GnDescriptorPool descriptor_pool);
 void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pipeline);
 void GnCmdSetGraphicsPipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
-void GnCmdSetGraphicsResourceTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table);
+void GnCmdSetGraphicsDescriptorTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table);
 void GnCmdSetGraphicsUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset);
 void GnCmdSetGraphicsStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset);
 void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data);
@@ -1318,7 +1323,7 @@ void GnCmdDrawIndexedIndirect(GnCommandList command_list, GnBuffer indirect_buff
 void GnCmdEndRenderPass(GnCommandList command_list);
 void GnCmdSetComputePipeline(GnCommandList command_list, GnPipeline compute_pipeline);
 void GnCmdSetComputePipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
-void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table);
+void GnCmdSetGraphicsDescriptorTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table);
 void GnCmdSetComputeUniformBuffer(GnCommandList command_list, uint32_t slot, GnBuffer uniform_buffer, uint32_t offset);
 void GnCmdSetComputeStorageBuffer(GnCommandList command_list, uint32_t slot, GnBuffer storage_buffer, uint32_t offset);
 void GnCmdSetComputeShaderConstants(GnCommandList command_list, uint32_t offset, uint32_t size, const void* data);
@@ -1327,7 +1332,6 @@ void GnCmdSetComputeShaderConstantU(GnCommandList command_list, uint32_t slot, u
 void GnCmdSetComputeShaderConstantF(GnCommandList command_list, uint32_t slot, float value);
 void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z);
 void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset);
-void GnCmdClearStorageColorTexture(GnCommandList command_list, GnTexture texture, GnResourceAccessFlags texture_access, const GnColorValue* color, uint32_t num_ranges, const GnTextureSubresourceRange* ranges);
 void GnCmdCopyBuffer(GnCommandList command_list, GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size);
 void GnCmdCopyBufferRegions(GnCommandList command_list, GnBuffer src_buffer, GnBuffer dst_buffer, uint32_t num_regions, const GnBufferCopy* regions);
 void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access);

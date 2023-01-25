@@ -241,13 +241,13 @@ struct GnExampleApp : private GnExampleWindowWin32
         GnSwapchainDesc swapchain_desc{};
         swapchain_desc.surface = surface;
         swapchain_desc.usage = GnTextureUsage_ColorAttachment;
-        swapchain_desc.format = GnFormat_BGRA8Unorm;
+        swapchain_desc.format = surface_format;
         swapchain_desc.width = window_width;
         swapchain_desc.height = window_height;
         swapchain_desc.num_buffers = num_swapchain_buffers;
         swapchain_desc.vsync = false;
 
-        if (GnCreateSwapchain(device, &swapchain_desc, &swapchain)) {
+        if (GN_FAILED(GnCreateSwapchain(device, &swapchain_desc, &swapchain))) {
             EX_ERROR("Cannot create swapchain");
             return false;
         }
@@ -262,6 +262,7 @@ struct GnExampleApp : private GnExampleWindowWin32
     {
         while (open) {
             ProcessEvent();
+            OnRender();
             GnPresentSwapchain(queue, swapchain);
         }
 
@@ -269,6 +270,8 @@ struct GnExampleApp : private GnExampleWindowWin32
     }
 
     virtual void OnStart() { }
+
+    virtual void OnRender() { }
 };
 
 static std::optional<std::vector<uint32_t>> GnLoadSPIRV(const char* path)

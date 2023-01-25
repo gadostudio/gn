@@ -131,7 +131,7 @@ int main()
     EX_THROW_IF_FAILED(GnCreateCommandLists(device, &command_list_desc, &command_list));
 
     GnCommandListBeginDesc begin_desc;
-    begin_desc.flags = GnCommandListBegin_OneTimeUse;
+    begin_desc.flags = GnCommandListBegin_OneTimeSubmit;
     begin_desc.inheritance = nullptr;
 
     GnBeginCommandList(command_list, &begin_desc);

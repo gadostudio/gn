@@ -9,8 +9,8 @@
 
 // The maximum number of bound resources for each resource type on resource table currently is hardcoded.
 // We may change this number in the future.
-#define GN_MAX_RESOURCE_TABLE_SAMPLERS 2048u
-#define GN_MAX_RESOURCE_TABLE_DESCRIPTORS 1048576u
+#define GN_MAX_DESCRIPTOR_TABLE_SAMPLERS 2048u
+#define GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS 1048576u
 
 #include <gn/gn.h>
 #include <gn/gn_core.h>
@@ -94,13 +94,17 @@ struct GnDevice_t
     virtual GnResult WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept = 0;
     virtual GnQueue GetQueue(uint32_t queue_group_id, uint32_t queue_index) noexcept = 0;
     virtual GnResult DeviceWaitIdle() noexcept = 0;
+    virtual GnResult ResetCommandPool(GnCommandPool command_pool) noexcept = 0;
 };
 
 struct GnSwapchain_t
 {
     GnSwapchainDesc swapchain_desc{};
+    uint32_t        current_frame = 0;
 
     virtual ~GnSwapchain_t() { }
+    virtual GnTexture GetSwapchainTexture(uint32_t index) noexcept = 0;
+    virtual GnResult GetSwapchainTextures(uint32_t num_textures, GnTexture* textures) noexcept = 0;
     virtual GnResult Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept = 0;
 };
 
@@ -119,6 +123,8 @@ struct GnSemaphore_t
 
 struct GnFence_t
 {
+    virtual GnResult Wait(uint64_t timeout) = 0;
+    virtual GnResult Reset() = 0;
 };
 
 struct GnMemory_t
@@ -142,11 +148,12 @@ struct GnTexture_t
 {
     GnTextureDesc           desc;
     GnMemoryRequirements    memory_requirements;
+    bool                    swapchain_owned;
 };
 
 struct GnTextureView_t
 {
-    GnTextureViewDesc                   desc;
+    GnTextureViewDesc   desc;
 };
 
 struct GnRenderPass_t
@@ -751,6 +758,32 @@ void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain)
     device->DestroySwapchain(swapchain);
 }
 
+uint32_t GnGetSwapchainTextureCount(GnSwapchain swapchain)
+{
+    return swapchain->swapchain_desc.num_buffers;
+}
+
+GnTexture GnGetSwapchainTexture(GnSwapchain swapchain, uint32_t index)
+{
+    if (index > swapchain->swapchain_desc.num_buffers - 1)
+        return nullptr;
+
+    return swapchain->GetSwapchainTexture(index);
+}
+
+GnResult GnGetSwapchainTextures(GnSwapchain swapchain, uint32_t num_textures, GnTexture* textures)
+{
+    if (num_textures > swapchain->swapchain_desc.num_buffers)
+        return GnError_InvalidArgs;
+
+    return swapchain->GetSwapchainTextures(num_textures, textures);
+}
+
+uint32_t GnGetCurrentSwapchainTextureIndex(GnSwapchain swapchain)
+{
+    return swapchain->current_frame;
+}
+
 GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync)
 {
     return swapchain->Update(format, width, height, num_buffers, vsync);
@@ -775,7 +808,7 @@ GnResult GnEnqueueSignalSemaphore(GnQueue queue, uint32_t num_signal_semaphores,
 
 GnResult GnFlushQueue(GnQueue queue, GnFence fence)
 {
-    return GnError_Unimplemented;
+    return queue->Flush(fence, false);
 }
 
 GnResult GnFlushQueueAndWait(GnQueue queue) 
@@ -822,8 +855,7 @@ GnResult GnCreateFence(GnDevice device, GnBool signaled, GnFence* fence)
 
 void GnDestroyFence(GnDevice device, GnFence fence)
 {
-    //fence->~GnFence_t();
-    //std::free(fence);
+    device->DestroyFence(fence);
 }
 
 GnResult GnGetFenceStatus(GnFence fence)
@@ -833,12 +865,12 @@ GnResult GnGetFenceStatus(GnFence fence)
 
 GnResult GnWaitFence(GnFence fence, uint64_t timeout)
 {
-    return GnError_Unimplemented;
+    return fence->Wait(timeout);
 }
 
-void GnResetFence(GnFence fence)
+GnResult GnResetFence(GnFence fence)
 {
-
+    return fence->Reset();
 }
 
 // -- [GnMemory] --
@@ -912,12 +944,13 @@ GnResult GnWriteBufferRange(GnDevice device, GnBuffer buffer, const GnMemoryRang
 
 GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GnTexture* texture)
 {
-    return GnError_Unimplemented;
+    return device->CreateTexture(desc, texture);
 }
 
 void GnDestroyTexture(GnDevice device, GnTexture texture)
 {
-
+    if (texture->swapchain_owned) return;
+    device->DestroyTexture(texture);
 }
 
 void GnGetTextureDesc(GnTexture texture, GnTextureDesc* texture_desc)
@@ -938,7 +971,7 @@ bool GnValidateCreateTextureViewParam(GnDevice device, const GnTextureViewDesc* 
 
 GnResult GnCreateTextureView(GnDevice device, const GnTextureViewDesc* desc, GnTextureView* texture_view)
 {
-    if (GnValidateCreateTextureViewParam(device, desc, texture_view)) return GnError_InvalidArgs;
+    if (!GnValidateCreateTextureViewParam(device, desc, texture_view)) return GnError_InvalidArgs;
     return device->CreateTextureView(desc, texture_view);
 }
 
@@ -1071,7 +1104,7 @@ void GnDestroyCommandPool(GnDevice device, GnCommandPool command_pool)
 
 GnResult GnResetCommandPool(GnDevice device, GnCommandPool command_pool)
 {
-    return GnError_Unimplemented;
+    return device->ResetCommandPool(command_pool);
 }
 
 void GnTrimCommandPool(GnCommandPool command_pool)
@@ -1110,6 +1143,10 @@ GnBool GnIsRecordingCommandList(GnCommandList command_list)
 GnBool GnIsInsideRenderPass(GnCommandList command_list)
 {
     return GnBool(command_list->inside_render_pass);
+}
+
+void GnCmdSetDescriptorPool(GnCommandList command_list, uint32_t num_descriptor_pool, GnDescriptorPool descriptor_pool)
+{
 }
 
 void GnCmdSetGraphicsPipeline(GnCommandList command_list, GnPipeline graphics_pipeline)
@@ -1358,7 +1395,7 @@ void GnCmdSetComputePipelineLayout(GnCommandList command_list, GnPipelineLayout 
     command_list->state.update_flags.compute_pipeline_layout = true;
 }
 
-void GnCmdSetComputeResourceTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table)
+void GnCmdSetComputeDescriptorTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table)
 {
     if (descriptor_table == command_list->state.compute.descriptor_tables[slot]) return;
     command_list->state.compute.descriptor_tables[slot] = descriptor_table;

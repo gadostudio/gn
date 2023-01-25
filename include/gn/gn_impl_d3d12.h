@@ -17,11 +17,11 @@ struct GnFenceD3D12;
 struct GnBufferD3D12;
 struct GnTextureD3D12;
 struct GnRenderPassD3D12;
-struct GnResourceTableLayoutD3D12;
+struct GnDescriptorTableLayoutD3D12;
 struct GnPipelineLayoutD3D12;
 struct GnPipelineD3D12;
-struct GnResourceTablePoolD3D12;
-struct GnResourceTableD3D12;
+struct GnDescriptorPoolD3D12;
+struct GnDescriptorTableD3D12;
 struct GnCommandPoolD3D12;
 struct GnCommandListD3D12;
 
@@ -166,11 +166,11 @@ struct GnObjectTypesD3D12
     using Texture               = GnTextureD3D12;
     using TextureView           = GnTextureViewD3D12;
     using RenderPass            = GnUnimplementedType;
-    using DescriptorTableLayout   = GnUnimplementedType;
+    using DescriptorTableLayout = GnUnimplementedType;
     using PipelineLayout        = GnPipelineLayoutD3D12;
     using Pipeline              = GnPipelineD3D12;
-    using DescriptorPool     = GnUnimplementedType;
-    using ResourceTable         = GnUnimplementedType;
+    using DescriptorPool        = GnUnimplementedType;
+    using DescriptorTable       = GnUnimplementedType;
     using CommandPool           = GnCommandPoolD3D12;
     using CommandList           = GnCommandListD3D12;
 };
@@ -222,7 +222,8 @@ struct GnDeviceD3D12 : public GnDevice_t
     void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept override;
     GnResult WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept override;
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
-    GnResult DeviceWaitIdle() noexcept;
+    GnResult DeviceWaitIdle() noexcept override;
+    GnResult ResetCommandPool(GnCommandPool command_pool) noexcept override;
 };
 
 // -------------------------------------------------------
@@ -610,16 +611,16 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
             max_per_stage_uav = (supported_feature_levels.MaxSupportedFeatureLevel > D3D_FEATURE_LEVEL_11_0) ? 64 : 8;
             break;
         case D3D12_RESOURCE_BINDING_TIER_2:
-            max_per_stage_samplers = GN_MAX_RESOURCE_TABLE_SAMPLERS;
+            max_per_stage_samplers = GN_MAX_DESCRIPTOR_TABLE_SAMPLERS;
             max_per_stage_cbv = 14;
             max_per_stage_srv = 1000000;
             max_per_stage_uav = 64;
             break;
         case D3D12_RESOURCE_BINDING_TIER_3:
-            max_per_stage_samplers = GN_MAX_RESOURCE_TABLE_SAMPLERS;
-            max_per_stage_cbv = GN_MAX_RESOURCE_TABLE_DESCRIPTORS;
-            max_per_stage_srv = GN_MAX_RESOURCE_TABLE_DESCRIPTORS;
-            max_per_stage_uav = GN_MAX_RESOURCE_TABLE_DESCRIPTORS;
+            max_per_stage_samplers = GN_MAX_DESCRIPTOR_TABLE_SAMPLERS;
+            max_per_stage_cbv = GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS;
+            max_per_stage_srv = GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS;
+            max_per_stage_uav = GN_MAX_DESCRIPTOR_TABLE_DESCRIPTORS;
             break;
         default:
             GN_DBG_ASSERT(false && "Unreachable"); // just in case if things messed up.
@@ -631,12 +632,12 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
     limits.max_per_stage_read_only_storage_buffer_resources = max_per_stage_srv;
     limits.max_per_stage_sampled_texture_resources = max_per_stage_srv;
     limits.max_per_stage_storage_texture_resources = max_per_stage_uav;
-    limits.max_resource_table_samplers = max_per_stage_samplers;
-    limits.max_resource_table_uniform_buffers = max_per_stage_cbv;
-    limits.max_resource_table_storage_buffers = max_per_stage_uav;
-    limits.max_resource_table_read_only_storage_buffer_resources = max_per_stage_srv;
-    limits.max_resource_table_sampled_textures = max_per_stage_srv;
-    limits.max_resource_table_storage_textures = max_per_stage_uav;
+    limits.max_descriptor_table_samplers = max_per_stage_samplers;
+    limits.max_descriptor_table_uniform_buffers = max_per_stage_cbv;
+    limits.max_descriptor_table_storage_buffers = max_per_stage_uav;
+    limits.max_descriptor_table_read_only_storage_buffer_resources = max_per_stage_srv;
+    limits.max_descriptor_table_sampled_textures = max_per_stage_srv;
+    limits.max_descriptor_table_storage_textures = max_per_stage_uav;
     limits.max_per_stage_resources = max_per_stage_samplers + max_per_stage_cbv + max_per_stage_srv + max_per_stage_uav;
 
     // Apply feature sets
@@ -1238,6 +1239,11 @@ GnQueue GnDeviceD3D12::GetQueue(uint32_t queue_group_index, uint32_t queue_index
 }
 
 GnResult GnDeviceD3D12::DeviceWaitIdle() noexcept
+{
+    return GnResult();
+}
+
+GnResult GnDeviceD3D12::ResetCommandPool(GnCommandPool command_pool) noexcept
 {
     return GnResult();
 }
