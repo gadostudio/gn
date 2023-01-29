@@ -8,8 +8,6 @@ struct VertexAttrib
 
 struct FrameData
 {
-    GnTexture swapchain_texture;
-    GnTextureView swapchain_texture_view;
     GnFence fence;
     GnCommandPool command_pool;
     GnCommandList command_list;
@@ -18,7 +16,7 @@ struct FrameData
 struct HelloTriangle : public GnExampleApp
 {
     std::vector<FrameData> frame_data;
-    GnRenderPass main_render_pass{};
+    GnRenderGraph main_render_graph{};
     GnBuffer vertex_buffer{};
     GnMemory vertex_buffer_mem{};
     GnPipeline pipeline{};
@@ -28,7 +26,6 @@ struct HelloTriangle : public GnExampleApp
         GnDeviceWaitIdle(device);
 
         for (auto& data : frame_data) {
-            GnDestroyTextureView(device, data.swapchain_texture_view);
             GnDestroyFence(device, data.fence);
             GnDestroyCommandPool(device, data.command_pool);
         }
@@ -36,27 +33,7 @@ struct HelloTriangle : public GnExampleApp
         GnDestroyBuffer(device, vertex_buffer);
         GnDestroyMemory(device, vertex_buffer_mem);
         GnDestroyPipeline(device, pipeline);
-        GnDestroyRenderPass(device, main_render_pass);
-    }
-
-    void PrepareSwapchainTextures()
-    {
-        GnTextureViewDesc view_desc{};
-        view_desc.type = GnTextureViewType_2D;
-        view_desc.format = surface_format;
-        view_desc.mapping = {};
-        view_desc.subresource_range.aspect = GnTextureAspect_Color;
-        view_desc.subresource_range.base_mip_level = 0;
-        view_desc.subresource_range.num_mip_levels = 1;
-        view_desc.subresource_range.base_array_layer = 0;
-        view_desc.subresource_range.num_array_layers = 1;
-
-        for (uint32_t i = 0; i < num_swapchain_buffers; i++) {
-            FrameData& data = frame_data[i];
-            data.swapchain_texture = GnGetSwapchainTexture(swapchain, i);
-            view_desc.texture = data.swapchain_texture;
-            GnCreateTextureView(device, &view_desc, &data.swapchain_texture_view);
-        }
+        GnDestroyRenderGraph(device, main_render_graph);
     }
 
     void OnStart() override
@@ -64,31 +41,31 @@ struct HelloTriangle : public GnExampleApp
         auto vertex_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/basic/hello_triangle/hello_triangle.vert.spv");
         auto fragment_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/basic/hello_triangle/hello_triangle.frag.spv");
 
-        GnAttachmentDesc att_desc{};
-        att_desc.format                             = surface_format;
-        att_desc.sample_count                       = GnSampleCount_X1;
-        att_desc.load_op                            = GnAttachmentOp_Clear;
-        att_desc.store_op                           = GnAttachmentOp_Store;
-        att_desc.stencil_load_op                    = GnAttachmentOp_Discard;
-        att_desc.stencil_store_op                   = GnAttachmentOp_Discard;
-        att_desc.initial_access                     = GnResourceAccess_Undefined;
-        att_desc.final_access                       = GnResourceAccess_Present;
+        GnRenderGraphTargetDesc target_desc{};
+        target_desc.format                              = surface_format;
+        target_desc.sample_count                        = GnSampleCount_X1;
+        target_desc.load_op                             = GnRenderPassOp_Clear;
+        target_desc.store_op                            = GnRenderPassOp_Store;
+        target_desc.stencil_load_op                     = GnRenderPassOp_Discard;
+        target_desc.stencil_store_op                    = GnRenderPassOp_Discard;
+        target_desc.initial_access                      = GnResourceAccess_Undefined;
+        target_desc.final_access                        = GnResourceAccess_Present;
 
-        GnAttachmentReference att_ref{};
-        att_ref.attachment                          = 0;
-        att_ref.access                              = GnResourceAccess_ColorAttachment;
+        GnRenderPassTargetReference target_ref{};
+        target_ref.target                               = 0;
+        target_ref.access                               = GnResourceAccess_ColorTarget;
 
         GnSubpassDesc subpass_desc{};
-        subpass_desc.num_color_attachments          = 1;
-        subpass_desc.color_attachments              = &att_ref;
+        subpass_desc.num_color_targets                  = 1;
+        subpass_desc.color_targets                      = &target_ref;
 
-        GnRenderPassDesc render_pass_desc{};        
-        render_pass_desc.num_attachments            = 1;
-        render_pass_desc.attachments                = &att_desc;
-        render_pass_desc.num_subpasses              = 1;
-        render_pass_desc.subpasses                  = &subpass_desc;
+        GnRenderGraphDesc render_graph_desc{};
+        render_graph_desc.num_targets                   = 1;
+        render_graph_desc.targets                       = &target_desc;
+        render_graph_desc.num_subpasses                 = 1;
+        render_graph_desc.subpasses                     = &subpass_desc;
         
-        GnCreateRenderPass(device, &render_pass_desc, &main_render_pass);
+        GnCreateRenderGraph(device, &render_graph_desc, &main_render_graph);
 
         GnShaderBytecode vs_bytecode{};
         vs_bytecode.size                            = vertex_shader->size() * sizeof(uint32_t);
@@ -125,8 +102,8 @@ struct HelloTriangle : public GnExampleApp
         rasterization.cull_mode                     = GnCullMode_None;
 
         GnFragmentInterfaceStateDesc fragment_interface{};
-        fragment_interface.num_color_attachments    = 1;
-        fragment_interface.color_attachment_formats = &surface_format;
+        fragment_interface.num_color_targets        = 1;
+        fragment_interface.color_target_formats     = &surface_format;
 
         GnGraphicsPipelineDesc graphics_pipeline{};
         graphics_pipeline.vs                        = &vs_bytecode;
@@ -199,13 +176,11 @@ struct HelloTriangle : public GnExampleApp
 
             GnCreateFence(device, GN_TRUE, &data.fence);
         }
-
-        PrepareSwapchainTextures();
     }
 
     void OnRender()
     {
-        uint32_t frame_index = GnGetCurrentSwapchainTextureIndex(swapchain);
+        uint32_t frame_index = GnGetCurrentBackBufferIndex(swapchain);
         auto& current_frame = frame_data[frame_index];
 
         GnCommandListBeginDesc begin_desc;
@@ -218,6 +193,27 @@ struct HelloTriangle : public GnExampleApp
 
         GnResetCommandPool(device, current_frame.command_pool);
         GnBeginCommandList(current_frame.command_list, &begin_desc);
+
+        GnRenderPassColorTargetDesc color_target{};
+        color_target.view = GnGetCurrentBackBufferView(swapchain);
+        color_target.access = GnResourceAccess_ColorTarget;
+        color_target.load_op = GnRenderPassOp_Clear;
+        color_target.store_op = GnRenderPassOp_Store;
+        color_target.clear_value.float32[0] = 0.0f;
+        color_target.clear_value.float32[1] = 0.0f;
+        color_target.clear_value.float32[2] = 0.0f;
+        color_target.clear_value.float32[3] = 1.0f;
+
+        GnRenderPassBeginDesc render_pass_begin;
+        render_pass_begin.sample_count = GnSampleCount_X1;
+        render_pass_begin.render_area = {};
+        render_pass_begin.num_color_targets = 1;
+        render_pass_begin.color_targets = &color_target;
+        render_pass_begin.depth_stencil_target = nullptr;
+
+        GnCmdBeginRenderPass(current_frame.command_list, &render_pass_begin);
+        GnCmdEndRenderPass(current_frame.command_list);
+        
         GnEndCommandList(current_frame.command_list);
 
         GnEnqueueCommandLists(queue, 1, &current_frame.command_list);

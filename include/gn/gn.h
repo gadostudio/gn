@@ -20,6 +20,7 @@
 #define GN_MAX_MEMORY_POOLS         16
 #define GN_MAX_MEMORY_TYPES         32
 #define GN_MAX_SWAPCHAIN_BUFFERS    16
+#define GN_MAX_COLOR_TARGETS        8
 
 #if defined(_WIN32)
 #define GN_FPTR __stdcall
@@ -50,7 +51,7 @@ typedef struct GnBuffer_t* GnBuffer;
 typedef struct GnTexture_t* GnTexture;
 typedef struct GnTextureView_t* GnTextureView;
 typedef struct GnSwapchain_t* GnSwapchain;
-typedef struct GnRenderPass_t* GnRenderPass;
+typedef struct GnRenderGraph_t* GnRenderGraph;
 typedef struct GnDescriptorTableLayout_t* GnDescriptorTableLayout;
 typedef struct GnPipelineLayout_t* GnPipelineLayout;
 typedef struct GnPipelineCache_t* GnPipelineCache;
@@ -127,7 +128,7 @@ typedef enum
     GnFeature_PrimitiveRestartControl,
     GnFeature_LinePolygonMode,
     GnFeature_PointPolygonMode,
-    GnFeature_ColorAttachmentLogicOp,
+    GnFeature_ColorTargetLogicOp,
     GnFeature_UnclippedDepth,
     GnFeature_Count,
 } GnFeature;
@@ -494,10 +495,10 @@ typedef struct
 
 GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GnSwapchain* swapchain);
 void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain);
-uint32_t GnGetSwapchainTextureCount(GnSwapchain swapchain);
-GnTexture GnGetSwapchainTexture(GnSwapchain swapchain, uint32_t index);
-GnResult GnGetSwapchainTextures(GnSwapchain swapchain, uint32_t num_textures, GnTexture* textures);
-uint32_t GnGetCurrentSwapchainTextureIndex(GnSwapchain swapchain);
+uint32_t GnGetSwapchainBackBufferCount(GnSwapchain swapchain);
+uint32_t GnGetCurrentBackBufferIndex(GnSwapchain swapchain);
+GnTextureView GnGetCurrentBackBufferView(GnSwapchain swapchain);
+GnTextureView GnGetSwapchainBackBufferView(GnSwapchain swapchain, uint32_t index);
 GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync);
 
 typedef enum
@@ -667,15 +668,14 @@ typedef struct
 
 GnResult GnCreateTextureView(GnDevice device, const GnTextureViewDesc* desc, GnTextureView* texture_view);
 void GnDestroyTextureView(GnDevice device, GnTextureView texture);
-void GnGetTextureViewDesc(GnTextureView texture_view, GnTextureViewDesc* desc);
 
 typedef enum
 {
-    GnAttachmentOp_Load,
-    GnAttachmentOp_Store,
-    GnAttachmentOp_Clear,
-    GnAttachmentOp_Discard,
-} GnAttachmentOp;
+    GnRenderPassOp_Load,
+    GnRenderPassOp_Store,
+    GnRenderPassOp_Clear,
+    GnRenderPassOp_Discard,
+} GnRenderPassOp;
 
 typedef enum
 {
@@ -693,10 +693,10 @@ typedef enum
     GnResourceAccess_VSWrite                        = 1 << 10,
     GnResourceAccess_FSWrite                        = 1 << 11,
     GnResourceAccess_CSWrite                        = 1 << 12,
-    GnResourceAccess_ColorAttachmentRead            = 1 << 13,
-    GnResourceAccess_ColorAttachmentWrite           = 1 << 14,
-    GnResourceAccess_DepthStencilAttachmentRead     = 1 << 15,
-    GnResourceAccess_DepthStencilAttachmentWrite    = 1 << 16,
+    GnResourceAccess_ColorTargetRead            = 1 << 13,
+    GnResourceAccess_ColorTargetWrite           = 1 << 14,
+    GnResourceAccess_DepthStencilTargetRead     = 1 << 15,
+    GnResourceAccess_DepthStencilTargetWrite    = 1 << 16,
     GnResourceAccess_CopySrc                        = 1 << 17,
     GnResourceAccess_CopyDst                        = 1 << 18,
     GnResourceAccess_BlitSrc                        = 1 << 19,
@@ -711,8 +711,8 @@ typedef enum
     GnResourceAccess_ShaderRead                     = GnResourceAccess_VSRead | GnResourceAccess_FSRead | GnResourceAccess_CSRead,
     GnResourceAccess_ShaderWrite                    = GnResourceAccess_VSWrite | GnResourceAccess_FSWrite | GnResourceAccess_CSWrite,
     GnResourceAccess_ShaderReadAndWrite             = GnResourceAccess_ShaderRead | GnResourceAccess_ShaderWrite,
-    GnResourceAccess_ColorAttachment                = GnResourceAccess_ColorAttachmentRead | GnResourceAccess_ColorAttachmentWrite,
-    GnResourceAccess_DepthStencilAttachment         = GnResourceAccess_DepthStencilAttachmentRead | GnResourceAccess_DepthStencilAttachmentWrite
+    GnResourceAccess_ColorTarget                    = GnResourceAccess_ColorTargetRead | GnResourceAccess_ColorTargetWrite,
+    GnResourceAccess_DepthStencilTarget             = GnResourceAccess_DepthStencilTargetRead | GnResourceAccess_DepthStencilTargetWrite
 } GnResourceAccess;
 typedef uint32_t GnResourceAccessFlags;
 
@@ -726,26 +726,26 @@ typedef struct
 {
     GnFormat                format;
     GnSampleCount           sample_count;
-    GnAttachmentOp          load_op;
-    GnAttachmentOp          store_op; 
-    GnAttachmentOp          stencil_load_op;
-    GnAttachmentOp          stencil_store_op;
+    GnRenderPassOp          load_op;
+    GnRenderPassOp          store_op; 
+    GnRenderPassOp          stencil_load_op;
+    GnRenderPassOp          stencil_store_op;
     GnResourceAccessFlags   initial_access;
     GnResourceAccessFlags   final_access;
-} GnAttachmentDesc;
+} GnRenderGraphTargetDesc;
 
 typedef struct
 {
-    uint32_t                attachment;
+    uint32_t                target;
     GnResourceAccessFlags   access;
-} GnAttachmentReference;
+} GnRenderPassTargetReference;
 
 typedef struct
 {
-    uint32_t                        num_color_attachments;
-    const GnAttachmentReference*    color_attachments;
-    const GnAttachmentReference*    resolve_attachments;
-    const GnAttachmentReference*    depth_stencil_attachment;
+    uint32_t                        num_color_targets;
+    const GnRenderPassTargetReference*    color_targets;
+    const GnRenderPassTargetReference*    resolve_targets;
+    const GnRenderPassTargetReference*    depth_stencil_target;
 } GnSubpassDesc;
 
 typedef struct
@@ -756,16 +756,16 @@ typedef struct
 
 typedef struct
 {
-    uint32_t                    num_attachments;
-    const GnAttachmentDesc*     attachments;
+    uint32_t                    num_targets;
+    const GnRenderGraphTargetDesc*     targets;
     uint32_t                    num_subpasses;
     const GnSubpassDesc*        subpasses;
     uint32_t                    num_dependencies;
     const GnSubpassDependency*  dependencies;
-} GnRenderPassDesc;
+} GnRenderGraphDesc;
 
-GnResult GnCreateRenderPass(GnDevice device, const GnRenderPassDesc* desc, GnRenderPass* render_pass);
-void GnDestroyRenderPass(GnDevice device, GnRenderPass render_pass);
+GnResult GnCreateRenderGraph(GnDevice device, const GnRenderGraphDesc* desc, GnRenderGraph* render_graph);
+void GnDestroyRenderGraph(GnDevice device, GnRenderGraph render_graph);
 
 typedef enum
 {
@@ -1009,10 +1009,10 @@ typedef struct
 
 typedef struct
 {
-    uint32_t    num_color_attachments;
-    GnFormat*   color_attachment_formats;
-    uint32_t    resolve_attachment_mask;
-    GnFormat    depth_stencil_attachment_format;
+    uint32_t    num_color_targets;
+    GnFormat*   color_target_formats;
+    uint32_t    resolve_target_mask;
+    GnFormat    depth_stencil_target_format;
 } GnFragmentInterfaceStateDesc;
 
 typedef struct
@@ -1045,13 +1045,13 @@ typedef struct
     GnBlendFactor           dst_alpha_blend_factor;
     GnBlendOp               alpha_blend_op;
     GnColorComponentFlags   color_write_mask;
-} GnColorAttachmentBlendStateDesc;
+} GnColorTargetBlendStateDesc;
 
 typedef struct
 {
     GnBool                              independent_blend;
     uint32_t                            num_blend_states;
-    GnColorAttachmentBlendStateDesc*    blend_states;
+    GnColorTargetBlendStateDesc*    blend_states;
 } GnBlendStateDesc;
 
 typedef struct
@@ -1080,14 +1080,14 @@ typedef struct
     GnPipelineStreamTokenType type;
     union
     {
-        GnShaderBytecode                shader;
-        GnVertexAttributeDesc           vertex_attribute;
-        GnInputAssemblyStateDesc        input_assembly;
-        GnRasterizationStateDesc        rasterization;
-        GnDepthStencilStateDesc         depth_stencil;
-        GnMultisampleStateDesc          multisample;
-        GnColorAttachmentBlendStateDesc attachment_blend;
-        GnPipelineLayout                layout;
+        GnShaderBytecode            shader;
+        GnVertexAttributeDesc       vertex_attribute;
+        GnInputAssemblyStateDesc    input_assembly;
+        GnRasterizationStateDesc    rasterization;
+        GnDepthStencilStateDesc     depth_stencil;
+        GnMultisampleStateDesc      multisample;
+        GnColorTargetBlendStateDesc color_target_blend;
+        GnPipelineLayout            layout;
     } token;
 } GnPipelineStreamToken;
 
@@ -1179,11 +1179,11 @@ typedef struct
 
 typedef struct
 {
-    uint32_t x;
-    uint32_t y;
-    uint32_t width;
-    uint32_t height;
-} GnScissorRect;
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+} GnRect2D;
 
 typedef struct
 {
@@ -1195,12 +1195,12 @@ typedef struct
 
 typedef struct
 {
-    GnRenderPass*           render_pass;
+    GnRenderGraph*          render_graph;
     uint32_t                subpass;
     uint32_t                num_viewports;
     const GnViewport*       viewports;
     uint32_t                num_scissors;
-    const GnScissorRect*    scissors;
+    const GnRect2D*    scissors;
 } GnCommandListInheritance;
 
 typedef struct
@@ -1228,6 +1228,49 @@ typedef union
     int32_t     int32[4];
     uint32_t    uint32[4];
 } GnColorValue;
+
+typedef struct
+{
+    float       depth;
+    uint32_t    stencil;
+} GnDepthStencilValue;
+
+typedef struct
+{
+    GnColorValue        color;
+    GnDepthStencilValue depth_stencil;
+} GnClearValue;
+
+typedef struct
+{
+    GnTextureView           view;
+    GnResourceAccessFlags   access;
+    GnTextureView           resolve_view;
+    GnResourceAccessFlags   resolve_access;
+    GnRenderPassOp          load_op;
+    GnRenderPassOp          store_op;
+    GnColorValue            clear_value;
+} GnRenderPassColorTargetDesc;
+
+typedef struct
+{
+    GnTextureView           view;
+    GnResourceAccessFlags   access;
+    GnRenderPassOp          depth_load_op;
+    GnRenderPassOp          depth_store_op;
+    GnRenderPassOp          stencil_load_op;
+    GnRenderPassOp          stencil_store_op;
+    GnDepthStencilValue     clear_value;
+} GnRenderPassDepthStencilTargetDesc;
+
+typedef struct
+{
+    GnSampleCount                               sample_count;
+    GnRect2D                                    render_area;
+    uint32_t                                    num_color_targets;
+    const GnRenderPassColorTargetDesc*          color_targets;
+    const GnRenderPassDepthStencilTargetDesc*   depth_stencil_target;
+} GnRenderPassBeginDesc;
 
 typedef struct
 {
@@ -1308,19 +1351,19 @@ void GnCmdSetViewport(GnCommandList command_list, uint32_t slot, float x, float 
 void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot, const GnViewport* viewport);
 void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t num_viewports, const GnViewport* viewports);
 void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
-void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnScissorRect* scissor);
-void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnScissorRect* scissors);
+void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnRect2D* scissor);
+void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnRect2D* scissors);
 void GnCmdSetBlendConstants(GnCommandList command_list, const float blend_constants[4]);
 void GnCmdSetBlendConstants2(GnCommandList command_list, float r, float g, float b, float a);
 void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref);
-void GnCmdBeginRenderPass(GnCommandList command_list, GnRenderPass render_pass);
+void GnCmdBeginRenderPass(GnCommandList command_list, const GnRenderPassBeginDesc* desc);
+void GnCmdEndRenderPass(GnCommandList command_list);
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex);
 void GnCmdDrawInstanced(GnCommandList command_list, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance);
 void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands);
 void GnCmdDrawIndexed(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, int32_t vertex_offset);
 void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance);
 void GnCmdDrawIndexedIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands);
-void GnCmdEndRenderPass(GnCommandList command_list);
 void GnCmdSetComputePipeline(GnCommandList command_list, GnPipeline compute_pipeline);
 void GnCmdSetComputePipelineLayout(GnCommandList command_list, GnPipelineLayout layout);
 void GnCmdSetGraphicsDescriptorTable(GnCommandList command_list, uint32_t slot, GnDescriptorTable descriptor_table);

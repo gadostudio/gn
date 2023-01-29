@@ -9,6 +9,9 @@
 #include <optional>
 #include <algorithm>
 #include <new>
+#include <mutex>
+#include <shared_mutex>
+#include <functional>
 
 #ifdef NDEBUG
 #define GN_DBG_ASSERT(x)
@@ -66,6 +69,12 @@ static constexpr T GnMax(T a, T2 b, Rest... rest) noexcept
     return (a > b) ? a : GnMax<T2, Rest...>(b, rest...);
 }
 
+template<typename T, typename T2>
+static constexpr T GnMin(T a, T2 b) noexcept
+{
+    return (a < b) ? a : b;
+}
+
 template<typename T, typename... Args>
 inline static constexpr bool GnContainsBit(T op, Args... args) noexcept
 {
@@ -90,6 +99,30 @@ template<typename T, std::enable_if_t<std::is_pointer_v<T>, bool> = true>
 inline static void GnFree(T ptr, std::size_t align = alignof(std::remove_pointer_t<T>))
 {
     ::operator delete(ptr, std::align_val_t{ align }, std::nothrow);
+}
+
+template<typename T>
+inline static size_t GnCalcHash(const T& data)
+{
+    return std::hash<T>{}(data); // TODO: Replace with a better one perhaps?
+}
+
+template<typename T>
+inline static void GnCombineHash(size_t& hash, const T& data)
+{
+    if constexpr (sizeof(size_t) == 8) {
+        hash = GnCalcHash(data) + 0x9e3779b97f4a7c16 + (hash << 6) + (hash >> 2);
+    }
+    else if constexpr (sizeof(size_t) == 4) {
+        hash = GnCalcHash(data) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    }
+}
+
+template<typename T, typename... Args>
+inline static void GnCombineHash(size_t& hash, const T& data, const Args&... args)
+{
+    GnCombineHash(hash, data);
+    (GnCombineHash(hash, args), ...);
 }
 
 struct GnPoolHeader
@@ -117,6 +150,7 @@ struct GnPool
     std::size_t num_reserved = 0;
     std::size_t num_allocated = 0;
     bool reserve_once = false;
+    std::mutex mutex;
 
     GnPool(std::size_t objects_per_block, bool reserve_once = false) noexcept :
         objects_per_block(objects_per_block)
@@ -135,6 +169,8 @@ struct GnPool
 
     void* allocate() noexcept
     {
+        std::scoped_lock lock(mutex);
+
         if (num_allocated >= num_reserved) {
             if (!_reserve_new_block()) {
                 return nullptr;
@@ -151,6 +187,8 @@ struct GnPool
 
     void free(void* ptr) noexcept
     {
+        std::scoped_lock lock(mutex);
+
         std::memset(ptr, 0, alloc_size);
         GnPoolChunk* chunk = reinterpret_cast<GnPoolChunk*>(ptr);
         chunk->next_chunk = current_allocation;
@@ -543,6 +581,63 @@ struct GnSmallQueue
     }
 };
 
+template<typename K>
+using CacheKeyTrait = std::void_t<
+    decltype(K::GetHash(std::declval<K>())),
+    decltype(K::CompareKey(std::declval<K>(), std::declval<K>()))
+>;
+
+template<typename K, typename V, typename = void>
+struct GnCacheTable {};
+
+template<typename K, typename V>
+struct GnCacheTable<K, V, CacheKeyTrait<K>>
+{
+    struct KeyFunctionWrapper
+    {
+        inline size_t operator()(const K& key) const
+        {
+            return K::GetHash(key);
+        }
+
+        inline bool operator()(const K& a, const K& b) const
+        {
+            return K::CompareKey(a, b);
+        }
+    };
+
+    using HashMap = std::unordered_map<K, V, KeyFunctionWrapper, KeyFunctionWrapper>;// TODO: Implement hash map for the cache table
+
+    HashMap cache_table;
+    mutable std::shared_mutex mutex;
+
+    std::optional<V> Get(const K& key) const
+    {
+        std::shared_lock<std::shared_mutex> lock(mutex);
+        auto item = cache_table.find(key);
+
+        if (item != cache_table.end())
+            return { item->second };
+
+        return {};
+    }
+
+    bool Insert(const K& key, const V& value)
+    {
+        std::unique_lock<std::shared_mutex> lock(mutex);
+        cache_table.emplace(key, value);
+        return true; // TODO: Return false when fail
+    }
+
+    template<typename Fn>
+    void Flush(Fn&& destroy_fn)
+    {
+        for (auto& [_, obj] : cache_table) {
+            destroy_fn(obj);
+        }
+    }
+};
+
 template<typename T>
 struct GnTrackedResource
 {
@@ -580,7 +675,7 @@ struct GnTrackedResource
     }
 };
 
-template<typename Hash, typename T>
+template<typename T>
 struct GnCachedItem
 {
 
@@ -632,7 +727,7 @@ struct GnObjectPool
     std::optional<GnPool<typename ObjectTypes::Buffer>>                 buffer;
     std::optional<GnPool<typename ObjectTypes::Texture>>                texture;
     std::optional<GnPool<typename ObjectTypes::TextureView>>            texture_view;
-    std::optional<GnPool<typename ObjectTypes::RenderPass>>             render_pass;
+    std::optional<GnPool<typename ObjectTypes::RenderGraph>>            render_graph;
     std::optional<GnPool<typename ObjectTypes::DescriptorTableLayout>>  resource_table_layout;
     std::optional<GnPool<typename ObjectTypes::PipelineLayout>>         pipeline_layout;
     std::optional<GnPool<typename ObjectTypes::DescriptorPool>>         descriptor_pool;

@@ -151,7 +151,7 @@ struct GnCommandListD3D12 : public GnCommandList_t
     GnCommandListD3D12(GnQueueType queue_type, ID3D12GraphicsCommandList* cmd_list) noexcept;
 
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
-    void BeginRenderPass(GnRenderPass render_pass) noexcept override;
+    void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept override;
     void EndRenderPass() noexcept override;
     void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept override;
     GnResult End() noexcept override;
@@ -165,7 +165,7 @@ struct GnObjectTypesD3D12
     using Buffer                = GnBufferD3D12;
     using Texture               = GnTextureD3D12;
     using TextureView           = GnTextureViewD3D12;
-    using RenderPass            = GnUnimplementedType;
+    using RenderGraph           = GnUnimplementedType;
     using DescriptorTableLayout = GnUnimplementedType;
     using PipelineLayout        = GnPipelineLayoutD3D12;
     using Pipeline              = GnPipelineD3D12;
@@ -195,7 +195,7 @@ struct GnDeviceD3D12 : public GnDevice_t
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
-    GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept override;
+    GnResult CreateRenderGraph(const GnRenderGraphDesc* desc, GnRenderGraph* render_graph) noexcept override;
     GnResult CreateDescriptorTableLayout(const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* descriptor_table_layout) noexcept override;
     GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept override;
     GnResult CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept override;
@@ -209,7 +209,7 @@ struct GnDeviceD3D12 : public GnDevice_t
     void DestroyBuffer(GnBuffer buffer) noexcept override;
     void DestroyTexture(GnTexture texture) noexcept override;
     void DestroyTextureView(GnTextureView texture_view) noexcept override;
-    void DestroyRenderPass(GnRenderPass render_pass) noexcept override;
+    void DestroyRenderGraph(GnRenderGraph render_graph) noexcept override;
     void DestroyDescriptorTableLayout(GnDescriptorTableLayout descriptor_table_layout) noexcept override;
     void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
     void DestroyPipeline(GnPipeline pipeline) noexcept override;
@@ -330,8 +330,8 @@ inline D3D12_RESOURCE_STATES GnConvertToD3D12ResourceStates(GnResourceAccessFlag
         GnResourceAccess_CSWrite;
 
     static constexpr GnResourceAccessFlags color_attachment_access =
-        GnResourceAccess_ColorAttachmentRead |
-        GnResourceAccess_ColorAttachmentWrite;
+        GnResourceAccess_ColorTargetRead |
+        GnResourceAccess_ColorTargetWrite;
 
     static constexpr D3D12_RESOURCE_STATES d3d12_depth_states =
         D3D12_RESOURCE_STATE_DEPTH_READ |
@@ -340,7 +340,7 @@ inline D3D12_RESOURCE_STATES GnConvertToD3D12ResourceStates(GnResourceAccessFlag
     D3D12_RESOURCE_STATES ret = D3D12_RESOURCE_STATE_COMMON;
 
     if ((access & GnResourceAccess_Present) == 0) {
-        // Convert depth-stencil attachment access flags to D3D12_RESOURCE_STATES equivalent
+        // Convert depth-stencil target access flags to D3D12_RESOURCE_STATES equivalent
         ret |= (D3D12_RESOURCE_STATES)(access >> 11) & d3d12_depth_states;
 
         if (access & vertex_or_uniform_buffer_access)
@@ -349,7 +349,7 @@ inline D3D12_RESOURCE_STATES GnConvertToD3D12ResourceStates(GnResourceAccessFlag
         if (access & GnResourceAccess_IndexBuffer)
             ret |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
 
-        if (access & (GnResourceAccess_ColorAttachmentRead | GnResourceAccess_ColorAttachmentWrite))
+        if (access & (GnResourceAccess_ColorTargetRead | GnResourceAccess_ColorTargetWrite))
             ret |= D3D12_RESOURCE_STATE_RENDER_TARGET;
 
         if (access & storage_access)
@@ -949,7 +949,6 @@ GnResult GnDeviceD3D12::CreateTextureView(const GnTextureViewDesc* desc, GnTextu
         (b_mapping == D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2) &&
         (a_mapping == D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
 
-    view->desc = *desc;
     view->srv_desc.Format = GnConvertToDxgiFormat(desc->format);
     view->uav_desc.Format = view->srv_desc.Format;
     view->srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(r_mapping, g_mapping, b_mapping, a_mapping);
@@ -994,7 +993,7 @@ GnResult GnDeviceD3D12::CreateTextureView(const GnTextureViewDesc* desc, GnTextu
     return GnError_Unimplemented;
 }
 
-GnResult GnDeviceD3D12::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept
+GnResult GnDeviceD3D12::CreateRenderGraph(const GnRenderGraphDesc* desc, GnRenderGraph* render_graph) noexcept
 {
     return GnError_Unimplemented;
 }
@@ -1181,7 +1180,7 @@ void GnDeviceD3D12::DestroyTextureView(GnTextureView texture_view) noexcept
 {
 }
 
-void GnDeviceD3D12::DestroyRenderPass(GnRenderPass render_pass) noexcept
+void GnDeviceD3D12::DestroyRenderGraph(GnRenderGraph render_graph) noexcept
 {
 }
 
@@ -1376,7 +1375,7 @@ GnResult GnCommandListD3D12::Begin(const GnCommandListBeginDesc* desc) noexcept
     return GnResult();
 }
 
-void GnCommandListD3D12::BeginRenderPass(GnRenderPass render_pass) noexcept
+void GnCommandListD3D12::BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept
 {
 }
 

@@ -66,7 +66,7 @@ struct GnDevice_t
     virtual GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept = 0;
     virtual GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept = 0;
     virtual GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept = 0;
-    virtual GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept = 0;
+    virtual GnResult CreateRenderGraph(const GnRenderGraphDesc* desc, GnRenderGraph* render_graph) noexcept = 0;
     virtual GnResult CreateDescriptorTableLayout(const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* descriptor_table_layout) noexcept = 0;
     virtual GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept = 0;
     virtual GnResult CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept = 0;
@@ -80,7 +80,7 @@ struct GnDevice_t
     virtual void DestroyBuffer(GnBuffer buffer) noexcept = 0;
     virtual void DestroyTexture(GnTexture texture) noexcept = 0;
     virtual void DestroyTextureView(GnTextureView texture_view) noexcept = 0;
-    virtual void DestroyRenderPass(GnRenderPass render_pass) noexcept = 0;
+    virtual void DestroyRenderGraph(GnRenderGraph render_graph) noexcept = 0;
     virtual void DestroyDescriptorTableLayout(GnDescriptorTableLayout descriptor_table_layout) noexcept = 0;
     virtual void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept = 0;
     virtual void DestroyPipeline(GnPipeline pipeline) noexcept = 0;
@@ -103,8 +103,8 @@ struct GnSwapchain_t
     uint32_t        current_frame = 0;
 
     virtual ~GnSwapchain_t() { }
-    virtual GnTexture GetSwapchainTexture(uint32_t index) noexcept = 0;
-    virtual GnResult GetSwapchainTextures(uint32_t num_textures, GnTexture* textures) noexcept = 0;
+    virtual GnTextureView GetCurrentBackBufferView() noexcept = 0;
+    virtual GnTextureView GetBackBufferView(uint32_t index) noexcept = 0;
     virtual GnResult Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept = 0;
 };
 
@@ -148,15 +148,15 @@ struct GnTexture_t
 {
     GnTextureDesc           desc;
     GnMemoryRequirements    memory_requirements;
-    bool                    swapchain_owned;
 };
 
 struct GnTextureView_t
 {
-    GnTextureViewDesc   desc;
+    bool swapchain_owned;
+    GnFormat format;
 };
 
-struct GnRenderPass_t
+struct GnRenderGraph_t
 {
 
 };
@@ -223,7 +223,7 @@ struct GnCommandListState
     // Rasterization stage
     GnViewport          viewports[16];
     GnUpdateRange       viewport_upd_range;
-    GnScissorRect       scissors[16];
+    GnRect2D       scissors[16];
     GnUpdateRange       scissor_upd_range;
 
     // Output merger state
@@ -288,7 +288,7 @@ struct GnCommandList_t : public GnTrackedResource<GnCommandList_t>
     bool                        standalone = false;
 
     virtual GnResult Begin(const GnCommandListBeginDesc* desc) noexcept = 0;
-    virtual void BeginRenderPass(GnRenderPass render_pass) noexcept = 0;
+    virtual void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept = 0;
     virtual void EndRenderPass() noexcept = 0;
     virtual void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept = 0;
     virtual GnResult End() noexcept = 0;
@@ -316,7 +316,7 @@ struct GnCommandListFallback : public GnCommandList_t
     ~GnCommandListFallback();
     
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
-    void BeginRenderPass(GnRenderPass render_pass) noexcept override;
+    void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept override;
     void EndRenderPass() noexcept override;
     GnResult End() noexcept override;
 };
@@ -758,30 +758,25 @@ void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain)
     device->DestroySwapchain(swapchain);
 }
 
-uint32_t GnGetSwapchainTextureCount(GnSwapchain swapchain)
+uint32_t GnGetSwapchainBackBufferCount(GnSwapchain swapchain)
 {
     return swapchain->swapchain_desc.num_buffers;
 }
 
-GnTexture GnGetSwapchainTexture(GnSwapchain swapchain, uint32_t index)
-{
-    if (index > swapchain->swapchain_desc.num_buffers - 1)
-        return nullptr;
-
-    return swapchain->GetSwapchainTexture(index);
-}
-
-GnResult GnGetSwapchainTextures(GnSwapchain swapchain, uint32_t num_textures, GnTexture* textures)
-{
-    if (num_textures > swapchain->swapchain_desc.num_buffers)
-        return GnError_InvalidArgs;
-
-    return swapchain->GetSwapchainTextures(num_textures, textures);
-}
-
-uint32_t GnGetCurrentSwapchainTextureIndex(GnSwapchain swapchain)
+uint32_t GnGetCurrentBackBufferIndex(GnSwapchain swapchain)
 {
     return swapchain->current_frame;
+}
+
+GnTextureView GnGetCurrentBackBufferView(GnSwapchain swapchain)
+{
+    return swapchain->GetCurrentBackBufferView();
+}
+
+GnTextureView GnGetSwapchainBackBufferView(GnSwapchain swapchain, uint32_t index)
+{
+    if (index > swapchain->swapchain_desc.num_buffers - 1) return nullptr;
+    return swapchain->GetBackBufferView(index);
 }
 
 GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync)
@@ -949,13 +944,12 @@ GnResult GnCreateTexture(GnDevice device, const GnTextureDesc* desc, GnTexture* 
 
 void GnDestroyTexture(GnDevice device, GnTexture texture)
 {
-    if (texture->swapchain_owned) return;
     device->DestroyTexture(texture);
 }
 
 void GnGetTextureDesc(GnTexture texture, GnTextureDesc* texture_desc)
 {
-
+    *texture_desc = texture->desc;
 }
 
 void GnGetTextureMemoryRequirements(GnDevice device, GnTexture texture, GnMemoryRequirements* memory_requirements)
@@ -980,21 +974,16 @@ void GnDestroyTextureView(GnDevice device, GnTextureView texture_view)
     device->DestroyTextureView(texture_view);
 }
 
-void GnGetTextureViewDesc(GnTextureView texture_view, GnTextureViewDesc* desc)
+// -- [GnRenderGraph] --
+
+GnResult GnCreateRenderGraph(GnDevice device, const GnRenderGraphDesc* desc, GnRenderGraph* render_graph)
 {
-    *desc = texture_view->desc;
+    return device->CreateRenderGraph(desc, render_graph);
 }
 
-// -- [GnRenderPass] --
-
-GnResult GnCreateRenderPass(GnDevice device, const GnRenderPassDesc* desc, GnRenderPass* render_pass)
+void GnDestroyRenderGraph(GnDevice device, GnRenderGraph render_graph)
 {
-    return device->CreateRenderPass(desc, render_pass);
-}
-
-void GnDestroyRenderPass(GnDevice device, GnRenderPass render_pass)
-{
-    device->DestroyRenderPass(render_pass);
+    device->DestroyRenderGraph(render_graph);
 }
 
 // -- [GnResourceTableLayout] --
@@ -1034,7 +1023,7 @@ GnResult GnCreateGraphicsPipeline(GnDevice device, const GnGraphicsPipelineDesc*
         tmp_desc.multisample = &default_multisample_desc;
     }
 
-    GnColorAttachmentBlendStateDesc default_color_blend_state;
+    GnColorTargetBlendStateDesc default_color_blend_state;
     GnBlendStateDesc default_blend_state;
 
     // When blend is NULL, we provide the default values for the color blend state
@@ -1291,7 +1280,7 @@ void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t
 
 void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
 {
-    GnScissorRect& rect = command_list->state.scissors[slot];
+    GnRect2D& rect = command_list->state.scissors[slot];
     rect.x = x;
     rect.y = y;
     rect.width = width;
@@ -1299,16 +1288,16 @@ void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint
     command_list->state.scissor_upd_range.Update(slot);
 }
 
-void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnScissorRect* scissor)
+void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnRect2D* scissor)
 {
-    GnScissorRect& rect = command_list->state.scissors[slot];
+    GnRect2D& rect = command_list->state.scissors[slot];
     rect = *scissor;
     command_list->state.scissor_upd_range.Update(slot);
 }
 
-void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnScissorRect* scissors)
+void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnRect2D* scissors)
 {
-    std::memcpy(&command_list->state.scissors[first_slot], scissors, sizeof(GnScissorRect) * num_scissors);
+    std::memcpy(&command_list->state.scissors[first_slot], scissors, sizeof(GnRect2D) * num_scissors);
     command_list->state.scissor_upd_range.Update(first_slot, first_slot + num_scissors);
     command_list->state.update_flags.scissors = true;
 }
@@ -1335,10 +1324,16 @@ void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref)
     command_list->state.update_flags.stencil_ref = true;
 }
 
-void GnCmdBeginRenderPass(GnCommandList command_list, GnRenderPass render_pass)
+void GnCmdBeginRenderPass(GnCommandList command_list, const GnRenderPassBeginDesc* desc)
 {
-    command_list->BeginRenderPass(render_pass);
+    command_list->BeginRenderPass(desc);
     command_list->inside_render_pass = true;
+}
+
+void GnCmdEndRenderPass(GnCommandList command_list)
+{
+    command_list->EndRenderPass();
+    command_list->inside_render_pass = false;
 }
 
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex)
@@ -1373,12 +1368,6 @@ void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices,
 void GnCmdDrawIndexedIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset, uint32_t num_indirect_commands)
 {
 
-}
-
-void GnCmdEndRenderPass(GnCommandList command_list)
-{
-    command_list->EndRenderPass();
-    command_list->inside_render_pass = false;
 }
 
 void GnCmdSetComputePipeline(GnCommandList command_list, GnPipeline compute_pipeline)
@@ -1518,7 +1507,7 @@ GnResult GnCommandListFallback::Begin(const GnCommandListBeginDesc* desc) noexce
     return GnError_Unimplemented;
 }
 
-void GnCommandListFallback::BeginRenderPass(GnRenderPass render_pass) noexcept
+void GnCommandListFallback::BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept
 {
     
 }

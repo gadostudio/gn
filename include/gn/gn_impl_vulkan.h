@@ -13,7 +13,6 @@
 
 #include <vulkan/vulkan.h>
 #include <atomic>
-#include <mutex>
 
 #define GN_TO_VULKAN(type, x) (static_cast<type##VK*>(x))
 #define GN_VULKAN_FAILED(x) ((x) < VK_SUCCESS)
@@ -35,7 +34,7 @@ struct GnMemoryVK;
 struct GnBufferVK;
 struct GnTextureVK;
 struct GnTextureViewVK;
-struct GnRenderPassVK;
+struct GnRenderGraphVK;
 struct GnDescriptorTableLayoutVK;
 struct GnPipelineLayoutVK;
 struct GnPipelineVK;
@@ -113,6 +112,8 @@ struct GnVulkanDeviceFunctions
     PFN_vkAllocateDescriptorSets vkAllocateDescriptorSets;
     PFN_vkFreeDescriptorSets vkFreeDescriptorSets;
     PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets;
+    PFN_vkCreateFramebuffer vkCreateFramebuffer;
+    PFN_vkDestroyFramebuffer vkDestroyFramebuffer;
     PFN_vkCreateRenderPass vkCreateRenderPass;
     PFN_vkDestroyRenderPass vkDestroyRenderPass;
     PFN_vkCreateCommandPool vkCreateCommandPool;
@@ -291,18 +292,14 @@ struct GnSwapchainFramePresenterVK
     void Destroy(GnDeviceVK* impl_device);
 };
 
-struct GnTextureBaseVK : public GnTexture_t
-{
-    VkImage image;
-};
-
 struct GnTextureViewVK : public GnTextureView_t
 {
     VkImageView view;
 };
 
-struct GnSwapchainBlitImageVK : public GnTextureBaseVK
+struct GnSwapchainBlitImageVK : public GnTextureViewVK
 {
+    VkImage image;
     VkDeviceMemory memory;
 
     void Destroy(GnDeviceVK* impl_device);
@@ -321,8 +318,8 @@ struct GnSwapchainVK : public GnSwapchain_t
     GnSmallVector<GnSwapchainFramePresenterVK, GN_MAX_SWAPCHAIN_BUFFERS>    frame_presenters;
 
     GnSwapchainVK(GnDeviceVK* impl_device) noexcept;
-    GnTexture GetSwapchainTexture(uint32_t index) noexcept;
-    GnResult GetSwapchainTextures(uint32_t num_textures, GnTexture* textures) noexcept override;
+    GnTextureView GetCurrentBackBufferView() noexcept override;
+    GnTextureView GetBackBufferView(uint32_t index) noexcept override;
     GnResult Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept override;
 
     GnResult Init(const GnSwapchainDesc* desc, VkSwapchainKHR old_swapchain) noexcept;
@@ -360,13 +357,14 @@ struct GnBufferVK : public GnBuffer_t
     VkDeviceSize    aligned_offset;
 };
 
-struct GnTextureVK : public GnTextureBaseVK
+struct GnTextureVK : public GnTexture_t
 {
+    VkImage         image;
     GnMemoryVK*     memory;
     VkDeviceSize    aligned_offset;
 };
 
-struct GnRenderPassVK : public GnRenderPass_t
+struct GnRenderGraphVK : public GnRenderGraph_t
 {
     VkRenderPass render_pass;
 };
@@ -449,7 +447,7 @@ struct GnCommandListVK : public GnCommandList_t
     ~GnCommandListVK();
 
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
-    void BeginRenderPass(GnRenderPass render_pass) noexcept override;
+    void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept override;
     void EndRenderPass() noexcept override;
     void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept override;
     GnResult End() noexcept override;
@@ -482,7 +480,7 @@ struct GnObjectTypesVK
     using Buffer = GnBufferVK;
     using Texture = GnTextureVK;
     using TextureView = GnTextureViewVK;
-    using RenderPass = GnRenderPassVK;
+    using RenderGraph = GnRenderGraphVK;
     using DescriptorTableLayout = GnDescriptorTableLayoutVK;
     using PipelineLayout = GnPipelineLayoutVK;
     using Pipeline = GnPipelineVK;
@@ -492,14 +490,58 @@ struct GnObjectTypesVK
     using CommandList = GnCommandListVK;
 };
 
+struct GnRenderPassCacheKey
+{
+    GnSampleCount           sample_count;
+    uint32_t                num_color_targets;
+    uint32_t                color_target_mask;
+    uint32_t                resolve_target_mask;
+
+    struct
+    {
+        GnFormat                format;
+        GnResourceAccessFlags   access;
+        GnResourceAccessFlags   resolve_access;
+        GnRenderPassOp          load_op;
+        GnRenderPassOp          store_op;
+    } color_targets[GN_MAX_COLOR_TARGETS];
+
+    bool                    has_depth_stencil_target;
+    GnFormat                depth_stencil_target_format;
+    GnResourceAccessFlags   depth_stencil_target_access;
+    GnRenderPassOp          depth_load_op;
+    GnRenderPassOp          depth_store_op;
+    GnRenderPassOp          stencil_load_op;
+    GnRenderPassOp          stencil_store_op;
+    size_t                  calculated_hash;
+
+    void Init(const GnRenderPassBeginDesc* desc);
+    inline static size_t GetHash(const GnRenderPassCacheKey& key) noexcept;
+    inline static bool CompareKey(const GnRenderPassCacheKey& a, const GnRenderPassCacheKey& b) noexcept;
+};
+
+struct GnFramebufferCacheKey
+{
+    uint32_t        num_color_targets;
+    GnTextureView   color_target_views[GN_MAX_COLOR_TARGETS];
+    GnTextureView   depth_stencil_target_view;
+    size_t          calculated_hash;
+
+    void Init(const GnRenderPassBeginDesc* desc);
+    inline static size_t GetHash(const GnFramebufferCacheKey& key) noexcept;
+    inline static bool CompareKey(const GnFramebufferCacheKey& a, const GnFramebufferCacheKey& b) noexcept;
+};
+
 struct GnDeviceVK : public GnDevice_t
 {
-    GnVulkanDeviceFunctions         fn{};
-    VkDevice                        device = VK_NULL_HANDLE;
-    GnQueueVK*                      enabled_queues = nullptr;
-    GnObjectPool<GnObjectTypesVK>   pool;
-    VkPipelineLayout                empty_pipeline_layout = VK_NULL_HANDLE;
-    VkDeviceSize                    non_coherent_atom_size = 0;
+    GnVulkanDeviceFunctions                             fn{};
+    VkDevice                                            device = VK_NULL_HANDLE;
+    GnQueueVK*                                          enabled_queues = nullptr;
+    GnObjectPool<GnObjectTypesVK>                       pool;
+    VkPipelineLayout                                    empty_pipeline_layout = VK_NULL_HANDLE;
+    VkDeviceSize                                        non_coherent_atom_size = 0;
+    GnCacheTable<GnRenderPassCacheKey, VkRenderPass>    render_pass_cache;
+    GnCacheTable<GnFramebufferCacheKey, VkFramebuffer>  framebuffer_cache;
 
     ~GnDeviceVK();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
@@ -508,7 +550,7 @@ struct GnDeviceVK : public GnDevice_t
     GnResult CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept override;
     GnResult CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept override;
     GnResult CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept override;
-    GnResult CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept override;
+    GnResult CreateRenderGraph(const GnRenderGraphDesc* desc, GnRenderGraph* render_graph) noexcept override;
     GnResult CreateDescriptorTableLayout(const GnDescriptorTableLayoutDesc* desc, GnDescriptorTableLayout* resource_table_layout) noexcept override;
     GnResult CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept override;
     GnResult CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept override;
@@ -522,7 +564,7 @@ struct GnDeviceVK : public GnDevice_t
     void DestroyBuffer(GnBuffer buffer) noexcept override;
     void DestroyTexture(GnTexture texture) noexcept override;
     void DestroyTextureView(GnTextureView texture_view) noexcept override;
-    void DestroyRenderPass(GnRenderPass render_pass) noexcept override;
+    void DestroyRenderGraph(GnRenderGraph render_graph) noexcept override;
     void DestroyDescriptorTableLayout(GnDescriptorTableLayout resource_table_layout) noexcept override;
     void DestroyPipeline(GnPipeline pipeline) noexcept override;
     void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
@@ -537,6 +579,8 @@ struct GnDeviceVK : public GnDevice_t
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
     GnResult DeviceWaitIdle() noexcept override;
     GnResult ResetCommandPool(GnCommandPool command_pool) noexcept override;
+
+    VkResult CreateRenderPass(const GnRenderPassCacheKey* desc, VkRenderPass* render_pass) noexcept;
 };
 
 // -------------------------------------------------------
@@ -695,7 +739,7 @@ static bool GnConvertAndCheckDeviceFeatures(const uint32_t num_requested_feature
             case GnFeature_PrimitiveRestartControl:     break;
             case GnFeature_LinePolygonMode:
             case GnFeature_PointPolygonMode:            ret = enabled_features.features.fillModeNonSolid = supported_features[GnFeature_LinePolygonMode]; break;
-            case GnFeature_ColorAttachmentLogicOp:      ret = enabled_features.features.logicOp = supported_features[GnFeature_ColorAttachmentLogicOp]; break;
+            case GnFeature_ColorTargetLogicOp:          ret = enabled_features.features.logicOp = supported_features[GnFeature_ColorTargetLogicOp]; break;
             case GnFeature_UnclippedDepth:
                 GnVisitStructChainVK<VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT>(
                     &enabled_features,
@@ -777,23 +821,23 @@ inline static VkShaderStageFlags GnConvertToVkShaderStageFlags(GnShaderStageFlag
     return ret;
 }
 
-inline static VkAttachmentLoadOp GnConvertToVkAttachmentLoadOp(GnAttachmentOp att_op) noexcept
+inline static VkAttachmentLoadOp GnConvertToVkAttachmentLoadOp(GnRenderPassOp att_op) noexcept
 {
     switch (att_op) {
-        case GnAttachmentOp_Load:       return VK_ATTACHMENT_LOAD_OP_LOAD;
-        case GnAttachmentOp_Clear:      return VK_ATTACHMENT_LOAD_OP_CLEAR;
-        case GnAttachmentOp_Discard:    return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        case GnRenderPassOp_Load:       return VK_ATTACHMENT_LOAD_OP_LOAD;
+        case GnRenderPassOp_Clear:      return VK_ATTACHMENT_LOAD_OP_CLEAR;
+        case GnRenderPassOp_Discard:    return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         default:                        GN_UNREACHABLE();
     }
 
     return {};
 }
 
-inline static VkAttachmentStoreOp GnConvertToVkAttachmentStoreOp(GnAttachmentOp att_op) noexcept
+inline static VkAttachmentStoreOp GnConvertToVkAttachmentStoreOp(GnRenderPassOp att_op) noexcept
 {
     switch (att_op) {
-        case GnAttachmentOp_Store:      return VK_ATTACHMENT_STORE_OP_STORE;
-        case GnAttachmentOp_Discard:    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        case GnRenderPassOp_Store:      return VK_ATTACHMENT_STORE_OP_STORE;
+        case GnRenderPassOp_Discard:    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
         default:                        GN_UNREACHABLE();
     }
 
@@ -911,10 +955,10 @@ inline VkPipelineStageFlags GnGetPipelineStageFromAccessVK(GnResourceAccessFlags
     if (access & cs_access)
         stage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
-    if (access & (GnResourceAccess_ColorAttachmentRead | GnResourceAccess_ColorAttachmentWrite))
+    if (access & (GnResourceAccess_ColorTargetRead | GnResourceAccess_ColorTargetWrite))
         stage |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
-    if (access & (GnResourceAccess_DepthStencilAttachmentRead | GnResourceAccess_DepthStencilAttachmentWrite))
+    if (access & (GnResourceAccess_DepthStencilTargetRead | GnResourceAccess_DepthStencilTargetWrite))
         stage |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 
     if (access & transfer_access)
@@ -1000,12 +1044,12 @@ inline VkImageLayout GnGetImageLayoutFromAccessVK(GnResourceAccessFlags access) 
         GnResourceAccess_CSWrite;
 
     static constexpr GnResourceAccessFlags color_attachment_access =
-        GnResourceAccess_ColorAttachmentRead |
-        GnResourceAccess_ColorAttachmentWrite;
+        GnResourceAccess_ColorTargetRead |
+        GnResourceAccess_ColorTargetWrite;
 
     static constexpr GnResourceAccessFlags depth_stencil_attachment_access =
-        GnResourceAccess_DepthStencilAttachmentRead |
-        GnResourceAccess_DepthStencilAttachmentWrite;
+        GnResourceAccess_DepthStencilTargetRead |
+        GnResourceAccess_DepthStencilTargetWrite;
 
     static constexpr GnResourceAccessFlags src_transfer_access =
         GnResourceAccess_CopySrc |
@@ -1194,6 +1238,8 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkAllocateDescriptorSets);
     GN_LOAD_DEVICE_FN(vkFreeDescriptorSets);
     GN_LOAD_DEVICE_FN(vkUpdateDescriptorSets);
+    GN_LOAD_DEVICE_FN(vkCreateFramebuffer);
+    GN_LOAD_DEVICE_FN(vkDestroyFramebuffer);
     GN_LOAD_DEVICE_FN(vkCreateRenderPass);
     GN_LOAD_DEVICE_FN(vkDestroyRenderPass);
     GN_LOAD_DEVICE_FN(vkCreateCommandPool);
@@ -1547,7 +1593,7 @@ GnAdapterVK::GnAdapterVK(GnInstanceVK*                      instance,
     features[GnFeature_PrimitiveRestartControl] = true;
     features[GnFeature_LinePolygonMode] = vk_features_1.fillModeNonSolid;
     features[GnFeature_PointPolygonMode] = vk_features_1.fillModeNonSolid;
-    features[GnFeature_ColorAttachmentLogicOp] = vk_features_1.logicOp;
+    features[GnFeature_ColorTargetLogicOp] = vk_features_1.logicOp;
     features[GnFeature_UnclippedDepth] = depth_clip_enable_feature.depthClipEnable;
 
     // Get the available queues
@@ -1684,6 +1730,7 @@ void GnAdapterVK::GetSurfaceProperties(GnSurface surface, GnSurfaceProperties* p
 
     parent_instance->fn.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, vk_surface, &num_present_modes, nullptr);
     parent_instance->fn.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, vk_surface, &num_present_modes, present_modes);
+    num_present_modes = GnMin(num_present_modes, 6U);
 
     for (uint32_t i = 0; i < num_present_modes; i++) {
         // Check if we can present a swapchain without vsync.
@@ -1745,12 +1792,12 @@ GnResult GnAdapterVK::GnEnumerateSurfaceFormats(GnSurface surface, void* userdat
     uint32_t total_formats;
     parent_instance->fn.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, vk_surface, &total_formats, nullptr);
 
-    VkSurfaceFormatKHR* surface_formats = (VkSurfaceFormatKHR*)std::malloc(sizeof(VkSurfaceFormatKHR) * total_formats);
+    GnSmallVector<VkSurfaceFormatKHR, 32> surface_formats;
 
-    if (!surface_formats)
+    if (!surface_formats.resize(total_formats))
         return GnError_OutOfHostMemory;
 
-    parent_instance->fn.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, vk_surface, &total_formats, surface_formats);
+    parent_instance->fn.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, vk_surface, &total_formats, surface_formats.storage);
 
     for (uint32_t i = 0; i < total_formats; i++) {
         const VkSurfaceFormatKHR& current = surface_formats[i];
@@ -1758,8 +1805,6 @@ GnResult GnAdapterVK::GnEnumerateSurfaceFormats(GnSurface surface, void* userdat
         if (current.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && gn_format != GnFormat_Unknown)
             callback_fn(userdata, gn_format);
     }
-
-    std::free(surface_formats);
 
     return GnSuccess;
 }
@@ -1879,10 +1924,143 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
     return GnSuccess;
 }
 
+inline void GnRenderPassCacheKey::Init(const GnRenderPassBeginDesc* desc)
+{
+    sample_count = desc->sample_count;
+    num_color_targets = desc->num_color_targets;
+
+    size_t hash = GnCalcHash(num_color_targets);
+
+    for (uint32_t i = 0; i < num_color_targets; i++) {
+        const GnRenderPassColorTargetDesc& color_target = desc->color_targets[i];
+
+        if (!color_target.view)
+            continue;
+
+        auto& color_target_key = color_targets[i];
+
+        color_target_mask |= 1 << i;
+        color_target_key.format = color_target.view->format;
+        color_target_key.access = color_target.access;
+        color_target_key.resolve_access = color_target.resolve_access;
+        color_target_key.load_op = color_target.load_op;
+        color_target_key.store_op = color_target.store_op;
+
+        if (color_target.resolve_view)
+            resolve_target_mask |= 1 << i;
+
+        GnCombineHash(hash, color_target_key.format,
+                      color_target_key.access,
+                      color_target_key.resolve_access,
+                      color_target_key.load_op,
+                      color_target_key.store_op);
+    }
+
+    GnCombineHash(hash, sample_count, color_target_mask, resolve_target_mask);
+
+    has_depth_stencil_target = desc->depth_stencil_target && desc->depth_stencil_target->view;
+
+    if (has_depth_stencil_target) {
+        depth_stencil_target_format = desc->depth_stencil_target->view->format;
+        depth_load_op = desc->depth_stencil_target->depth_load_op;
+        depth_store_op = desc->depth_stencil_target->depth_store_op;
+        stencil_load_op = desc->depth_stencil_target->stencil_load_op;
+        stencil_store_op = desc->depth_stencil_target->stencil_store_op;
+
+        GnCombineHash(hash, has_depth_stencil_target,
+                      depth_stencil_target_format,
+                      depth_load_op,
+                      depth_store_op,
+                      stencil_load_op,
+                      stencil_store_op);
+    }
+
+    calculated_hash = hash;
+}
+
+inline size_t GnRenderPassCacheKey::GetHash(const GnRenderPassCacheKey& key) noexcept
+{
+    return key.calculated_hash;
+}
+
+inline bool GnRenderPassCacheKey::CompareKey(const GnRenderPassCacheKey& a, const GnRenderPassCacheKey& b) noexcept
+{
+    if (a.sample_count != b.sample_count ||
+        a.num_color_targets != b.num_color_targets ||
+        a.color_target_mask != b.color_target_mask ||
+        a.resolve_target_mask != b.resolve_target_mask ||
+        a.has_depth_stencil_target != b.has_depth_stencil_target)
+    {
+        return false;
+    }
+
+    if (a.has_depth_stencil_target) {
+        if (a.depth_stencil_target_format != b.depth_stencil_target_format ||
+            a.depth_stencil_target_access != b.depth_stencil_target_access ||
+            a.depth_load_op != b.depth_load_op ||
+            a.depth_store_op != b.depth_store_op ||
+            a.stencil_load_op != b.stencil_load_op ||
+            a.stencil_store_op != b.stencil_store_op) {
+            return false;
+        }
+    }
+
+    for (uint32_t i = 0; i < a.num_color_targets; i++) {
+        if (!GnContainsBit(a.color_target_mask, i << 1))
+            continue;
+
+        const auto& a_color_target = a.color_targets[i];
+        const auto& b_color_target = b.color_targets[i];
+
+        if (a_color_target.format != b_color_target.format ||
+            a_color_target.access != b_color_target.access ||
+            a_color_target.resolve_access != b_color_target.resolve_access ||
+            a_color_target.load_op != b_color_target.load_op ||
+            a_color_target.store_op != b_color_target.store_op)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+inline void GnFramebufferCacheKey::Init(const GnRenderPassBeginDesc* desc)
+{
+    
+}
+
+inline size_t GnFramebufferCacheKey::GetHash(const GnFramebufferCacheKey& key) noexcept
+{
+    return key.calculated_hash;
+}
+
+inline bool GnFramebufferCacheKey::CompareKey(const GnFramebufferCacheKey& a, const GnFramebufferCacheKey& b) noexcept
+{
+    if (a.num_color_targets != b.num_color_targets || a.depth_stencil_target_view != b.depth_stencil_target_view)
+        return false;
+
+    for (uint32_t i = 0; i < a.num_color_targets; i++)
+        if (a.color_target_views[i] != b.color_target_views[i])
+            return false;
+
+    return true;
+}
+
 // -- [GnDeviceVK] --
 
 GnDeviceVK::~GnDeviceVK()
 {
+    render_pass_cache.Flush(
+        [this](VkRenderPass render_pass) {
+            fn.vkDestroyRenderPass(device, render_pass, nullptr);
+        });
+
+    framebuffer_cache.Flush(
+        [this](VkFramebuffer framebuffer) {
+            fn.vkDestroyFramebuffer(device, framebuffer, nullptr);
+        });
+
     if (enabled_queues) {
         for (uint32_t i = 0; i < total_enabled_queues; i++)
             enabled_queues[i].Destroy();
@@ -2127,8 +2305,9 @@ GnResult GnDeviceVK::CreateTextureView(const GnTextureViewDesc* desc, GnTextureV
         return GnError_OutOfHostMemory;
     }
 
+    impl_texture_view->swapchain_owned = false;
     impl_texture_view->view = view;
-    impl_texture_view->desc = *desc;
+    impl_texture_view->format = desc->format;
 
     *texture_view = impl_texture_view;
 
@@ -2149,14 +2328,14 @@ struct GnSubpassImplicitDepVK
     bool has_outgoing_subpass;
 };
 
-GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass* render_pass) noexcept
+GnResult GnDeviceVK::CreateRenderGraph(const GnRenderGraphDesc* desc, GnRenderGraph* render_graph) noexcept
 {
-    if (!pool.render_pass)
-        pool.render_pass.emplace(64);
+    if (!pool.render_graph)
+        pool.render_graph.emplace(64);
 
-    GnRenderPassVK* impl_render_pass = (GnRenderPassVK*)pool.render_pass->allocate();
+    GnRenderGraphVK* impl_render_graph = (GnRenderGraphVK*)pool.render_graph->allocate();
 
-    if (impl_render_pass == nullptr)
+    if (impl_render_graph == nullptr)
         return GnError_OutOfHostMemory;
 
     GnSmallVector<VkAttachmentDescription, 32> attachments;
@@ -2167,7 +2346,7 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
     GnSmallVector<VkSubpassDependency, 32> dependencies;
     GnSmallVector<GnSubpassImplicitDepVK, 16> implicit_dependencies;
 
-    if (!(attachments.resize(desc->num_attachments) ||
+    if (!(attachments.resize(desc->num_targets) ||
           subpasses.resize(desc->num_subpasses) ||
           dependencies.resize(desc->num_dependencies) ||
           implicit_dependencies.resize(desc->num_subpasses)))
@@ -2175,9 +2354,9 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
         return GnError_OutOfHostMemory;
     }
 
-    for (uint32_t i = 0; i < desc->num_attachments; i++) {
+    for (uint32_t i = 0; i < desc->num_targets; i++) {
         VkAttachmentDescription& vk_att_desc = attachments[i];
-        const GnAttachmentDesc& att_desc = desc->attachments[i];
+        const GnRenderGraphTargetDesc& att_desc = desc->targets[i];
         vk_att_desc.flags = {};
         vk_att_desc.format = GnConvertToVkFormat(att_desc.format);
         vk_att_desc.samples = (VkSampleCountFlagBits)att_desc.sample_count;
@@ -2195,18 +2374,18 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
         VkSubpassDescription& vk_subpass = subpasses[i];
         const GnSubpassDesc& subpass = desc->subpasses[i];
 
-        if (!color_att_refs.resize(color_att_refs.size + subpass.num_color_attachments)) {
+        if (!color_att_refs.resize(color_att_refs.size + subpass.num_color_targets)) {
             return GnError_OutOfHostMemory;
         }
 
-        if (subpass.resolve_attachments && !resolve_att_refs.resize(resolve_att_refs.size + subpass.num_color_attachments)) {
+        if (subpass.resolve_targets && !resolve_att_refs.resize(resolve_att_refs.size + subpass.num_color_targets)) {
             return GnError_OutOfHostMemory;
         }
 
         VkAttachmentReference* depth_stencil_att_ref = nullptr;
 
-        if (subpass.depth_stencil_attachment) {
-            auto new_depth_stencil_att_ref = ds_att_refs.emplace_back(subpass.depth_stencil_attachment->attachment, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        if (subpass.depth_stencil_target) {
+            auto new_depth_stencil_att_ref = ds_att_refs.emplace_back(subpass.depth_stencil_target->target, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
             if (!new_depth_stencil_att_ref)
                 return GnError_OutOfHostMemory;
             depth_stencil_att_ref = &new_depth_stencil_att_ref->get();
@@ -2216,22 +2395,22 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
         vk_subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         vk_subpass.inputAttachmentCount = {};
         vk_subpass.pInputAttachments = {};
-        vk_subpass.colorAttachmentCount = subpass.num_color_attachments;
+        vk_subpass.colorAttachmentCount = subpass.num_color_targets;
         vk_subpass.pColorAttachments = &color_att_refs[current_color_att_ref];
-        vk_subpass.pResolveAttachments = subpass.resolve_attachments ? &resolve_att_refs[current_color_att_ref] : nullptr;
+        vk_subpass.pResolveAttachments = subpass.resolve_targets ? &resolve_att_refs[current_color_att_ref] : nullptr;
         vk_subpass.pDepthStencilAttachment = depth_stencil_att_ref;
         vk_subpass.preserveAttachmentCount = {};
         vk_subpass.pPreserveAttachments = {};
 
-        for (uint32_t j = 0; j < subpass.num_color_attachments; j++) {
-            const GnAttachmentReference& color_att_ref = subpass.color_attachments[i];
-            color_att_refs[current_color_att_ref].attachment = color_att_ref.attachment;
-            color_att_refs[current_color_att_ref].layout = GnGetImageLayoutFromAccessVK(color_att_ref.access);
+        for (uint32_t j = 0; j < subpass.num_color_targets; j++) {
+            const GnRenderPassTargetReference& color_target_ref = subpass.color_targets[i];
+            color_att_refs[current_color_att_ref].attachment = color_target_ref.target;
+            color_att_refs[current_color_att_ref].layout = GnGetImageLayoutFromAccessVK(color_target_ref.access);
 
-            if (subpass.resolve_attachments) {
-                const GnAttachmentReference& resolve_att_ref = subpass.resolve_attachments[i];                
-                resolve_att_refs[current_color_att_ref].attachment = resolve_att_ref.attachment;
-                resolve_att_refs[current_color_att_ref].layout = GnGetImageLayoutFromAccessVK(resolve_att_ref.access);
+            if (subpass.resolve_targets) {
+                const GnRenderPassTargetReference& resolve_target_ref = subpass.resolve_targets[i];                
+                resolve_att_refs[current_color_att_ref].attachment = resolve_target_ref.target;
+                resolve_att_refs[current_color_att_ref].layout = GnGetImageLayoutFromAccessVK(resolve_target_ref.access);
             }
 
             current_color_att_ref++;
@@ -2247,22 +2426,22 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
         vk_dependency.srcSubpass = dependency.subpass_src;
         vk_dependency.dstSubpass = dependency.subpass_dst;
 
-        for (uint32_t j = 0; j < prev_subpass.num_color_attachments; j++) {
-            const GnAttachmentReference& color_att_ref = prev_subpass.color_attachments[j];
-            const GnAttachmentReference& resolve_att_ref = prev_subpass.resolve_attachments[j];
+        for (uint32_t j = 0; j < prev_subpass.num_color_targets; j++) {
+            const GnRenderPassTargetReference& color_target_ref = prev_subpass.color_targets[j];
+            const GnRenderPassTargetReference& resolve_target_ref = prev_subpass.resolve_targets[j];
 
             vk_dependency.srcStageMask |=
-                GnGetPipelineStageFromAccessVK<false>(color_att_ref.access) |
-                GnGetPipelineStageFromAccessVK<false>(resolve_att_ref.access);
+                GnGetPipelineStageFromAccessVK<false>(color_target_ref.access) |
+                GnGetPipelineStageFromAccessVK<false>(resolve_target_ref.access);
 
             vk_dependency.srcAccessMask |=
-                GnGetAccessVK(color_att_ref.access) |
-                GnGetAccessVK(resolve_att_ref.access);
+                GnGetAccessVK(color_target_ref.access) |
+                GnGetAccessVK(resolve_target_ref.access);
         }
 
-        for (uint32_t j = 0; j < next_subpass.num_color_attachments; j++) {
-            const GnAttachmentReference& color_att_ref = next_subpass.color_attachments[j];
-            const GnAttachmentReference& resolve_att_ref = next_subpass.resolve_attachments[j];
+        for (uint32_t j = 0; j < next_subpass.num_color_targets; j++) {
+            const GnRenderPassTargetReference& color_att_ref = next_subpass.color_targets[j];
+            const GnRenderPassTargetReference& resolve_att_ref = next_subpass.resolve_targets[j];
 
             vk_dependency.dstStageMask |=
                 GnGetPipelineStageFromAccessVK<true>(color_att_ref.access) |
@@ -2296,23 +2475,23 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
             vk_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
             vk_dependency.dstSubpass = i;
 
-            for (uint32_t j = 0; j < subpass.num_color_attachments; j++) {
-                const GnAttachmentReference& color_att_ref = subpass.color_attachments[j];
-                GnResourceAccessFlags color_att_intial_access = desc->attachments[color_att_ref.attachment].initial_access;
+            for (uint32_t j = 0; j < subpass.num_color_targets; j++) {
+                const GnRenderPassTargetReference& color_att_ref = subpass.color_targets[j];
+                GnResourceAccessFlags color_att_intial_access = desc->targets[color_att_ref.target].initial_access;
                 if (color_att_intial_access != color_att_ref.access)
                     GnBuildDependency(&vk_dependency, color_att_intial_access, color_att_ref.access);
 
-                if (subpass.resolve_attachments) {
-                    const GnAttachmentReference& resolve_att_ref = subpass.resolve_attachments[j];
-                    GnResourceAccessFlags resolve_att_initial_access = desc->attachments[resolve_att_ref.attachment].initial_access;
+                if (subpass.resolve_targets) {
+                    const GnRenderPassTargetReference& resolve_att_ref = subpass.resolve_targets[j];
+                    GnResourceAccessFlags resolve_att_initial_access = desc->targets[resolve_att_ref.target].initial_access;
                     if (resolve_att_initial_access != resolve_att_ref.access)
                         GnBuildDependency(&vk_dependency, resolve_att_initial_access, resolve_att_ref.access);
                 }
             }
 
-            if (subpass.depth_stencil_attachment != nullptr) {
-                GnResourceAccessFlags initial_access = desc->attachments[subpass.depth_stencil_attachment->attachment].initial_access;
-                GnResourceAccessFlags subpass_access = subpass.depth_stencil_attachment->access;
+            if (subpass.depth_stencil_target != nullptr) {
+                GnResourceAccessFlags initial_access = desc->targets[subpass.depth_stencil_target->target].initial_access;
+                GnResourceAccessFlags subpass_access = subpass.depth_stencil_target->access;
                 if (initial_access != subpass_access)
                     GnBuildDependency(&vk_dependency, initial_access, subpass_access);
             }
@@ -2326,24 +2505,24 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
             vk_dependency.srcSubpass = i;
             vk_dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
 
-            for (uint32_t j = 0; j < subpass.num_color_attachments; j++) {
-                const GnAttachmentReference& color_att_ref = subpass.color_attachments[j];
-                GnResourceAccessFlags color_att_final_access = desc->attachments[color_att_ref.attachment].final_access;
+            for (uint32_t j = 0; j < subpass.num_color_targets; j++) {
+                const GnRenderPassTargetReference& color_att_ref = subpass.color_targets[j];
+                GnResourceAccessFlags color_att_final_access = desc->targets[color_att_ref.target].final_access;
                 if (color_att_final_access != color_att_ref.access)
                     GnBuildDependency(&vk_dependency, color_att_ref.access, color_att_final_access);
 
-                if (subpass.resolve_attachments) {
-                    const GnAttachmentReference& resolve_att_ref = subpass.resolve_attachments[j];
-                    GnResourceAccessFlags resolve_att_final_access = desc->attachments[resolve_att_ref.attachment].final_access;
+                if (subpass.resolve_targets) {
+                    const GnRenderPassTargetReference& resolve_att_ref = subpass.resolve_targets[j];
+                    GnResourceAccessFlags resolve_att_final_access = desc->targets[resolve_att_ref.target].final_access;
                     if (resolve_att_final_access != resolve_att_ref.access)
                         GnBuildDependency(&vk_dependency, resolve_att_ref.access, resolve_att_final_access);
                 }
 
             }
 
-            if (subpass.depth_stencil_attachment != nullptr) {
-                GnResourceAccessFlags final_access = desc->attachments[subpass.depth_stencil_attachment->attachment].final_access;
-                GnResourceAccessFlags subpass_access = subpass.depth_stencil_attachment->access;
+            if (subpass.depth_stencil_target != nullptr) {
+                GnResourceAccessFlags final_access = desc->targets[subpass.depth_stencil_target->target].final_access;
+                GnResourceAccessFlags subpass_access = subpass.depth_stencil_target->access;
                 if (final_access != subpass_access)
                     GnBuildDependency(&vk_dependency, subpass_access, final_access);
             }
@@ -2357,7 +2536,7 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
     rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     rp_info.pNext = nullptr;
     rp_info.flags = 0;
-    rp_info.attachmentCount = desc->num_attachments;
+    rp_info.attachmentCount = desc->num_targets;
     rp_info.pAttachments = attachments.storage;
     rp_info.subpassCount = desc->num_subpasses;
     rp_info.pSubpasses = subpasses.storage;
@@ -2366,13 +2545,13 @@ GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassDesc* desc, GnRenderPass
 
     VkRenderPass vk_render_pass;
     if (GN_VULKAN_FAILED(fn.vkCreateRenderPass(device, &rp_info, nullptr, &vk_render_pass))) {
-        pool.render_pass->free(impl_render_pass);
+        pool.render_graph->free(impl_render_graph);
         return GnError_InternalError;
     }
 
-    impl_render_pass->render_pass = vk_render_pass;
+    impl_render_graph->render_pass = vk_render_pass;
 
-    *render_pass = impl_render_pass;
+    *render_graph = impl_render_graph;
 
     return GnError_Unimplemented;
 }
@@ -2543,8 +2722,8 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
 
     const GnFragmentInterfaceStateDesc* fragment = desc->fragment_interface;
 
-    bool has_depth_stencil = desc->depth_stencil != nullptr && fragment->depth_stencil_attachment_format != GnFormat_Unknown;
-    bool has_color_attachment = fragment->num_color_attachments > 0 && fragment->color_attachment_formats != nullptr;
+    bool has_depth_stencil = desc->depth_stencil != nullptr && fragment->depth_stencil_target_format != GnFormat_Unknown;
+    bool has_color_target = fragment->num_color_targets > 0 && fragment->color_target_formats != nullptr;
     VkSampleCountFlagBits sample_count = (VkSampleCountFlagBits)desc->multisample->num_samples;
 
     // First, create a pipeline-compatible render pass.
@@ -2554,10 +2733,10 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     VkAttachmentReference resolve_att_refs[32];
     VkAttachmentReference depth_stencil_att_ref;
 
-    for (uint32_t i = 0; i < fragment->num_color_attachments; i++) {
+    for (uint32_t i = 0; i < fragment->num_color_targets; i++) {
         auto color_att = attachments.emplace_back_ptr();
         color_att->flags = 0;
-        color_att->format = GnConvertToVkFormat(fragment->color_attachment_formats[i]);
+        color_att->format = GnConvertToVkFormat(fragment->color_target_formats[i]);
         color_att->samples = sample_count;
         color_att->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -2571,11 +2750,11 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
         color_att_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
-    if (fragment->resolve_attachment_mask != 0) {
+    if (fragment->resolve_target_mask != 0) {
         uint32_t current_resolve_attachment = (uint32_t)attachments.size;
-        uint32_t resolve_mask = fragment->resolve_attachment_mask;
+        uint32_t resolve_mask = fragment->resolve_target_mask;
 
-        for (uint32_t i = 0; i < fragment->num_color_attachments; i++) {
+        for (uint32_t i = 0; i < fragment->num_color_targets; i++) {
             auto& resolve_att_ref = resolve_att_refs[i];
             resolve_att_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
@@ -2588,7 +2767,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
 
             auto resolve_att = attachments.emplace_back_ptr();
             resolve_att->flags = 0;
-            resolve_att->format = GnConvertToVkFormat(fragment->color_attachment_formats[i]);
+            resolve_att->format = GnConvertToVkFormat(fragment->color_target_formats[i]);
             resolve_att->samples = VK_SAMPLE_COUNT_1_BIT;
             resolve_att->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             resolve_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -2602,7 +2781,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     if (has_depth_stencil) {
         auto ds_att = attachments.emplace_back_ptr();
         ds_att->flags = 0;
-        ds_att->format = GnConvertToVkFormat(fragment->depth_stencil_attachment_format);
+        ds_att->format = GnConvertToVkFormat(fragment->depth_stencil_target_format);
         ds_att->samples = sample_count;
         ds_att->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         ds_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -2620,9 +2799,9 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.inputAttachmentCount = {};
     subpass.pInputAttachments = {};
-    subpass.colorAttachmentCount = fragment->num_color_attachments;
+    subpass.colorAttachmentCount = fragment->num_color_targets;
     subpass.pColorAttachments = color_att_refs;
-    subpass.pResolveAttachments = fragment->resolve_attachment_mask ? resolve_att_refs : nullptr;
+    subpass.pResolveAttachments = fragment->resolve_target_mask ? resolve_att_refs : nullptr;
     subpass.pDepthStencilAttachment = has_depth_stencil ? &depth_stencil_att_ref : nullptr;
     subpass.preserveAttachmentCount = {};
     subpass.pPreserveAttachments = {};
@@ -2877,30 +3056,30 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
 
     if (independent_blend) {
         for (uint32_t i = 0; i < num_blend_states; i++) {
-            GnColorAttachmentBlendStateDesc& attachment = desc->blend->blend_states[i];
+            GnColorTargetBlendStateDesc& target = desc->blend->blend_states[i];
             VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
-            vk_attachment.blendEnable = attachment.blend_enable;
-            vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(attachment.src_color_blend_factor);
-            vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(attachment.dst_color_blend_factor);
-            vk_attachment.colorBlendOp = GnConvertToVkBlendOp(attachment.color_blend_op);
-            vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.src_alpha_blend_factor);
-            vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.dst_alpha_blend_factor);
-            vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(attachment.alpha_blend_op);
-            vk_attachment.colorWriteMask = attachment.color_write_mask;
+            vk_attachment.blendEnable = target.blend_enable;
+            vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(target.src_color_blend_factor);
+            vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(target.dst_color_blend_factor);
+            vk_attachment.colorBlendOp = GnConvertToVkBlendOp(target.color_blend_op);
+            vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(target.src_alpha_blend_factor);
+            vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(target.dst_alpha_blend_factor);
+            vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(target.alpha_blend_op);
+            vk_attachment.colorWriteMask = target.color_write_mask;
         }
     }
     else {
-        for (uint32_t i = 0; i < fragment->num_color_attachments; i++) {
-            GnColorAttachmentBlendStateDesc& attachment = desc->blend->blend_states[0];
+        for (uint32_t i = 0; i < fragment->num_color_targets; i++) {
+            GnColorTargetBlendStateDesc& target = desc->blend->blend_states[0];
             VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
-            vk_attachment.blendEnable = attachment.blend_enable;
-            vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(attachment.src_color_blend_factor);
-            vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(attachment.dst_color_blend_factor);
-            vk_attachment.colorBlendOp = GnConvertToVkBlendOp(attachment.color_blend_op);
-            vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.src_alpha_blend_factor);
-            vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(attachment.dst_alpha_blend_factor);
-            vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(attachment.alpha_blend_op);
-            vk_attachment.colorWriteMask = attachment.color_write_mask;
+            vk_attachment.blendEnable = target.blend_enable;
+            vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(target.src_color_blend_factor);
+            vk_attachment.dstColorBlendFactor = GnConvertToVkBlendFactor(target.dst_color_blend_factor);
+            vk_attachment.colorBlendOp = GnConvertToVkBlendOp(target.color_blend_op);
+            vk_attachment.srcAlphaBlendFactor = GnConvertToVkBlendFactor(target.src_alpha_blend_factor);
+            vk_attachment.dstAlphaBlendFactor = GnConvertToVkBlendFactor(target.dst_alpha_blend_factor);
+            vk_attachment.alphaBlendOp = GnConvertToVkBlendOp(target.alpha_blend_op);
+            vk_attachment.colorWriteMask = target.color_write_mask;
         }
     }
 
@@ -2910,7 +3089,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     color_blend_state.flags = 0;
     color_blend_state.logicOpEnable = VK_FALSE;
     color_blend_state.logicOp = VK_LOGIC_OP_CLEAR;
-    color_blend_state.attachmentCount = independent_blend ? num_blend_states : fragment->num_color_attachments;
+    color_blend_state.attachmentCount = independent_blend ? num_blend_states : fragment->num_color_targets;
     color_blend_state.pAttachments = vk_attachments;
     color_blend_state.blendConstants[0] = 0.0f;
     color_blend_state.blendConstants[1] = 0.0f;
@@ -3201,10 +3380,10 @@ void GnDeviceVK::DestroyTextureView(GnTextureView texture_view) noexcept
     pool.texture_view->free(texture_view);
 }
 
-void GnDeviceVK::DestroyRenderPass(GnRenderPass render_pass) noexcept
+void GnDeviceVK::DestroyRenderGraph(GnRenderGraph render_graph) noexcept
 {
-    fn.vkDestroyRenderPass(device, GN_TO_VULKAN(GnRenderPass, render_pass)->render_pass, nullptr);
-    pool.render_pass->free(render_pass);
+    fn.vkDestroyRenderPass(device, GN_TO_VULKAN(GnRenderGraph, render_graph)->render_pass, nullptr);
+    pool.render_graph->free(render_graph);
 }
 
 void GnDeviceVK::DestroyDescriptorTableLayout(GnDescriptorTableLayout resource_table_layout) noexcept
@@ -3401,6 +3580,115 @@ GnResult GnDeviceVK::DeviceWaitIdle() noexcept
 GnResult GnDeviceVK::ResetCommandPool(GnCommandPool command_pool) noexcept
 {
     return GnConvertFromVkResult(fn.vkResetCommandPool(device, GN_TO_VULKAN(GnCommandPool, command_pool)->cmd_pool, 0));
+}
+
+VkResult GnDeviceVK::CreateRenderPass(const GnRenderPassCacheKey* desc, VkRenderPass* render_pass) noexcept
+{
+    GnSmallVector<VkAttachmentDescription, 32> attachments;
+    VkAttachmentReference color_att_refs[GN_MAX_COLOR_TARGETS];
+    VkAttachmentReference resolve_att_refs[GN_MAX_COLOR_TARGETS];
+    VkAttachmentReference depth_stencil_att_ref;
+    VkSampleCountFlagBits sample_count = (VkSampleCountFlagBits)desc->sample_count;
+
+    for (uint32_t i = 0; i < desc->num_color_targets; i++) {
+        if (!GnContainsBit(desc->color_target_mask, 1 << i)) {
+            auto& color_att_ref = color_att_refs[i];
+            color_att_ref.attachment = i;
+            color_att_ref.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+            continue;
+        }
+
+        const auto& color_target = desc->color_targets[i];
+        VkImageLayout layout = GnGetImageLayoutFromAccessVK(color_target.access);
+
+        auto color_att = attachments.emplace_back_ptr();
+        color_att->flags = 0;
+        color_att->format = GnConvertToVkFormat(color_target.format);
+        color_att->samples = sample_count;
+        color_att->loadOp = GnConvertToVkAttachmentLoadOp(color_target.load_op);
+        color_att->storeOp = GnConvertToVkAttachmentStoreOp(color_target.store_op);
+        color_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color_att->initialLayout = layout;
+        color_att->finalLayout = layout;
+
+        auto& color_att_ref = color_att_refs[i];
+        color_att_ref.attachment = i;
+        color_att_ref.layout = layout;
+    }
+
+    if (desc->resolve_target_mask != 0) {
+        uint32_t current_resolve_attachment = (uint32_t)attachments.size;
+        uint32_t resolve_mask = desc->resolve_target_mask;
+
+        for (uint32_t i = 0; i < desc->num_color_targets; i++) {
+            auto& resolve_att_ref = resolve_att_refs[i];
+
+            if (!GnContainsBit(resolve_mask, 1 << i)) {
+                resolve_att_ref.attachment = VK_ATTACHMENT_UNUSED;
+                resolve_att_ref.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+                continue;
+            }
+
+            const auto& color_target = desc->color_targets[i];
+            VkImageLayout layout = GnGetImageLayoutFromAccessVK(color_target.access);
+
+            resolve_att_ref.attachment = current_resolve_attachment++;
+            resolve_att_ref.layout = layout;
+
+            auto resolve_att = attachments.emplace_back_ptr();
+            resolve_att->flags = 0;
+            resolve_att->format = GnConvertToVkFormat(color_target.format);
+            resolve_att->samples = VK_SAMPLE_COUNT_1_BIT;
+            resolve_att->loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            resolve_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            resolve_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            resolve_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            resolve_att->initialLayout = layout;
+            resolve_att->finalLayout = layout;
+        }
+    }
+
+    if (desc->has_depth_stencil_target) {
+        depth_stencil_att_ref.attachment = (uint32_t)attachments.size;
+        depth_stencil_att_ref.layout = GnGetImageLayoutFromAccessVK(desc->depth_stencil_target_access);
+
+        auto ds_att = attachments.emplace_back_ptr();
+        ds_att->flags = 0;
+        ds_att->format = GnConvertToVkFormat(desc->depth_stencil_target_format);
+        ds_att->samples = sample_count;
+        ds_att->loadOp = GnConvertToVkAttachmentLoadOp(desc->depth_load_op);
+        ds_att->storeOp = GnConvertToVkAttachmentStoreOp(desc->depth_store_op);
+        ds_att->stencilLoadOp = GnConvertToVkAttachmentLoadOp(desc->stencil_load_op);
+        ds_att->stencilStoreOp = GnConvertToVkAttachmentStoreOp(desc->stencil_store_op);
+        ds_att->initialLayout = depth_stencil_att_ref.layout;
+        ds_att->finalLayout = depth_stencil_att_ref.layout;
+    }
+
+    VkSubpassDescription subpass;
+    subpass.flags = 0;
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.inputAttachmentCount = {};
+    subpass.pInputAttachments = {};
+    subpass.colorAttachmentCount = desc->num_color_targets;
+    subpass.pColorAttachments = color_att_refs;
+    subpass.pResolveAttachments = desc->resolve_target_mask ? resolve_att_refs : nullptr;
+    subpass.pDepthStencilAttachment = desc->has_depth_stencil_target ? &depth_stencil_att_ref : nullptr;
+    subpass.preserveAttachmentCount = {};
+    subpass.pPreserveAttachments = {};
+
+    VkRenderPassCreateInfo rp_info;
+    rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rp_info.pNext = nullptr;
+    rp_info.flags = 0;
+    rp_info.attachmentCount = (uint32_t)attachments.size;
+    rp_info.pAttachments = attachments.storage;
+    rp_info.subpassCount = 1;
+    rp_info.pSubpasses = &subpass;
+    rp_info.dependencyCount = 0;
+    rp_info.pDependencies = nullptr;
+
+    return fn.vkCreateRenderPass(device, &rp_info, nullptr, render_pass);
 }
 
 // -- [GnQueueVK] --
@@ -3659,6 +3947,7 @@ void GnSwapchainBlitImageVK::Destroy(GnDeviceVK* impl_device)
 {
     const GnVulkanDeviceFunctions& fn = impl_device->fn;
     if (image) fn.vkDestroyImage(impl_device->device, image, nullptr);
+    if (view) fn.vkDestroyImageView(impl_device->device, view, nullptr);
     if (memory) fn.vkFreeMemory(impl_device->device, memory, nullptr);
 }
 
@@ -3669,17 +3958,14 @@ GnSwapchainVK::GnSwapchainVK(GnDeviceVK* impl_device) noexcept :
 {
 }
 
-GnTexture GnSwapchainVK::GetSwapchainTexture(uint32_t index) noexcept
+GnTextureView GnSwapchainVK::GetCurrentBackBufferView() noexcept
 {
-    return &blit_images[index];
+    return &blit_images[current_frame];
 }
 
-GnResult GnSwapchainVK::GetSwapchainTextures(uint32_t num_textures, GnTexture* textures) noexcept
+GnTextureView GnSwapchainVK::GetBackBufferView(uint32_t index) noexcept
 {
-    for (uint32_t i = 0; i < num_textures; i++)
-        textures[i] = &blit_images[i];
-
-    return GnSuccess;
+    return &blit_images[index];
 }
 
 GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept
@@ -3747,19 +4033,6 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
     int32_t memtype_index = -1;
 
     if (!failed && config_changed) {
-        // Prepare this for the GnTexture
-        GnTextureDesc swapchain_texture_desc;
-        swapchain_texture_desc.usage = swapchain_desc.usage;
-        swapchain_texture_desc.type = GnTextureType_2D;
-        swapchain_texture_desc.format = used_format;
-        swapchain_texture_desc.width = width;
-        swapchain_texture_desc.height = height;
-        swapchain_texture_desc.depth = 1;
-        swapchain_texture_desc.mip_levels = 1;
-        swapchain_texture_desc.array_layers = 1;
-        swapchain_texture_desc.samples = 1;
-        swapchain_texture_desc.tiling = GnTiling_Optimal;
-
         VkImageCreateInfo image_info;
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image_info.pNext = nullptr;
@@ -3776,6 +4049,20 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
         image_info.queueFamilyIndexCount = 0;
         image_info.pQueueFamilyIndices = nullptr;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VkImageViewCreateInfo view_info;
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.pNext = nullptr;
+        view_info.flags = 0;
+        view_info.image = {};
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = image_info.format;
+        view_info.components = {};
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.baseMipLevel = 0;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.baseArrayLayer = 0;
+        view_info.subresourceRange.layerCount = 1;
 
         VkMemoryAllocateInfo image_alloc_info;
         image_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -3817,8 +4104,15 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
             }
 
             fn.vkBindImageMemory(device, blit_image->image, blit_image->memory, 0);
+
+            view_info.image = blit_image->image;
+            if (GN_VULKAN_FAILED(fn.vkCreateImageView(device, &view_info, nullptr, &blit_image->view))) {
+                failed = true;
+                break;
+            }
+
+            blit_image->format = used_format;
             blit_image->swapchain_owned = true;
-            blit_image->desc = swapchain_texture_desc;
         }
     }
 
@@ -4338,23 +4632,83 @@ GnResult GnCommandListVK::Begin(const GnCommandListBeginDesc* desc) noexcept
     return GnConvertFromVkResult(fn.vkBeginCommandBuffer(static_cast<VkCommandBuffer>(cmd_private_data), &begin_info));
 }
 
-void GnCommandListVK::BeginRenderPass(GnRenderPass render_pass) noexcept
+void GnCommandListVK::BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept
 {
+    // In earlier Vulkan revision, rendering must be done with VkRenderPass.
+    // Because VkRenderPass is an immutable object, caching a VkRenderPass
+    // object is required to do a single-pass rendering.
+    // 
+    // When multiple pass required, the application should use GnRenderGraph instead.
+    // GnRenderGraph is equivalent to VkRenderPass.
+    // 
+    // TODO: Use VK_KHR_dynamic_rendering when available
+    auto& render_pass_cache = parent_cmd_pool->parent_device->render_pass_cache;
+    GnRenderPassCacheKey rp_cache_key{};
+    rp_cache_key.Init(desc);
+
+    auto render_pass = render_pass_cache.Get(rp_cache_key);
+    if (!render_pass) {
+        VkRenderPass new_render_pass;
+        GN_ASSERT(!GN_VULKAN_FAILED(parent_cmd_pool->parent_device->CreateRenderPass(&rp_cache_key, &new_render_pass)));
+        render_pass_cache.Insert(rp_cache_key, new_render_pass);
+        render_pass.emplace(new_render_pass);
+    }
+
+    auto& framebuffer_cache = parent_cmd_pool->parent_device->framebuffer_cache;
+    GnFramebufferCacheKey fb_cache_key{};
+    fb_cache_key.Init(desc);
+    
+    auto framebuffer = framebuffer_cache.Get(fb_cache_key);
+    if (!framebuffer) {
+        GnSmallVector<VkImageView, 32> attachments;
+
+        for (uint32_t i = 0; i < rp_cache_key.num_color_targets; i++) {
+            const auto& color_target = desc->color_targets[i];
+            if (color_target.view)
+                attachments.push_back(GN_TO_VULKAN(GnTextureView, color_target.view)->view);
+        }
+
+        for (uint32_t i = 0; i < rp_cache_key.num_color_targets; i++) {
+            const auto& color_target = desc->color_targets[i];
+            if (color_target.resolve_view)
+                attachments.push_back(GN_TO_VULKAN(GnTextureView, color_target.resolve_view)->view);
+        }
+
+        attachments.push_back(GN_TO_VULKAN(GnTextureView, desc->depth_stencil_target->view)->view);
+
+        VkFramebufferCreateInfo fb_info;
+        fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fb_info.pNext = nullptr;
+        fb_info.flags = 0;
+        fb_info.renderPass = *render_pass;
+        fb_info.attachmentCount = (uint32_t)attachments.size;
+        fb_info.pAttachments = attachments.storage;
+        fb_info.width = desc->render_area.width; // TODO: Get the width from GnTexture
+        fb_info.height = desc->render_area.height;
+        fb_info.layers = 1;
+
+        VkFramebuffer new_framebuffer;
+        GN_ASSERT(!GN_VULKAN_FAILED(fn.vkCreateFramebuffer(parent_cmd_pool->parent_device->device, &fb_info, nullptr, &new_framebuffer)));
+        framebuffer_cache.Insert(fb_cache_key, new_framebuffer);
+        framebuffer.emplace(new_framebuffer);
+    }
+
     VkRenderPassBeginInfo rp_begin_info;
     rp_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rp_begin_info.pNext = nullptr;
-    rp_begin_info.renderPass = GN_TO_VULKAN(GnRenderPass, render_pass)->render_pass; // TODO
-    rp_begin_info.framebuffer = VK_NULL_HANDLE; // TODO
-    rp_begin_info.renderArea; // TODO
+    rp_begin_info.renderPass = *render_pass;
+    rp_begin_info.framebuffer = *framebuffer;
+    rp_begin_info.renderArea.offset = { desc->render_area.x, desc->render_area.y }; // TODO
+    rp_begin_info.renderArea.extent = { (uint32_t)desc->render_area.width, (uint32_t)desc->render_area.height };
     rp_begin_info.clearValueCount; // TODO
     rp_begin_info.pClearValues = nullptr;
 
-    fn.vkCmdBeginRenderPass(static_cast<VkCommandBuffer>(cmd_private_data), &rp_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    //fn.vkCmdBeginRenderPass(static_cast<VkCommandBuffer>(cmd_private_data), &rp_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 void GnCommandListVK::EndRenderPass() noexcept
 {
-    fn.vkCmdEndRenderPass(static_cast<VkCommandBuffer>(cmd_private_data));
+    //fn.vkCmdEndRenderPass(static_cast<VkCommandBuffer>(cmd_private_data));
 }
 
 void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
