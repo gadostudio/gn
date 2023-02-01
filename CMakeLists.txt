@@ -1,13 +1,14 @@
 ﻿# CMakeList.txt : CMake project for gncxx, include source and define
 # project specific logic here.
 #
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.12)
 
 project("gn")
 
 option(GN_STATIC_BUILD "Build static library" ON)
 option(GN_ENABLE_VULKAN "Enable Vulkan backend" ON)
-option(GN_ALLOW_DOWNLOAD_EXTERN_DEPS "Allow downloading of external dependencies from internet" OFF)
+option(GN_DOWNLOAD_EXTERN_DEPS "Download external dependencies from internet" OFF)
+option(GN_DONT_USE_DEPS "Disable external dependencies" OFF)
 option(GN_BUILD_EXAMPLES "Build examples (must build static library)" ON)
 option(GN_BUILD_TESTS "Build tests (must build static library)" OFF)
 
@@ -15,7 +16,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_EXC TRUE)
 
-if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
+if(GN_DOWNLOAD_EXTERN_DEPS)
     include(FetchContent)
 endif()
 
@@ -37,23 +38,20 @@ target_include_directories(gnsl
 
 if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
     if(GN_ENABLE_VULKAN)
-        if(GN_ALLOW_DOWNLOAD_EXTERN_DEPS)
-            # Get Vulkan-Headers from github if allowed
+        if(NOT GN_DONT_USE_DEPS AND GN_DOWNLOAD_EXTERN_DEPS)
             FetchContent_Declare(
                 Vulkan-Headers
                 GIT_REPOSITORY          https://github.com/KhronosGroup/Vulkan-Headers.git
-                GIT_TAG                 v1.3.216 # Must match Vulkan SDK version
+                GIT_TAG                 v1.3.216 # Must match with the latest Vulkan SDK version
             )
 
             FetchContent_MakeAvailable(Vulkan-Headers)
-            set(GN_STATIC_DEPS "${GN_STATIC_DEPS};Vulkan::Headers")
-        else()
+            set(GN_BUILD_EXAMPLES OFF)
+        elseif(NOT GN_DONT_USE_DEPS)
             find_package(Vulkan)
-
-            if(Vulkan_FOUND)
-                set(GN_STATIC_DEPS "${GN_STATIC_DEPS};Vulkan::Headers")
-            endif()
         endif()
+
+        set(GN_STATIC_DEPS "${GN_STATIC_DEPS};Vulkan::Headers")
     endif()
 
     add_library(gn-static STATIC src/gn_impl_stub.cpp)

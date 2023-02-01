@@ -1,0 +1,1 @@
+gn_add_graphics_example(gn_example_hello_world hello_world.cpp)

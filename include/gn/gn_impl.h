@@ -103,8 +103,7 @@ struct GnSwapchain_t
     uint32_t        current_frame = 0;
 
     virtual ~GnSwapchain_t() { }
-    virtual GnTextureView GetCurrentBackBufferView() noexcept = 0;
-    virtual GnTextureView GetBackBufferView(uint32_t index) noexcept = 0;
+    virtual GnTexture GetBackBuffer(uint32_t index) noexcept = 0;
     virtual GnResult Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept = 0;
 };
 
@@ -148,11 +147,11 @@ struct GnTexture_t
 {
     GnTextureDesc           desc;
     GnMemoryRequirements    memory_requirements;
+    bool                    swapchain_owned;
 };
 
 struct GnTextureView_t
 {
-    bool swapchain_owned;
     GnFormat format;
 };
 
@@ -210,25 +209,25 @@ struct GnCommandListState
         ComputeStateUpdate = ~GraphicsStateUpdate
     };
 
-    GnPipelineState     graphics, compute;
+    GnPipelineState graphics, compute;
 
     // Input-Assembler state
-    GnBuffer            index_buffer;
-    GnDeviceSize        index_buffer_offset;
-    GnIndexFormat       index_format;
-    GnBuffer            vertex_buffers[32];
-    GnDeviceSize        vertex_buffer_offsets[32];
-    GnUpdateRange       vertex_buffer_upd_range;
+    GnBuffer        index_buffer;
+    GnDeviceSize    index_buffer_offset;
+    GnIndexFormat   index_format;
+    GnBuffer        vertex_buffers[32];
+    GnDeviceSize    vertex_buffer_offsets[32];
+    GnUpdateRange   vertex_buffer_upd_range;
 
     // Rasterization stage
-    GnViewport          viewports[16];
-    GnUpdateRange       viewport_upd_range;
-    GnRect2D       scissors[16];
-    GnUpdateRange       scissor_upd_range;
+    GnViewport      viewports[16];
+    GnUpdateRange   viewport_upd_range;
+    GnRect2D        scissors[16];
+    GnUpdateRange   scissor_upd_range;
 
     // Output merger state
-    float               blend_constants[4];
-    uint32_t            stencil_ref;
+    float           blend_constants[4];
+    uint32_t        stencil_ref;
 
     union
     {
@@ -768,15 +767,10 @@ uint32_t GnGetCurrentBackBufferIndex(GnSwapchain swapchain)
     return swapchain->current_frame;
 }
 
-GnTextureView GnGetCurrentBackBufferView(GnSwapchain swapchain)
-{
-    return swapchain->GetCurrentBackBufferView();
-}
-
-GnTextureView GnGetSwapchainBackBufferView(GnSwapchain swapchain, uint32_t index)
+GnTexture GnGetSwapchainBackBuffer(GnSwapchain swapchain, uint32_t index)
 {
     if (index > swapchain->swapchain_desc.num_buffers - 1) return nullptr;
-    return swapchain->GetBackBufferView(index);
+    return swapchain->GetBackBuffer(index);
 }
 
 GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync)
@@ -1114,8 +1108,15 @@ void GnDestroyCommandLists(GnDevice device, GnCommandPool command_pool, uint32_t
 
 GnResult GnBeginCommandList(GnCommandList command_list, const GnCommandListBeginDesc* desc)
 {
+    GnCommandListBeginDesc implicit_desc;
+    
+    if (desc == nullptr) {
+        implicit_desc.flags = 0;
+        implicit_desc.inheritance = nullptr;
+    }
+
     command_list->recording = true;
-    return command_list->Begin(desc);
+    return command_list->Begin(desc != nullptr ? desc : &implicit_desc);
 }
 
 GnResult GnEndCommandList(GnCommandList command_list)
@@ -1255,7 +1256,7 @@ void GnCmdSetViewport(GnCommandList command_list, uint32_t slot, float x, float 
     viewport.min_depth = min_depth;
     viewport.max_depth = max_depth;
     command_list->state.viewport_upd_range.Update(slot);
-    command_list->state.update_flags.vertex_buffers = true;
+    command_list->state.update_flags.viewports = true;
 }
 
 void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot, const GnViewport* viewport)
@@ -1268,7 +1269,7 @@ void GnCmdSetViewport2(GnCommandList command_list, uint32_t slot, const GnViewpo
     viewport_target.min_depth = viewport->min_depth;
     viewport_target.max_depth = viewport->max_depth;
     command_list->state.viewport_upd_range.Update(slot);
-    command_list->state.update_flags.vertex_buffers = true;
+    command_list->state.update_flags.viewports = true;
 }
 
 void GnCmdSetViewports(GnCommandList command_list, uint32_t first_slot, uint32_t num_viewports, const GnViewport* viewports)
@@ -1286,6 +1287,7 @@ void GnCmdSetScissor(GnCommandList command_list, uint32_t slot, uint32_t x, uint
     rect.width = width;
     rect.height = height;
     command_list->state.scissor_upd_range.Update(slot);
+    command_list->state.update_flags.scissors = true;
 }
 
 void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnRect2D* scissor)
@@ -1293,6 +1295,7 @@ void GnCmdSetScissor2(GnCommandList command_list, uint32_t slot, const GnRect2D*
     GnRect2D& rect = command_list->state.scissors[slot];
     rect = *scissor;
     command_list->state.scissor_upd_range.Update(slot);
+    command_list->state.update_flags.scissors = true;
 }
 
 void GnCmdSetScissors(GnCommandList command_list, uint32_t first_slot, uint32_t num_scissors, const GnRect2D* scissors)
@@ -1319,7 +1322,7 @@ void GnCmdSetBlendConstants2(GnCommandList command_list, float r, float g, float
 
 void GnCmdSetStencilRef(GnCommandList command_list, uint32_t stencil_ref)
 {
-    if (stencil_ref == command_list->state.stencil_ref) return;
+    if (!command_list->state.update_flags.stencil_ref && stencil_ref == command_list->state.stencil_ref) return;
     command_list->state.stencil_ref = stencil_ref;
     command_list->state.update_flags.stencil_ref = true;
 }
@@ -1339,7 +1342,7 @@ void GnCmdEndRenderPass(GnCommandList command_list)
 void GnCmdDraw(GnCommandList command_list, uint32_t num_vertices, uint32_t first_vertex)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
-    command_list->draw_cmd_fn(command_list->cmd_private_data, num_vertices, 1, 0, 0);
+    command_list->draw_cmd_fn(command_list->cmd_private_data, num_vertices, 1, first_vertex, 0);
 }
 
 void GnCmdDrawInstanced(GnCommandList command_list, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance)
@@ -1356,7 +1359,7 @@ void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnD
 void GnCmdDrawIndexed(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, int32_t vertex_offset)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
-    command_list->draw_indexed_cmd_fn(command_list->cmd_private_data, num_indices, first_index, 1, 0, 0);
+    command_list->draw_indexed_cmd_fn(command_list->cmd_private_data, num_indices, first_index, 1, vertex_offset, 0);
 }
 
 void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance)

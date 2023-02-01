@@ -163,7 +163,7 @@ struct GnExampleApp : private GnExampleWindowWin32
             return false;
         }
 
-        adapter = GnGetDefaultAdapter(instance);
+        //adapter = GnGetDefaultAdapter(instance);
 
         GnEnumerateAdapters(
             instance,
@@ -274,9 +274,9 @@ struct GnExampleApp : private GnExampleWindowWin32
     virtual void OnRender() { }
 };
 
-static std::optional<std::vector<uint32_t>> GnLoadSPIRV(const char* path)
+static std::optional<std::vector<char>> GnLoadSPIRV(const char* path)
 {
-    std::vector<uint32_t> content;
+    std::vector<char> content;
     std::ifstream file(path, std::ios::binary);
 
     if (!file.is_open())
@@ -286,8 +286,8 @@ static std::optional<std::vector<uint32_t>> GnLoadSPIRV(const char* path)
     auto length = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    content.resize(length / sizeof(uint32_t));
-    file.read((char*)content.data(), length);
+    content.resize(length);
+    file.read(content.data(), length);
 
     file.close();
     return content;

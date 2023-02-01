@@ -6,7 +6,8 @@
       "hidden": true,
       "cacheVariables": {
         "GN_STATIC_BUILD": true,
-        "GN_ALLOW_DOWNLOAD_EXTERN_DEPS": false,
+        "GN_DOWNLOAD_EXTERN_DEPS": false,
+        "GN_BUILD_EXAMPLES": true,
         "GN_BUILD_TESTS": true
       }
     },

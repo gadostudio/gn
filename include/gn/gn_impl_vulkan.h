@@ -134,6 +134,8 @@ struct GnVulkanDeviceFunctions
     PFN_vkCmdDraw vkCmdDraw;
     PFN_vkCmdDrawIndexed vkCmdDrawIndexed;
     PFN_vkCmdDispatch vkCmdDispatch;
+    PFN_vkCmdCopyImage vkCmdCopyImage;
+    PFN_vkCmdBlitImage vkCmdBlitImage;
     PFN_vkCmdClearColorImage vkCmdClearColorImage;
     PFN_vkCmdPipelineBarrier vkCmdPipelineBarrier;
     PFN_vkCmdPushConstants vkCmdPushConstants;
@@ -292,14 +294,13 @@ struct GnSwapchainFramePresenterVK
     void Destroy(GnDeviceVK* impl_device);
 };
 
-struct GnTextureViewVK : public GnTextureView_t
-{
-    VkImageView view;
-};
-
-struct GnSwapchainBlitImageVK : public GnTextureViewVK
+struct GnTextureBaseVK : public GnTexture_t
 {
     VkImage image;
+};
+
+struct GnSwapchainBlitImageVK : public GnTextureBaseVK
+{
     VkDeviceMemory memory;
 
     void Destroy(GnDeviceVK* impl_device);
@@ -310,6 +311,7 @@ struct GnSwapchainVK : public GnSwapchain_t
     GnDeviceVK*                                                             impl_device;
     VkSwapchainKHR                                                          swapchain;
     VkMemoryRequirements                                                    image_mem_requirements;
+    VkImageBlit                                                             blit_param{};
     int32_t                                                                 swapchain_memtype_index = -1;
     uint32_t                                                                current_acquired_image = 0;
     bool                                                                    should_update = true;
@@ -318,8 +320,7 @@ struct GnSwapchainVK : public GnSwapchain_t
     GnSmallVector<GnSwapchainFramePresenterVK, GN_MAX_SWAPCHAIN_BUFFERS>    frame_presenters;
 
     GnSwapchainVK(GnDeviceVK* impl_device) noexcept;
-    GnTextureView GetCurrentBackBufferView() noexcept override;
-    GnTextureView GetBackBufferView(uint32_t index) noexcept override;
+    GnTexture GetBackBuffer(uint32_t index) noexcept override;
     GnResult Update(GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync) noexcept override;
 
     GnResult Init(const GnSwapchainDesc* desc, VkSwapchainKHR old_swapchain) noexcept;
@@ -364,6 +365,11 @@ struct GnTextureVK : public GnTexture_t
     VkDeviceSize    aligned_offset;
 };
 
+struct GnTextureViewVK : public GnTextureView_t
+{
+    VkImageView view;
+};
+
 struct GnRenderGraphVK : public GnRenderGraph_t
 {
     VkRenderPass render_pass;
@@ -388,6 +394,7 @@ struct GnPipelineVK : public GnPipeline_t
 {
     VkPipeline pipeline;
     VkIndexType index_type;
+    VkRenderPass render_pass;
 };
 
 struct GnDescriptorPoolVK : public GnDescriptorPool_t
@@ -522,9 +529,10 @@ struct GnRenderPassCacheKey
 
 struct GnFramebufferCacheKey
 {
-    uint32_t        num_color_targets;
-    GnTextureView   color_target_views[GN_MAX_COLOR_TARGETS];
-    GnTextureView   depth_stencil_target_view;
+    static constexpr size_t max_render_target_views = GN_MAX_COLOR_TARGETS * 2 + 1;
+
+    uint32_t        num_render_targets;
+    GnTextureView   render_target_views[max_render_target_views];
     size_t          calculated_hash;
 
     void Init(const GnRenderPassBeginDesc* desc);
@@ -542,6 +550,7 @@ struct GnDeviceVK : public GnDevice_t
     VkDeviceSize                                        non_coherent_atom_size = 0;
     GnCacheTable<GnRenderPassCacheKey, VkRenderPass>    render_pass_cache;
     GnCacheTable<GnFramebufferCacheKey, VkFramebuffer>  framebuffer_cache;
+    VkRenderPass render_pass;
 
     ~GnDeviceVK();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
@@ -993,7 +1002,8 @@ inline VkAccessFlags GnGetAccessVK(GnResourceAccessFlags access) noexcept
     static constexpr GnResourceAccessFlags src_transfer_access =
         GnResourceAccess_CopySrc |
         GnResourceAccess_BlitSrc |
-        GnResourceAccess_ClearSrc;
+        GnResourceAccess_ClearSrc |
+        GnResourceAccess_Present;
 
     static constexpr GnResourceAccessFlags dst_transfer_access =
         GnResourceAccess_CopyDst |
@@ -1025,7 +1035,7 @@ inline VkAccessFlags GnGetAccessVK(GnResourceAccessFlags access) noexcept
     if (access & uniform_read_access) vk_access |= VK_ACCESS_UNIFORM_READ_BIT;
     if (access & read_access) vk_access |= VK_ACCESS_SHADER_READ_BIT;
     if (access & write_access) vk_access |= VK_ACCESS_SHADER_WRITE_BIT;
-    if (access & src_transfer_access || access & GnResourceAccess_Present) vk_access |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (access & src_transfer_access) vk_access |= VK_ACCESS_TRANSFER_READ_BIT;
     if (access & dst_transfer_access) vk_access |= VK_ACCESS_TRANSFER_WRITE_BIT;
 
     return vk_access;
@@ -1260,6 +1270,8 @@ void GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkCmdDraw);
     GN_LOAD_DEVICE_FN(vkCmdDrawIndexed);
     GN_LOAD_DEVICE_FN(vkCmdDispatch);
+    GN_LOAD_DEVICE_FN(vkCmdCopyImage);
+    GN_LOAD_DEVICE_FN(vkCmdBlitImage);
     GN_LOAD_DEVICE_FN(vkCmdClearColorImage);
     GN_LOAD_DEVICE_FN(vkCmdPipelineBarrier);
     GN_LOAD_DEVICE_FN(vkCmdPushConstants);
@@ -1364,7 +1376,7 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
     instance_create_info.flags = 0;
     instance_create_info.pApplicationInfo = &app_info;
     instance_create_info.enabledLayerCount = GN_ARRAY_SIZE(layers);
-    instance_create_info.ppEnabledLayerNames = layers;
+    instance_create_info.ppEnabledLayerNames = layers; 
     instance_create_info.enabledExtensionCount = (uint32_t)extensions.size;
     instance_create_info.ppEnabledExtensionNames = extensions.storage;
 
@@ -1825,7 +1837,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
     VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable_feature{};
     depth_clip_enable_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT;
 
-    if (features[GnFeature_UnclippedDepth]) {
+    if (false && features[GnFeature_UnclippedDepth]) {
         device_extensions.push_back(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
         chain_builder.push(&depth_clip_enable_feature);
     }
@@ -2027,7 +2039,31 @@ inline bool GnRenderPassCacheKey::CompareKey(const GnRenderPassCacheKey& a, cons
 
 inline void GnFramebufferCacheKey::Init(const GnRenderPassBeginDesc* desc)
 {
+    size_t hash = 0;
+    uint32_t current_view = 0;
+
+    for (uint32_t i = 0; i < desc->num_color_targets; i++) {
+        if (desc->color_targets[i].view) {
+            render_target_views[current_view] = desc->color_targets[i].view;
+            GnCombineHash(hash, render_target_views[current_view++]);
+        }
+    }
     
+    if (desc->depth_stencil_target) {
+        render_target_views[current_view] = desc->depth_stencil_target->view;
+        GnCombineHash(hash, render_target_views[current_view++]);
+    }
+
+    for (uint32_t i = 0; i < desc->num_color_targets; i++) {
+        if (desc->color_targets[i].resolve_view) {
+            render_target_views[current_view] = desc->color_targets[i].resolve_view;
+            GnCombineHash(hash, render_target_views[current_view++]);
+        }
+    }
+
+    num_render_targets = current_view;
+    GnCombineHash(hash, num_render_targets);
+    calculated_hash = hash;
 }
 
 inline size_t GnFramebufferCacheKey::GetHash(const GnFramebufferCacheKey& key) noexcept
@@ -2037,11 +2073,11 @@ inline size_t GnFramebufferCacheKey::GetHash(const GnFramebufferCacheKey& key) n
 
 inline bool GnFramebufferCacheKey::CompareKey(const GnFramebufferCacheKey& a, const GnFramebufferCacheKey& b) noexcept
 {
-    if (a.num_color_targets != b.num_color_targets || a.depth_stencil_target_view != b.depth_stencil_target_view)
+    if (a.num_render_targets != b.num_render_targets)
         return false;
 
-    for (uint32_t i = 0; i < a.num_color_targets; i++)
-        if (a.color_target_views[i] != b.color_target_views[i])
+    for (uint32_t i = 0; i < a.num_render_targets; i++)
+        if (a.render_target_views[i] != b.render_target_views[i])
             return false;
 
     return true;
@@ -2051,14 +2087,14 @@ inline bool GnFramebufferCacheKey::CompareKey(const GnFramebufferCacheKey& a, co
 
 GnDeviceVK::~GnDeviceVK()
 {
-    render_pass_cache.Flush(
-        [this](VkRenderPass render_pass) {
-            fn.vkDestroyRenderPass(device, render_pass, nullptr);
-        });
-
     framebuffer_cache.Flush(
         [this](VkFramebuffer framebuffer) {
             fn.vkDestroyFramebuffer(device, framebuffer, nullptr);
+        });
+
+    render_pass_cache.Flush(
+        [this](VkRenderPass render_pass) {
+            fn.vkDestroyRenderPass(device, render_pass, nullptr);
         });
 
     if (enabled_queues) {
@@ -2305,7 +2341,6 @@ GnResult GnDeviceVK::CreateTextureView(const GnTextureViewDesc* desc, GnTextureV
         return GnError_OutOfHostMemory;
     }
 
-    impl_texture_view->swapchain_owned = false;
     impl_texture_view->view = view;
     impl_texture_view->format = desc->format;
 
@@ -2742,12 +2777,28 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
         color_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         color_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color_att->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color_att->initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color_att->finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         auto& color_att_ref = color_att_refs[i];
         color_att_ref.attachment = i;
         color_att_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+    
+    if (has_depth_stencil) {
+        depth_stencil_att_ref.attachment = (uint32_t)attachments.size;
+        depth_stencil_att_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        auto ds_att = attachments.emplace_back_ptr();
+        ds_att->flags = 0;
+        ds_att->format = GnConvertToVkFormat(fragment->depth_stencil_target_format);
+        ds_att->samples = sample_count;
+        ds_att->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        ds_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        ds_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        ds_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+        ds_att->initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        ds_att->finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     if (fragment->resolve_target_mask != 0) {
@@ -2773,25 +2824,9 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
             resolve_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             resolve_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             resolve_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            resolve_att->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            resolve_att->initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             resolve_att->finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
-    }
-    
-    if (has_depth_stencil) {
-        auto ds_att = attachments.emplace_back_ptr();
-        ds_att->flags = 0;
-        ds_att->format = GnConvertToVkFormat(fragment->depth_stencil_target_format);
-        ds_att->samples = sample_count;
-        ds_att->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        ds_att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        ds_att->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        ds_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-        ds_att->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        ds_att->finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        depth_stencil_att_ref.attachment = (uint32_t)attachments.size;
-        depth_stencil_att_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     VkSubpassDescription subpass;
@@ -2845,6 +2880,22 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
         return GnError_InternalError;
     }
 
+    VkPipelineShaderStageCreateInfo stages[2];
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].pNext = nullptr;
+    stages[0].flags = 0;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs_module;
+    stages[0].pName = desc->vs->entry_point;
+    stages[0].pSpecializationInfo = nullptr;
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].pNext = nullptr;
+    stages[1].flags = 0;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs_module;
+    stages[1].pName = desc->fs->entry_point;
+    stages[1].pSpecializationInfo = nullptr;
+
     uint32_t num_input_slots = desc->vertex_input->num_input_slots;
     uint32_t num_attributes = desc->vertex_input->num_attributes;
     GnSmallVector<VkVertexInputBindingDescription, 32> vertex_bindings;
@@ -2878,25 +2929,9 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     vertex_input.pNext = nullptr;
     vertex_input.flags = 0;
     vertex_input.vertexBindingDescriptionCount = num_input_slots;
-    vertex_input.pVertexBindingDescriptions = vertex_bindings.storage;
+    vertex_input.pVertexBindingDescriptions = num_input_slots > 0 ? vertex_bindings.storage : nullptr;
     vertex_input.vertexAttributeDescriptionCount = num_attributes;
-    vertex_input.pVertexAttributeDescriptions = vertex_attributes.storage;
-
-    VkPipelineShaderStageCreateInfo stages[2];
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].pNext = nullptr;
-    stages[0].flags = 0;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vs_module;
-    stages[0].pName = desc->vs->entry_point;
-    stages[0].pSpecializationInfo = nullptr;
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].pNext = nullptr;
-    stages[1].flags = 0;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs_module;
-    stages[1].pName = desc->fs->entry_point;
-    stages[1].pSpecializationInfo = nullptr;
+    vertex_input.pVertexAttributeDescriptions = num_attributes > 0 ? vertex_attributes.storage : nullptr;
 
     VkPrimitiveTopology prim_topo = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
     bool primitive_restart_enable = desc->input_assembly->primitive_restart != GnPrimitiveRestart_Disable;
@@ -2945,14 +2980,14 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     input_assembly.topology = prim_topo;
     input_assembly.primitiveRestartEnable = primitive_restart_enable;
 
-    VkPipelineViewportStateCreateInfo viewport_state;
-    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport_state.pNext = nullptr;
-    viewport_state.flags = 0;
-    viewport_state.viewportCount = desc->num_viewports;
-    viewport_state.pViewports = nullptr;
-    viewport_state.scissorCount = desc->num_viewports;
-    viewport_state.pScissors = nullptr;
+    VkPipelineViewportStateCreateInfo viewport;
+    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport.pNext = nullptr;
+    viewport.flags = 0;
+    viewport.viewportCount = desc->num_viewports;
+    viewport.pViewports = nullptr;
+    viewport.scissorCount = desc->num_viewports;
+    viewport.pScissors = nullptr;
 
     VkPolygonMode polygon_mode = VK_POLYGON_MODE_MAX_ENUM;
     VkCullModeFlags cull_mode = 0;
@@ -2985,41 +3020,31 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
             GN_UNREACHABLE();
     }
 
-    VkPipelineRasterizationStateCreateInfo rasterization_state;
-    rasterization_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterization_state.pNext = nullptr;
-    rasterization_state.flags = 0;
-    rasterization_state.depthClampEnable = VK_FALSE;
-    rasterization_state.rasterizerDiscardEnable = VK_FALSE;
-    rasterization_state.polygonMode = polygon_mode;
-    rasterization_state.cullMode = cull_mode;
-    rasterization_state.frontFace = desc->rasterization->frontface_ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
-    rasterization_state.depthBiasEnable = desc->rasterization->depth_bias != 0 || desc->rasterization->depth_bias_slope_scale != 0.0f;
-    rasterization_state.depthBiasConstantFactor = (float)desc->rasterization->depth_bias;
-    rasterization_state.depthBiasClamp = desc->rasterization->depth_bias_clamp;
-    rasterization_state.depthBiasSlopeFactor = desc->rasterization->depth_bias_slope_scale;
-    rasterization_state.lineWidth = 1.0f;
+    VkPipelineRasterizationStateCreateInfo rasterization;
+    rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterization.pNext = nullptr;
+    rasterization.flags = 0;
+    rasterization.depthClampEnable = VK_FALSE;
+    rasterization.rasterizerDiscardEnable = VK_FALSE;
+    rasterization.polygonMode = polygon_mode;
+    rasterization.cullMode = cull_mode;
+    rasterization.frontFace = desc->rasterization->frontface_ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    rasterization.depthBiasEnable = desc->rasterization->depth_bias != 0 || desc->rasterization->depth_bias_slope_scale != 0.0f;
+    rasterization.depthBiasConstantFactor = (float)desc->rasterization->depth_bias;
+    rasterization.depthBiasClamp = desc->rasterization->depth_bias_clamp;
+    rasterization.depthBiasSlopeFactor = desc->rasterization->depth_bias_slope_scale;
+    rasterization.lineWidth = 1.0f;
 
-    VkPipelineRasterizationDepthClipStateCreateInfoEXT depth_clip_state;
-
-    if (desc->rasterization->unclipped_depth) {
-        depth_clip_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT;
-        depth_clip_state.pNext = nullptr;
-        depth_clip_state.flags = 0;
-        depth_clip_state.depthClipEnable = VK_FALSE;
-        rasterization_state.pNext = &depth_clip_state;
-    }
-
-    VkPipelineMultisampleStateCreateInfo multisample_state;
-    multisample_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample_state.pNext = nullptr;
-    multisample_state.flags = 0;
-    multisample_state.rasterizationSamples = (VkSampleCountFlagBits)desc->multisample->num_samples;
-    multisample_state.sampleShadingEnable = VK_FALSE;
-    multisample_state.minSampleShading = 0.0f;
-    multisample_state.pSampleMask = &desc->multisample->sample_mask;
-    multisample_state.alphaToCoverageEnable = desc->multisample->alpha_to_coverage;
-    multisample_state.alphaToOneEnable = VK_FALSE;
+    VkPipelineMultisampleStateCreateInfo multisample;
+    multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.pNext = nullptr;
+    multisample.flags = 0;
+    multisample.rasterizationSamples = (VkSampleCountFlagBits)desc->multisample->num_samples;
+    multisample.sampleShadingEnable = VK_FALSE;
+    multisample.minSampleShading = 1.0f;
+    multisample.pSampleMask = desc->multisample->num_samples != GnSampleCount_X1 ? &desc->multisample->sample_mask : nullptr;
+    multisample.alphaToCoverageEnable = desc->multisample->alpha_to_coverage;
+    multisample.alphaToOneEnable = VK_FALSE;
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil_state;
 
@@ -3083,18 +3108,18 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
         }
     }
 
-    VkPipelineColorBlendStateCreateInfo color_blend_state;
-    color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    color_blend_state.pNext = nullptr;
-    color_blend_state.flags = 0;
-    color_blend_state.logicOpEnable = VK_FALSE;
-    color_blend_state.logicOp = VK_LOGIC_OP_CLEAR;
-    color_blend_state.attachmentCount = independent_blend ? num_blend_states : fragment->num_color_targets;
-    color_blend_state.pAttachments = vk_attachments;
-    color_blend_state.blendConstants[0] = 0.0f;
-    color_blend_state.blendConstants[1] = 0.0f;
-    color_blend_state.blendConstants[2] = 0.0f;
-    color_blend_state.blendConstants[3] = 0.0f;
+    VkPipelineColorBlendStateCreateInfo blend;
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.pNext = nullptr;
+    blend.flags = 0;
+    blend.logicOpEnable = VK_FALSE;
+    blend.logicOp = VK_LOGIC_OP_CLEAR;
+    blend.attachmentCount = independent_blend ? num_blend_states : fragment->num_color_targets;
+    blend.pAttachments = vk_attachments;
+    blend.blendConstants[0] = 0.0f;
+    blend.blendConstants[1] = 0.0f;
+    blend.blendConstants[2] = 0.0f;
+    blend.blendConstants[3] = 0.0f;
 
     static const VkDynamicState dynamic_states[] = {
         VK_DYNAMIC_STATE_VIEWPORT,
@@ -3110,32 +3135,31 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     dynamic_state.dynamicStateCount = GN_ARRAY_SIZE(dynamic_states);
     dynamic_state.pDynamicStates = dynamic_states;
 
-    VkGraphicsPipelineCreateInfo pipeline_info;
-    pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_info.pNext = nullptr;
-    pipeline_info.flags = 0;
-    pipeline_info.stageCount = 2;
-    pipeline_info.pStages = stages;
-    pipeline_info.pVertexInputState = &vertex_input;
-    pipeline_info.pInputAssemblyState = &input_assembly;
-    pipeline_info.pTessellationState = nullptr;
-    pipeline_info.pViewportState = &viewport_state;
-    pipeline_info.pRasterizationState = &rasterization_state;
-    pipeline_info.pMultisampleState = &multisample_state;
-    pipeline_info.pDepthStencilState = has_depth_stencil ? &depth_stencil_state : nullptr;
-    pipeline_info.pColorBlendState = &color_blend_state;
-    pipeline_info.pDynamicState = &dynamic_state;
-    pipeline_info.layout = desc->layout ? GN_TO_VULKAN(GnPipelineLayout, desc->layout)->pipeline_layout : empty_pipeline_layout;
-    pipeline_info.renderPass = compatible_rp;
-    pipeline_info.subpass = 0;
-    pipeline_info.basePipelineHandle = nullptr;
-    pipeline_info.basePipelineIndex = 0;
+    VkGraphicsPipelineCreateInfo graphics_pipeline_info;
+    graphics_pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    graphics_pipeline_info.pNext = nullptr;
+    graphics_pipeline_info.flags = 0;
+    graphics_pipeline_info.stageCount = 2;
+    graphics_pipeline_info.pStages = stages;
+    graphics_pipeline_info.pVertexInputState = &vertex_input;
+    graphics_pipeline_info.pInputAssemblyState = &input_assembly;
+    graphics_pipeline_info.pTessellationState = nullptr;
+    graphics_pipeline_info.pViewportState = &viewport;
+    graphics_pipeline_info.pRasterizationState = &rasterization;
+    graphics_pipeline_info.pMultisampleState = &multisample;
+    graphics_pipeline_info.pDepthStencilState = has_depth_stencil ? &depth_stencil_state : nullptr;
+    graphics_pipeline_info.pColorBlendState = &blend;
+    graphics_pipeline_info.pDynamicState = &dynamic_state;
+    graphics_pipeline_info.layout = empty_pipeline_layout;
+    graphics_pipeline_info.renderPass = compatible_rp;
+    graphics_pipeline_info.subpass = 0;
+    graphics_pipeline_info.basePipelineHandle = VK_NULL_HANDLE;
+    graphics_pipeline_info.basePipelineIndex = 0;
 
-    VkPipeline vk_pipeline;
-
-    if (GN_VULKAN_FAILED(fn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &vk_pipeline))) {
-        fn.vkDestroyShaderModule(device, vs_module, nullptr);
+    VkPipeline vk_pipeline = VK_NULL_HANDLE;
+    if (GN_VULKAN_FAILED(fn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &graphics_pipeline_info, nullptr, &vk_pipeline))) {
         fn.vkDestroyShaderModule(device, fs_module, nullptr);
+        fn.vkDestroyShaderModule(device, vs_module, nullptr);
         fn.vkDestroyRenderPass(device, compatible_rp, nullptr);
         pool.pipeline->free(impl_pipeline);
         return GnError_InternalError;
@@ -3148,6 +3172,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     impl_pipeline->type = GnPipelineType_Graphics;
     impl_pipeline->num_viewports = desc->num_viewports;
     impl_pipeline->pipeline = vk_pipeline;
+    //render_pass = compatible_rp;
 
     *pipeline = impl_pipeline;
     
@@ -3593,7 +3618,7 @@ VkResult GnDeviceVK::CreateRenderPass(const GnRenderPassCacheKey* desc, VkRender
     for (uint32_t i = 0; i < desc->num_color_targets; i++) {
         if (!GnContainsBit(desc->color_target_mask, 1 << i)) {
             auto& color_att_ref = color_att_refs[i];
-            color_att_ref.attachment = i;
+            color_att_ref.attachment = VK_ATTACHMENT_UNUSED;
             color_att_ref.layout = VK_IMAGE_LAYOUT_UNDEFINED;
             continue;
         }
@@ -3615,6 +3640,22 @@ VkResult GnDeviceVK::CreateRenderPass(const GnRenderPassCacheKey* desc, VkRender
         auto& color_att_ref = color_att_refs[i];
         color_att_ref.attachment = i;
         color_att_ref.layout = layout;
+    }
+
+    if (desc->has_depth_stencil_target) {
+        depth_stencil_att_ref.attachment = (uint32_t)attachments.size;
+        depth_stencil_att_ref.layout = GnGetImageLayoutFromAccessVK(desc->depth_stencil_target_access);
+
+        auto ds_att = attachments.emplace_back_ptr();
+        ds_att->flags = 0;
+        ds_att->format = GnConvertToVkFormat(desc->depth_stencil_target_format);
+        ds_att->samples = sample_count;
+        ds_att->loadOp = GnConvertToVkAttachmentLoadOp(desc->depth_load_op);
+        ds_att->storeOp = GnConvertToVkAttachmentStoreOp(desc->depth_store_op);
+        ds_att->stencilLoadOp = GnConvertToVkAttachmentLoadOp(desc->stencil_load_op);
+        ds_att->stencilStoreOp = GnConvertToVkAttachmentStoreOp(desc->stencil_store_op);
+        ds_att->initialLayout = depth_stencil_att_ref.layout;
+        ds_att->finalLayout = depth_stencil_att_ref.layout;
     }
 
     if (desc->resolve_target_mask != 0) {
@@ -3647,22 +3688,6 @@ VkResult GnDeviceVK::CreateRenderPass(const GnRenderPassCacheKey* desc, VkRender
             resolve_att->initialLayout = layout;
             resolve_att->finalLayout = layout;
         }
-    }
-
-    if (desc->has_depth_stencil_target) {
-        depth_stencil_att_ref.attachment = (uint32_t)attachments.size;
-        depth_stencil_att_ref.layout = GnGetImageLayoutFromAccessVK(desc->depth_stencil_target_access);
-
-        auto ds_att = attachments.emplace_back_ptr();
-        ds_att->flags = 0;
-        ds_att->format = GnConvertToVkFormat(desc->depth_stencil_target_format);
-        ds_att->samples = sample_count;
-        ds_att->loadOp = GnConvertToVkAttachmentLoadOp(desc->depth_load_op);
-        ds_att->storeOp = GnConvertToVkAttachmentStoreOp(desc->depth_store_op);
-        ds_att->stencilLoadOp = GnConvertToVkAttachmentLoadOp(desc->stencil_load_op);
-        ds_att->stencilStoreOp = GnConvertToVkAttachmentStoreOp(desc->stencil_store_op);
-        ds_att->initialLayout = depth_stencil_att_ref.layout;
-        ds_att->finalLayout = depth_stencil_att_ref.layout;
     }
 
     VkSubpassDescription subpass;
@@ -3788,6 +3813,7 @@ GnResult GnQueueVK::PresentSwapchain(GnSwapchain swapchain) noexcept
     GnSwapchainVK* impl_swapchain = GN_TO_VULKAN(GnSwapchain, swapchain);
     uint32_t current_frame = impl_swapchain->current_frame;
     const GnSwapchainFramePresenterVK& presenter = impl_swapchain->frame_presenters[current_frame];
+    const GnSwapchainBlitImageVK& blit_image = impl_swapchain->blit_images[current_frame];
     GnVulkanDeviceFunctions& fn = parent_device->fn;
 
     VkCommandBufferBeginInfo begin_info{};
@@ -3831,7 +3857,6 @@ GnResult GnQueueVK::PresentSwapchain(GnSwapchain swapchain) noexcept
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = present_image;
     barrier.subresourceRange = subresource_range;
-
     fn.vkWaitForFences(parent_device->device, 1, &presenter.submit_fence, VK_FALSE, UINT64_MAX);
 
     fn.vkResetCommandPool(parent_device->device, presenter.cmd_pool, 0);
@@ -3848,7 +3873,10 @@ GnResult GnQueueVK::PresentSwapchain(GnSwapchain swapchain) noexcept
                             0, 0, nullptr, 0, nullptr,
                             1, &barrier);
 
-    fn.vkCmdClearColorImage(presenter.cmd_buffer, present_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color_value, 1, &subresource_range);
+    fn.vkCmdBlitImage(presenter.cmd_buffer,
+                      blit_image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      present_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      1, &impl_swapchain->blit_param, VK_FILTER_LINEAR);
 
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = 0;
@@ -3947,7 +3975,6 @@ void GnSwapchainBlitImageVK::Destroy(GnDeviceVK* impl_device)
 {
     const GnVulkanDeviceFunctions& fn = impl_device->fn;
     if (image) fn.vkDestroyImage(impl_device->device, image, nullptr);
-    if (view) fn.vkDestroyImageView(impl_device->device, view, nullptr);
     if (memory) fn.vkFreeMemory(impl_device->device, memory, nullptr);
 }
 
@@ -3956,14 +3983,17 @@ void GnSwapchainBlitImageVK::Destroy(GnDeviceVK* impl_device)
 GnSwapchainVK::GnSwapchainVK(GnDeviceVK* impl_device) noexcept :
     impl_device(impl_device)
 {
+    blit_param.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit_param.srcSubresource.mipLevel = 0;
+    blit_param.srcSubresource.baseArrayLayer = 0;
+    blit_param.srcSubresource.layerCount = 1;
+    blit_param.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit_param.dstSubresource.mipLevel = 0;
+    blit_param.dstSubresource.baseArrayLayer = 0;
+    blit_param.dstSubresource.layerCount = 1;
 }
 
-GnTextureView GnSwapchainVK::GetCurrentBackBufferView() noexcept
-{
-    return &blit_images[current_frame];
-}
-
-GnTextureView GnSwapchainVK::GetBackBufferView(uint32_t index) noexcept
+GnTexture GnSwapchainVK::GetBackBuffer(uint32_t index) noexcept
 {
     return &blit_images[index];
 }
@@ -4044,7 +4074,7 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
         image_info.arrayLayers = 1;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
         image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image_info.usage = GnConvertToVkImageUsageFlags(swapchain_desc.usage);
+        image_info.usage = GnConvertToVkImageUsageFlags(swapchain_desc.usage) | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         image_info.queueFamilyIndexCount = 0;
         image_info.pQueueFamilyIndices = nullptr;
@@ -4105,13 +4135,16 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
 
             fn.vkBindImageMemory(device, blit_image->image, blit_image->memory, 0);
 
-            view_info.image = blit_image->image;
-            if (GN_VULKAN_FAILED(fn.vkCreateImageView(device, &view_info, nullptr, &blit_image->view))) {
-                failed = true;
-                break;
-            }
-
-            blit_image->format = used_format;
+            blit_image->desc.usage = swapchain_desc.usage;
+            blit_image->desc.type = GnTextureType_2D;
+            blit_image->desc.format = used_format;
+            blit_image->desc.width = width;
+            blit_image->desc.height = height;
+            blit_image->desc.depth = 1;
+            blit_image->desc.mip_levels = 1;
+            blit_image->desc.array_layers = 1;
+            blit_image->desc.samples = GnSampleCount_X1;
+            blit_image->desc.tiling = GnTiling_Optimal;
             blit_image->swapchain_owned = true;
         }
     }
@@ -4146,6 +4179,8 @@ GnResult GnSwapchainVK::Update(GnFormat format, uint32_t width, uint32_t height,
         blit_images = std::move(new_blit_images);
     }
 
+    blit_param.srcOffsets[0] = {};
+    blit_param.srcOffsets[1] = { (int32_t)width, (int32_t)height, 1 };
     swapchain_desc.format = used_format;
     swapchain_desc.width = width;
     swapchain_desc.height = height;
@@ -4208,6 +4243,8 @@ GnResult GnSwapchainVK::Init(const GnSwapchainDesc* desc, VkSwapchainKHR old_swa
     swapchain_desc.usage = desc->usage;
     swapchain_images = std::move(new_swapchain_images);
     swapchain = new_swapchain;
+    blit_param.dstOffsets[0] = {};
+    blit_param.dstOffsets[1] = { (int32_t)surf_caps.currentExtent.width, (int32_t)surf_caps.currentExtent.height, 1 };
 
     return GnSuccess;
 }
@@ -4518,7 +4555,7 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
         for (uint32_t i = 0; i < count; i++)
             vtx_buffers[i] = GN_TO_VULKAN(GnBuffer, state.vertex_buffers[update_range.first + i])->buffer;
 
-        impl_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers, &state.vertex_buffer_offsets[update_range.first]);
+        impl_cmd_list->cmd_bind_vertex_buffers(cmd_buf, update_range.first, count, vtx_buffers, state.vertex_buffer_offsets + update_range.first);
         state.vertex_buffer_upd_range.Flush();
     }
 
@@ -4623,6 +4660,8 @@ GnCommandListVK::~GnCommandListVK()
 
 GnResult GnCommandListVK::Begin(const GnCommandListBeginDesc* desc) noexcept
 {
+    state = {}; // Clear state
+
     VkCommandBufferBeginInfo begin_info;
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.pNext = nullptr;
@@ -4648,8 +4687,10 @@ void GnCommandListVK::BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcep
 
     auto render_pass = render_pass_cache.Get(rp_cache_key);
     if (!render_pass) {
+        // Create a new render pass if there is no specific render pass exists in the cache
         VkRenderPass new_render_pass;
-        GN_ASSERT(!GN_VULKAN_FAILED(parent_cmd_pool->parent_device->CreateRenderPass(&rp_cache_key, &new_render_pass)));
+        if (GN_VULKAN_FAILED(parent_cmd_pool->parent_device->CreateRenderPass(&rp_cache_key, &new_render_pass)))
+            GN_ASSERT(false);
         render_pass_cache.Insert(rp_cache_key, new_render_pass);
         render_pass.emplace(new_render_pass);
     }
@@ -4660,55 +4701,56 @@ void GnCommandListVK::BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcep
     
     auto framebuffer = framebuffer_cache.Get(fb_cache_key);
     if (!framebuffer) {
-        GnSmallVector<VkImageView, 32> attachments;
+        VkImageView image_views[GnFramebufferCacheKey::max_render_target_views];
 
-        for (uint32_t i = 0; i < rp_cache_key.num_color_targets; i++) {
-            const auto& color_target = desc->color_targets[i];
-            if (color_target.view)
-                attachments.push_back(GN_TO_VULKAN(GnTextureView, color_target.view)->view);
-        }
-
-        for (uint32_t i = 0; i < rp_cache_key.num_color_targets; i++) {
-            const auto& color_target = desc->color_targets[i];
-            if (color_target.resolve_view)
-                attachments.push_back(GN_TO_VULKAN(GnTextureView, color_target.resolve_view)->view);
-        }
-
-        attachments.push_back(GN_TO_VULKAN(GnTextureView, desc->depth_stencil_target->view)->view);
+        for (uint32_t i = 0; i < fb_cache_key.num_render_targets; i++)
+            image_views[i] = GN_TO_VULKAN(GnTextureView, fb_cache_key.render_target_views[i])->view;
 
         VkFramebufferCreateInfo fb_info;
         fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fb_info.pNext = nullptr;
         fb_info.flags = 0;
-        fb_info.renderPass = *render_pass;
-        fb_info.attachmentCount = (uint32_t)attachments.size;
-        fb_info.pAttachments = attachments.storage;
-        fb_info.width = desc->render_area.width; // TODO: Get the width from GnTexture
-        fb_info.height = desc->render_area.height;
+        fb_info.renderPass = *render_pass; //parent_cmd_pool->parent_device->render_pass;
+        fb_info.attachmentCount = (uint32_t)fb_cache_key.num_render_targets;
+        fb_info.pAttachments = image_views;
+        fb_info.width = desc->width;
+        fb_info.height = desc->height;
         fb_info.layers = 1;
 
         VkFramebuffer new_framebuffer;
-        GN_ASSERT(!GN_VULKAN_FAILED(fn.vkCreateFramebuffer(parent_cmd_pool->parent_device->device, &fb_info, nullptr, &new_framebuffer)));
+        if (GN_VULKAN_FAILED(fn.vkCreateFramebuffer(parent_cmd_pool->parent_device->device, &fb_info, nullptr, &new_framebuffer)))
+            GN_ASSERT(false);
         framebuffer_cache.Insert(fb_cache_key, new_framebuffer);
         framebuffer.emplace(new_framebuffer);
+    }
+
+    VkClearValue clear_values[GN_MAX_COLOR_TARGETS + 1];
+    uint32_t num_render_targets = 0;
+
+    for (uint32_t i = 0; i < desc->num_color_targets; i++)
+        std::memcpy(&clear_values[num_render_targets++].color, &desc->color_targets[i].clear_value, sizeof(GnColorValue));
+
+    if (desc->depth_stencil_target && desc->depth_stencil_target->view) {
+        clear_values[num_render_targets].depthStencil.depth = desc->depth_stencil_target->clear_value.depth;
+        clear_values[num_render_targets++].depthStencil.stencil = desc->depth_stencil_target->clear_value.stencil;
     }
 
     VkRenderPassBeginInfo rp_begin_info;
     rp_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rp_begin_info.pNext = nullptr;
-    rp_begin_info.renderPass = *render_pass;
+    rp_begin_info.renderPass = *render_pass;//parent_cmd_pool->parent_device->render_pass;
     rp_begin_info.framebuffer = *framebuffer;
-    rp_begin_info.renderArea.offset = { desc->render_area.x, desc->render_area.y }; // TODO
-    rp_begin_info.renderArea.extent = { (uint32_t)desc->render_area.width, (uint32_t)desc->render_area.height };
-    rp_begin_info.clearValueCount; // TODO
-    rp_begin_info.pClearValues = nullptr;
+    rp_begin_info.renderArea.offset = {};
+    rp_begin_info.renderArea.extent = { desc->width, desc->height };
+    rp_begin_info.clearValueCount = num_render_targets; // TODO
+    rp_begin_info.pClearValues = clear_values;
 
-    //fn.vkCmdBeginRenderPass(static_cast<VkCommandBuffer>(cmd_private_data), &rp_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    fn.vkCmdBeginRenderPass(static_cast<VkCommandBuffer>(cmd_private_data), &rp_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 void GnCommandListVK::EndRenderPass() noexcept
 {
-    //fn.vkCmdEndRenderPass(static_cast<VkCommandBuffer>(cmd_private_data));
+    fn.vkCmdEndRenderPass(static_cast<VkCommandBuffer>(cmd_private_data));
 }
 
 void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
@@ -4730,16 +4772,16 @@ void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
             
             vk_buffer_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             vk_buffer_barrier.pNext = nullptr;
-            vk_buffer_barrier.srcAccessMask = GnGetAccessVK(buffer_barrier.access_before);
-            vk_buffer_barrier.dstAccessMask = GnGetAccessVK(buffer_barrier.access_after);
+            vk_buffer_barrier.srcAccessMask = GnGetAccessVK(buffer_barrier.prev_access);
+            vk_buffer_barrier.dstAccessMask = GnGetAccessVK(buffer_barrier.next_access);
             vk_buffer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             vk_buffer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             vk_buffer_barrier.buffer = GN_TO_VULKAN(GnBuffer, buffer_barrier.buffer)->buffer;
             vk_buffer_barrier.offset = buffer_barrier.offset;
             vk_buffer_barrier.size = buffer_barrier.size;
 
-            src_pipeline |= GnGetPipelineStageFromAccessVK<false>(buffer_barrier.access_before);
-            dst_pipeline |= GnGetPipelineStageFromAccessVK<true>(buffer_barrier.access_after);
+            src_pipeline |= GnGetPipelineStageFromAccessVK<false>(buffer_barrier.prev_access);
+            dst_pipeline |= GnGetPipelineStageFromAccessVK<true>(buffer_barrier.next_access);
         }
     }
 
@@ -4750,12 +4792,12 @@ void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
             const GnTextureBarrier& texture_barrier = texture_barriers[i];
             VkImageMemoryBarrier& vk_image_barrier = pending_image_barriers[i];
 
-            vk_image_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            vk_image_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             vk_image_barrier.pNext = nullptr;
-            vk_image_barrier.srcAccessMask = GnGetAccessVK(texture_barrier.access_before);
-            vk_image_barrier.dstAccessMask = GnGetAccessVK(texture_barrier.access_after);
-            vk_image_barrier.oldLayout = GnGetImageLayoutFromAccessVK(texture_barrier.access_before);
-            vk_image_barrier.newLayout = GnGetImageLayoutFromAccessVK(texture_barrier.access_after);
+            vk_image_barrier.srcAccessMask = GnGetAccessVK(texture_barrier.prev_access);
+            vk_image_barrier.dstAccessMask = GnGetAccessVK(texture_barrier.next_access);
+            vk_image_barrier.oldLayout = GnGetImageLayoutFromAccessVK(texture_barrier.prev_access);
+            vk_image_barrier.newLayout = GnGetImageLayoutFromAccessVK(texture_barrier.next_access);
             vk_image_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             vk_image_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             vk_image_barrier.image = GN_TO_VULKAN(GnTexture, texture_barrier.texture)->image;
@@ -4765,8 +4807,8 @@ void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
             vk_image_barrier.subresourceRange.baseArrayLayer = texture_barrier.subresource_range.base_array_layer;
             vk_image_barrier.subresourceRange.layerCount = texture_barrier.subresource_range.num_array_layers;
 
-            src_pipeline |= GnGetPipelineStageFromAccessVK<false>(texture_barrier.access_before);
-            dst_pipeline |= GnGetPipelineStageFromAccessVK<true>(texture_barrier.access_after);
+            src_pipeline |= GnGetPipelineStageFromAccessVK<false>(texture_barrier.prev_access);
+            dst_pipeline |= GnGetPipelineStageFromAccessVK<true>(texture_barrier.next_access);
         }
     }
 

@@ -611,7 +611,7 @@ struct GnCacheTable<K, V, CacheKeyTrait<K>>
     HashMap cache_table;
     mutable std::shared_mutex mutex;
 
-    std::optional<V> Get(const K& key) const
+    inline std::optional<V> Get(const K& key) const
     {
         std::shared_lock<std::shared_mutex> lock(mutex);
         auto item = cache_table.find(key);
@@ -622,7 +622,7 @@ struct GnCacheTable<K, V, CacheKeyTrait<K>>
         return {};
     }
 
-    bool Insert(const K& key, const V& value)
+    inline bool Insert(const K& key, const V& value)
     {
         std::unique_lock<std::shared_mutex> lock(mutex);
         cache_table.emplace(key, value);
@@ -630,7 +630,7 @@ struct GnCacheTable<K, V, CacheKeyTrait<K>>
     }
 
     template<typename Fn>
-    void Flush(Fn&& destroy_fn)
+    inline void Flush(Fn&& destroy_fn)
     {
         for (auto& [_, obj] : cache_table) {
             destroy_fn(obj);

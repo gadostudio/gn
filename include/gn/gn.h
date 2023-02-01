@@ -497,8 +497,7 @@ GnResult GnCreateSwapchain(GnDevice device, const GnSwapchainDesc* desc, GnSwapc
 void GnDestroySwapchain(GnDevice device, GnSwapchain swapchain);
 uint32_t GnGetSwapchainBackBufferCount(GnSwapchain swapchain);
 uint32_t GnGetCurrentBackBufferIndex(GnSwapchain swapchain);
-GnTextureView GnGetCurrentBackBufferView(GnSwapchain swapchain);
-GnTextureView GnGetSwapchainBackBufferView(GnSwapchain swapchain, uint32_t index);
+GnTexture GnGetSwapchainBackBuffer(GnSwapchain swapchain, uint32_t index);
 GnResult GnUpdateSwapchain(GnSwapchain swapchain, GnFormat format, uint32_t width, uint32_t height, uint32_t num_buffers, GnBool vsync);
 
 typedef enum
@@ -679,40 +678,40 @@ typedef enum
 
 typedef enum
 {
-    GnResourceAccess_Undefined                      = 0,
-    GnResourceAccess_GeneralLayout                  = 1 << 0,
-    GnResourceAccess_IndirectBuffer                 = 1 << 1,
-    GnResourceAccess_IndexBuffer                    = 1 << 2,
-    GnResourceAccess_VertexBuffer                   = 1 << 3,
-    GnResourceAccess_VSUniformBuffer                = 1 << 4,
-    GnResourceAccess_FSUniformBuffer                = 1 << 5,
-    GnResourceAccess_CSUniformBuffer                = 1 << 6,
-    GnResourceAccess_VSRead                         = 1 << 7,
-    GnResourceAccess_FSRead                         = 1 << 8,
-    GnResourceAccess_CSRead                         = 1 << 9,
-    GnResourceAccess_VSWrite                        = 1 << 10,
-    GnResourceAccess_FSWrite                        = 1 << 11,
-    GnResourceAccess_CSWrite                        = 1 << 12,
+    GnResourceAccess_Undefined                  = 0,
+    GnResourceAccess_GeneralLayout              = 1 << 0,
+    GnResourceAccess_IndirectBuffer             = 1 << 1,
+    GnResourceAccess_IndexBuffer                = 1 << 2,
+    GnResourceAccess_VertexBuffer               = 1 << 3,
+    GnResourceAccess_VSUniformBuffer            = 1 << 4,
+    GnResourceAccess_FSUniformBuffer            = 1 << 5,
+    GnResourceAccess_CSUniformBuffer            = 1 << 6,
+    GnResourceAccess_VSRead                     = 1 << 7,
+    GnResourceAccess_FSRead                     = 1 << 8,
+    GnResourceAccess_CSRead                     = 1 << 9,
+    GnResourceAccess_VSWrite                    = 1 << 10,
+    GnResourceAccess_FSWrite                    = 1 << 11,
+    GnResourceAccess_CSWrite                    = 1 << 12,
     GnResourceAccess_ColorTargetRead            = 1 << 13,
     GnResourceAccess_ColorTargetWrite           = 1 << 14,
     GnResourceAccess_DepthStencilTargetRead     = 1 << 15,
     GnResourceAccess_DepthStencilTargetWrite    = 1 << 16,
-    GnResourceAccess_CopySrc                        = 1 << 17,
-    GnResourceAccess_CopyDst                        = 1 << 18,
-    GnResourceAccess_BlitSrc                        = 1 << 19,
-    GnResourceAccess_BlitDst                        = 1 << 20,
-    GnResourceAccess_ClearSrc                       = 1 << 21,
-    GnResourceAccess_ClearDst                       = 1 << 22,
-    GnResourceAccess_Present                        = 1 << 23,
-    GnResourceAccess_HostRead                       = 1 << 24,
-    GnResourceAccess_HostWrite                      = 1 << 25,
+    GnResourceAccess_CopySrc                    = 1 << 17,
+    GnResourceAccess_CopyDst                    = 1 << 18,
+    GnResourceAccess_BlitSrc                    = 1 << 19,
+    GnResourceAccess_BlitDst                    = 1 << 20,
+    GnResourceAccess_ClearSrc                   = 1 << 21,
+    GnResourceAccess_ClearDst                   = 1 << 22,
+    GnResourceAccess_Present                    = 1 << 23,
+    GnResourceAccess_HostRead                   = 1 << 24,
+    GnResourceAccess_HostWrite                  = 1 << 25,
 
-    GnResourceAccess_UniformRead                    = GnResourceAccess_VSUniformBuffer | GnResourceAccess_FSUniformBuffer | GnResourceAccess_CSUniformBuffer,
-    GnResourceAccess_ShaderRead                     = GnResourceAccess_VSRead | GnResourceAccess_FSRead | GnResourceAccess_CSRead,
-    GnResourceAccess_ShaderWrite                    = GnResourceAccess_VSWrite | GnResourceAccess_FSWrite | GnResourceAccess_CSWrite,
-    GnResourceAccess_ShaderReadAndWrite             = GnResourceAccess_ShaderRead | GnResourceAccess_ShaderWrite,
-    GnResourceAccess_ColorTarget                    = GnResourceAccess_ColorTargetRead | GnResourceAccess_ColorTargetWrite,
-    GnResourceAccess_DepthStencilTarget             = GnResourceAccess_DepthStencilTargetRead | GnResourceAccess_DepthStencilTargetWrite
+    GnResourceAccess_UniformRead                = GnResourceAccess_VSUniformBuffer | GnResourceAccess_FSUniformBuffer | GnResourceAccess_CSUniformBuffer,
+    GnResourceAccess_ShaderRead                 = GnResourceAccess_VSRead | GnResourceAccess_FSRead | GnResourceAccess_CSRead,
+    GnResourceAccess_ShaderWrite                = GnResourceAccess_VSWrite | GnResourceAccess_FSWrite | GnResourceAccess_CSWrite,
+    GnResourceAccess_ShaderReadAndWrite         = GnResourceAccess_ShaderRead | GnResourceAccess_ShaderWrite,
+    GnResourceAccess_ColorTarget                = GnResourceAccess_ColorTargetRead | GnResourceAccess_ColorTargetWrite,
+    GnResourceAccess_DepthStencilTarget         = GnResourceAccess_DepthStencilTargetRead | GnResourceAccess_DepthStencilTargetWrite
 } GnResourceAccess;
 typedef uint32_t GnResourceAccessFlags;
 
@@ -1195,12 +1194,12 @@ typedef struct
 
 typedef struct
 {
-    GnRenderGraph*          render_graph;
-    uint32_t                subpass;
-    uint32_t                num_viewports;
-    const GnViewport*       viewports;
-    uint32_t                num_scissors;
-    const GnRect2D*    scissors;
+    GnRenderGraph*      render_graph;
+    uint32_t            subpass;
+    uint32_t            num_viewports;
+    const GnViewport*   viewports;
+    uint32_t            num_scissors;
+    const GnRect2D*     scissors;
 } GnCommandListInheritance;
 
 typedef struct
@@ -1266,7 +1265,8 @@ typedef struct
 typedef struct
 {
     GnSampleCount                               sample_count;
-    GnRect2D                                    render_area;
+    uint32_t                                    width;
+    uint32_t                                    height;
     uint32_t                                    num_color_targets;
     const GnRenderPassColorTargetDesc*          color_targets;
     const GnRenderPassDepthStencilTargetDesc*   depth_stencil_target;
@@ -1318,8 +1318,8 @@ typedef struct
     GnBuffer                buffer;
     GnDeviceSize            offset;
     GnDeviceSize            size;
-    GnResourceAccessFlags   access_before;
-    GnResourceAccessFlags   access_after;
+    GnResourceAccessFlags   prev_access;
+    GnResourceAccessFlags   next_access;
     uint32_t                queue_group_index_before;
     uint32_t                queue_group_index_after;
 } GnBufferBarrier;
@@ -1328,8 +1328,8 @@ typedef struct
 {
     GnTexture                   texture;
     GnTextureSubresourceRange   subresource_range;
-    GnResourceAccessFlags       access_before;
-    GnResourceAccessFlags       access_after;
+    GnResourceAccessFlags       prev_access;
+    GnResourceAccessFlags       next_access;
     uint32_t                    queue_group_index_before;
     uint32_t                    queue_group_index_after;
 } GnTextureBarrier;

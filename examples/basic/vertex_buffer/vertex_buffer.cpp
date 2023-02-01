@@ -8,12 +8,14 @@ struct VertexAttrib
 
 struct FrameData
 {
+    GnTexture swapchain_texture;
+    GnTextureView swapchain_texture_view;
     GnFence fence;
     GnCommandPool command_pool;
     GnCommandList command_list;
 };
 
-struct HelloTriangle : public GnExampleApp
+struct VertexBuffer : public GnExampleApp
 {
     std::vector<FrameData> frame_data;
     GnRenderGraph main_render_graph{};
@@ -21,11 +23,12 @@ struct HelloTriangle : public GnExampleApp
     GnMemory vertex_buffer_mem{};
     GnPipeline pipeline{};
 
-    virtual ~HelloTriangle()
+    virtual ~VertexBuffer()
     {
         GnDeviceWaitIdle(device);
 
         for (auto& data : frame_data) {
+            GnDestroyTextureView(device, data.swapchain_texture_view);
             GnDestroyFence(device, data.fence);
             GnDestroyCommandPool(device, data.command_pool);
         }
@@ -33,73 +36,46 @@ struct HelloTriangle : public GnExampleApp
         GnDestroyBuffer(device, vertex_buffer);
         GnDestroyMemory(device, vertex_buffer_mem);
         GnDestroyPipeline(device, pipeline);
-        GnDestroyRenderGraph(device, main_render_graph);
     }
 
     void OnStart() override
     {
-        auto vertex_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/basic/hello_triangle/hello_triangle.vert.spv");
-        auto fragment_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/basic/hello_triangle/hello_triangle.frag.spv");
-
-        GnRenderGraphTargetDesc target_desc{};
-        target_desc.format                              = surface_format;
-        target_desc.sample_count                        = GnSampleCount_X1;
-        target_desc.load_op                             = GnRenderPassOp_Clear;
-        target_desc.store_op                            = GnRenderPassOp_Store;
-        target_desc.stencil_load_op                     = GnRenderPassOp_Discard;
-        target_desc.stencil_store_op                    = GnRenderPassOp_Discard;
-        target_desc.initial_access                      = GnResourceAccess_Undefined;
-        target_desc.final_access                        = GnResourceAccess_Present;
-
-        GnRenderPassTargetReference target_ref{};
-        target_ref.target                               = 0;
-        target_ref.access                               = GnResourceAccess_ColorTarget;
-
-        GnSubpassDesc subpass_desc{};
-        subpass_desc.num_color_targets                  = 1;
-        subpass_desc.color_targets                      = &target_ref;
-
-        GnRenderGraphDesc render_graph_desc{};
-        render_graph_desc.num_targets                   = 1;
-        render_graph_desc.targets                       = &target_desc;
-        render_graph_desc.num_subpasses                 = 1;
-        render_graph_desc.subpasses                     = &subpass_desc;
-        
-        GnCreateRenderGraph(device, &render_graph_desc, &main_render_graph);
+        auto vertex_shader = GnLoadSPIRV("vertex_buffer.vert.spv");
+        auto fragment_shader = GnLoadSPIRV("vertex_buffer.frag.spv");
 
         GnShaderBytecode vs_bytecode{};
-        vs_bytecode.size                            = vertex_shader->size() * sizeof(uint32_t);
+        vs_bytecode.size                            = vertex_shader->size();
         vs_bytecode.bytecode                        = vertex_shader->data();
         vs_bytecode.entry_point                     = "main";
 
         GnShaderBytecode fs_bytecode{};
-        fs_bytecode.size                            = fragment_shader->size() * sizeof(uint32_t);
+        fs_bytecode.size                            = fragment_shader->size();
         fs_bytecode.bytecode                        = fragment_shader->data();
         fs_bytecode.entry_point                     = "main";
 
-        GnVertexInputSlotDesc input_slot{};
-        input_slot.binding                          = 0;
-        input_slot.stride                           = sizeof(VertexAttrib);
-        input_slot.input_rate                       = GnVertexInputRate_PerVertex;
-
-        GnVertexAttributeDesc vertex_attribs[2] = {
-            { 0, 0, GnFormat_Float32x2, offsetof(VertexAttrib, x) },
-            { 1, 0, GnFormat_Unorm8x4,  offsetof(VertexAttrib, r) }
+        static const GnVertexAttributeDesc vertex_attributes[] = {
+            { 0, 0, GnFormat_Float32x2, 0 },
+            { 1, 0, GnFormat_RGBA8Unorm, offsetof(VertexAttrib, r) },
         };
+
+        GnVertexInputSlotDesc input_slot{};
+        input_slot.binding = 0;
+        input_slot.stride = sizeof(VertexAttrib);
+        input_slot.input_rate = GnVertexInputRate_PerVertex;
 
         GnVertexInputStateDesc vertex_input{};
         vertex_input.num_input_slots                = 1;
         vertex_input.input_slots                    = &input_slot;
         vertex_input.num_attributes                 = 2;
-        vertex_input.attribute                      = vertex_attribs;
+        vertex_input.attribute                      = vertex_attributes;
 
         GnInputAssemblyStateDesc input_assembly{};
         input_assembly.topology                     = GnPrimitiveTopology_TriangleList;
-        input_assembly.primitive_restart            = GnPrimitiveRestart_Uint32Max;
+        input_assembly.primitive_restart            = GnPrimitiveRestart_Disable;
 
         GnRasterizationStateDesc rasterization{};
         rasterization.polygon_mode                  = GnPolygonMode_Fill;
-        rasterization.cull_mode                     = GnCullMode_None;
+        rasterization.cull_mode                     = GnCullMode_Back;
 
         GnFragmentInterfaceStateDesc fragment_interface{};
         fragment_interface.num_color_targets        = 1;
@@ -121,11 +97,12 @@ struct HelloTriangle : public GnExampleApp
         GnCreateGraphicsPipeline(device, &graphics_pipeline, &pipeline);
 
         static const VertexAttrib vertex_data[] = {
-            { -0.5f, -0.5f },
-            {  0.5f, -0.5f },
-            {  0.0f,  0.5f }
+            {  0.0f,  0.5f, 255, 0,   0,   255 },
+            {  0.5f, -0.5f, 0,   255, 0,   255 },
+            { -0.5f, -0.5f, 0,   0,   255, 255 },
         };
 
+        // When creating a vertex buffer, make sure that the buffer usage is set to GnBufferUsage_Vertex
         GnBufferDesc vtx_buf_desc;
         vtx_buf_desc.size = sizeof(vertex_data);
         vtx_buf_desc.usage = GnBufferUsage_Vertex;
@@ -134,13 +111,22 @@ struct HelloTriangle : public GnExampleApp
         GnMemoryRequirements memory_requirements;
         GnGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
 
+        // Here, we are going to find a proper memory type for the vertex buffer. For simplicity,
+        // we are going to use a "host-visible" memory so that we can map the buffer and copy
+        // the vertex data directly into it from the CPU. We prefer a "device-local" memory
+        // that is also "host-visible". "Device-local" memory is the most efficient since
+        // it basically the dedicated GPU memory that the GPU can access.
         uint32_t buffer_memory_type_index = GnFindSupportedMemoryType(
             adapter, memory_requirements.supported_memory_type_bits,
+            // Here we are going to find the most efficient memory that the GPU and CPU can access.
             GnMemoryAttribute_HostVisible | GnMemoryAttribute_DeviceLocal,
-            GnMemoryAttribute_HostVisible, 0);
+            // We fallback to the regular host-visible memory if the GPU does not support a host-visible and device-local memory.
+            GnMemoryAttribute_HostVisible, 
+            0);
 
         EX_THROW_IF(buffer_memory_type_index == GN_INVALID);
 
+        // Finally we can allocate the memory based on requirements and type that was choosen.
         GnMemoryDesc vtx_buf_memory_desc;
         vtx_buf_memory_desc.flags = GnMemoryUsage_AlwaysMapped;
         vtx_buf_memory_desc.memory_type_index = buffer_memory_type_index;
@@ -165,6 +151,16 @@ struct HelloTriangle : public GnExampleApp
         cmd_list_desc.queue_group_index = direct_queue_group;
         cmd_list_desc.num_cmd_lists = 1;
 
+        GnTextureViewDesc view{};
+        view.type = GnTextureViewType_2D;
+        view.format = surface_format;
+        view.mapping = {};
+        view.subresource_range.aspect = GnTextureAspect_Color;
+        view.subresource_range.base_mip_level = 0;
+        view.subresource_range.num_mip_levels = 1;
+        view.subresource_range.base_array_layer = 0;
+        view.subresource_range.num_array_layers = 1;
+
         frame_data.resize(num_swapchain_buffers);
         
         for (uint32_t i = 0; i < num_swapchain_buffers; i++) {
@@ -175,6 +171,10 @@ struct HelloTriangle : public GnExampleApp
             GnCreateCommandLists(device, &cmd_list_desc, &data.command_list);
 
             GnCreateFence(device, GN_TRUE, &data.fence);
+
+            data.swapchain_texture = GnGetSwapchainBackBuffer(swapchain, i);
+            view.texture = data.swapchain_texture;
+            GnCreateTextureView(device, &view, &data.swapchain_texture_view);
         }
     }
 
@@ -187,15 +187,28 @@ struct HelloTriangle : public GnExampleApp
         begin_desc.flags = GnCommandListBegin_OneTimeSubmit;
         begin_desc.inheritance = nullptr;
 
-        // Wait previous submission on this frame before recording
         GnWaitFence(current_frame.fence, UINT64_MAX);
         GnResetFence(current_frame.fence);
 
         GnResetCommandPool(device, current_frame.command_pool);
         GnBeginCommandList(current_frame.command_list, &begin_desc);
 
+        GnTextureBarrier barrier;
+        barrier.texture = current_frame.swapchain_texture;
+        barrier.subresource_range.aspect = GnTextureAspect_Color;
+        barrier.subresource_range.base_mip_level = 0;
+        barrier.subresource_range.num_mip_levels = 1;
+        barrier.subresource_range.base_array_layer = 0;
+        barrier.subresource_range.num_array_layers = 1;
+        barrier.prev_access = GnResourceAccess_Undefined;
+        barrier.next_access = GnResourceAccess_ColorTargetWrite;
+        barrier.queue_group_index_before = 0;
+        barrier.queue_group_index_after = 0;
+
+        GnCmdTextureBarrier(current_frame.command_list, 1, &barrier);
+
         GnRenderPassColorTargetDesc color_target{};
-        color_target.view = GnGetCurrentBackBufferView(swapchain);
+        color_target.view = current_frame.swapchain_texture_view;
         color_target.access = GnResourceAccess_ColorTarget;
         color_target.load_op = GnRenderPassOp_Clear;
         color_target.store_op = GnRenderPassOp_Store;
@@ -206,14 +219,36 @@ struct HelloTriangle : public GnExampleApp
 
         GnRenderPassBeginDesc render_pass_begin;
         render_pass_begin.sample_count = GnSampleCount_X1;
-        render_pass_begin.render_area = {};
+        render_pass_begin.width = 640;
+        render_pass_begin.height = 480;
         render_pass_begin.num_color_targets = 1;
         render_pass_begin.color_targets = &color_target;
         render_pass_begin.depth_stencil_target = nullptr;
 
         GnCmdBeginRenderPass(current_frame.command_list, &render_pass_begin);
+
+        GnCmdSetGraphicsPipeline(current_frame.command_list, pipeline);
+        GnCmdSetViewport(current_frame.command_list, 0, 0.0f, 0.0f, 640.0f, 480.0f, 0.0f, 1.0f);
+        GnCmdSetScissor(current_frame.command_list, 0, 0, 0, 640, 480);
+        GnCmdSetVertexBuffer(current_frame.command_list, 0, vertex_buffer, 0);
+        GnCmdDraw(current_frame.command_list, 3, 0);
+
         GnCmdEndRenderPass(current_frame.command_list);
-        
+
+        // Transition ColorTarget -> Present
+        barrier.texture = current_frame.swapchain_texture;
+        barrier.subresource_range.aspect = GnTextureAspect_Color;
+        barrier.subresource_range.base_mip_level = 0;
+        barrier.subresource_range.num_mip_levels = 1;
+        barrier.subresource_range.base_array_layer = 0;
+        barrier.subresource_range.num_array_layers = 1;
+        barrier.prev_access = GnResourceAccess_ColorTargetWrite;
+        barrier.next_access = GnResourceAccess_Present;
+        barrier.queue_group_index_before = 0;
+        barrier.queue_group_index_after = 0;
+
+        GnCmdTextureBarrier(current_frame.command_list, 1, &barrier);
+
         GnEndCommandList(current_frame.command_list);
 
         GnEnqueueCommandLists(queue, 1, &current_frame.command_list);
