@@ -1302,7 +1302,7 @@ typedef struct
 
 typedef struct
 {
-    
+    uint32_t placeholder; // TODO
 } GnTextureBlit;
 
 typedef struct

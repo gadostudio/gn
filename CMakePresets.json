@@ -11,6 +11,8 @@
         "GN_BUILD_TESTS": true
       }
     },
+
+    // MSVC x64
     {
       "name": "windows-base",
       "inherits": "preset-base",
@@ -49,6 +51,67 @@
       }
     },
     {
+      "name": "x64-rel-with-deb-info",
+      "displayName": "x64 RelWithDebInfo",
+      "inherits": "x64-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+
+    // Clang x64
+    {
+      "name": "windows-clang-base",
+      "inherits": "preset-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl.exe",
+        "CMAKE_CXX_COMPILER": "clang-cl.exe"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "intelliSenseMode": "windows-clang-x64"
+        }
+      }
+    },
+    {
+      "name": "x64-debug-clang",
+      "displayName": "x64 Debug (Clang)",
+      "inherits": "windows-clang-base",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "x64-release-clang",
+      "displayName": "x64 Release (Clang)",
+      "inherits": "x64-debug-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "x64-rel-with-deb-info-clang",
+      "displayName": "x64 RelWithDebInfo (Clang)",
+      "inherits": "x64-debug-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+
+    {
       "name": "x86-debug",
       "displayName": "x86 Debug",
       "inherits": "windows-base",
@@ -66,6 +129,14 @@
       "inherits": "x86-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "x86-rel-with-deb-info",
+      "displayName": "x86 RelWithDebInfo",
+      "inherits": "x86-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
     },
     {

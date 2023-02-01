@@ -550,7 +550,6 @@ struct GnDeviceVK : public GnDevice_t
     VkDeviceSize                                        non_coherent_atom_size = 0;
     GnCacheTable<GnRenderPassCacheKey, VkRenderPass>    render_pass_cache;
     GnCacheTable<GnFramebufferCacheKey, VkFramebuffer>  framebuffer_cache;
-    VkRenderPass render_pass;
 
     ~GnDeviceVK();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
@@ -579,12 +578,12 @@ struct GnDeviceVK : public GnDevice_t
     void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
     void DestroyDescriptorPool(GnDescriptorPool descriptor_pool) noexcept override;
     void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
-    void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept;
+    void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept override;
     void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept override;
-    GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept;
-    GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept;
-    void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept;
-    GnResult WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept;
+    GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept override;
+    GnResult MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept override;
+    void UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept override;
+    GnResult WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept override;
     GnQueue GetQueue(uint32_t queue_group_index, uint32_t queue_index) noexcept override;
     GnResult DeviceWaitIdle() noexcept override;
     GnResult ResetCommandPool(GnCommandPool command_pool) noexcept override;
@@ -1048,7 +1047,7 @@ inline VkImageLayout GnGetImageLayoutFromAccessVK(GnResourceAccessFlags access) 
         GnResourceAccess_FSRead |
         GnResourceAccess_CSRead;
 
-    static constexpr GnResourceAccessFlags storage_access =
+    static constexpr GnResourceAccessFlags write_access =
         GnResourceAccess_VSWrite |
         GnResourceAccess_FSWrite |
         GnResourceAccess_CSWrite;
@@ -1071,7 +1070,7 @@ inline VkImageLayout GnGetImageLayoutFromAccessVK(GnResourceAccessFlags access) 
         GnResourceAccess_BlitDst |
         GnResourceAccess_ClearDst;
 
-    if (access & GnResourceAccess_GeneralLayout || access & storage_access) return VK_IMAGE_LAYOUT_GENERAL;
+    if (access & GnResourceAccess_GeneralLayout || access & write_access) return VK_IMAGE_LAYOUT_GENERAL;
 
     if (access & read_access) return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     else if (access & color_attachment_access) return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1366,17 +1365,17 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
     extensions.push_back("VK_EXT_debug_report");
     extensions.push_back("VK_EXT_debug_utils");
 
-    static const char* layers[] = {
-        "VK_LAYER_KHRONOS_validation",
-    };
+    GnSmallVector<const char*, 4> layers;
+
+    layers.push_back("VK_LAYER_KHRONOS_validation");
 
     VkInstanceCreateInfo instance_create_info{};
     instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_create_info.pNext = nullptr;
     instance_create_info.flags = 0;
     instance_create_info.pApplicationInfo = &app_info;
-    instance_create_info.enabledLayerCount = GN_ARRAY_SIZE(layers);
-    instance_create_info.ppEnabledLayerNames = layers; 
+    instance_create_info.enabledLayerCount = layers.size;
+    instance_create_info.ppEnabledLayerNames = layers.storage; 
     instance_create_info.enabledExtensionCount = (uint32_t)extensions.size;
     instance_create_info.ppEnabledExtensionNames = extensions.storage;
 
@@ -1409,6 +1408,7 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
         adapters = (GnAdapterVK*)std::malloc(sizeof(GnAdapterVK) * num_physical_devices);
 
         if (adapters == nullptr) {
+            std::free(new_instance);
             fn.vkDestroyInstance(vk_instance, nullptr);
             return GnError_OutOfHostMemory;
         }
@@ -1418,6 +1418,7 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
 
         if (physical_devices == nullptr) {
             std::free(adapters);
+            std::free(new_instance);
             fn.vkDestroyInstance(vk_instance, nullptr);
             return GnError_OutOfHostMemory;
         }
@@ -1440,7 +1441,9 @@ GnResult GnCreateInstanceVulkan(const GnInstanceDesc* desc, GnInstance* instance
             if (!available_extensions.resize(num_extensions)) {
                 std::free(physical_devices);
                 std::free(adapters);
+                std::free(new_instance);
                 fn.vkDestroyInstance(vk_instance, nullptr);
+                return GnError_OutOfHostMemory;
             }
 
             fn.vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &num_extensions, available_extensions.data());
@@ -1865,6 +1868,11 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
         total_enabled_queues += queue_info.queueCount;
     }
 
+    if (total_enabled_queues == 0) {
+        delete new_device;
+        return GnError_InvalidArgs;
+    }
+
     GnQueueVK* queues = (GnQueueVK*)std::malloc(sizeof(GnQueueVK) * total_enabled_queues);
     if (!queues) {
         delete new_device;
@@ -1886,6 +1894,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
     VkDevice vk_device = nullptr;
 
     if (GN_VULKAN_FAILED(fn.vkCreateDevice(physical_device, &device_info, nullptr, &vk_device))) {
+        std::free(queues);
         delete new_device;
         return GnError_InternalError;
     }
@@ -1903,6 +1912,7 @@ GnResult GnAdapterVK::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) n
     pipeline_layout_desc.pPushConstantRanges = nullptr;
 
     if (GN_VULKAN_FAILED(new_device->fn.vkCreatePipelineLayout(vk_device, &pipeline_layout_desc, nullptr, &new_device->empty_pipeline_layout))) {
+        std::free(queues);
         delete new_device;
         return GnError_InternalError;
     }
@@ -2137,8 +2147,6 @@ GnResult GnDeviceVK::CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* s
 
 GnResult GnDeviceVK::CreateFence(GnBool signaled, GnFence* fence) noexcept
 {
-    GnAdapterVK* vk_parent_adapter = GN_TO_VULKAN(GnAdapter, parent_adapter);
-
     VkFenceCreateInfo fence_info;
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_info.pNext = nullptr;
@@ -4538,8 +4546,8 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
         VkIndexType type{};
 
         switch (state.index_format) {
-            case GnIndexFormat_Uint16:  type = VK_INDEX_TYPE_UINT16;
-            case GnIndexFormat_Uint32:  type = VK_INDEX_TYPE_UINT32;
+            case GnIndexFormat_Uint16:  type = VK_INDEX_TYPE_UINT16; break;
+            case GnIndexFormat_Uint32:  type = VK_INDEX_TYPE_UINT32; break;
             default:                    GN_UNREACHABLE();
         }
 

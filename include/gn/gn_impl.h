@@ -342,7 +342,9 @@ static T GnGetLibraryFunction(void* dll_handle, const char* fn_name) noexcept
 static void GnWstrToStr(char* dst, const wchar_t* src, size_t len)
 {
     std::mbstate_t state{};
-    std::wcsrtombs(dst, &src, len, &state); // C4996
+    size_t count;
+    wcsrtombs_s(&count, dst, len, &src, len, &state);
+    //std::wcsrtombs(dst, &src, len, &state); // C4996
 }
 
 #ifdef _WIN32
@@ -1445,7 +1447,7 @@ void GnCmdBlitTexture(GnCommandList command_list, GnTexture src_texture, GnTextu
 
 void GnCmdBarrier(GnCommandList command_list, uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers)
 {
-    if (num_buffer_barriers > 0 && num_texture_barriers > 0)
+    if (num_buffer_barriers > 0 || num_texture_barriers > 0)
         command_list->Barrier(num_buffer_barriers, buffer_barriers, num_texture_barriers, texture_barriers);
 }
 

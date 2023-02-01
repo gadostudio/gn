@@ -13,6 +13,12 @@
 #include <shared_mutex>
 #include <functional>
 
+//#if defined(_MSC_VER)
+//#define GN_COMPILER_MSVC
+//#elif defined(__clang__)
+//#define GN_COMPILER_CLANG
+//#endif
+
 #ifdef NDEBUG
 #define GN_DBG_ASSERT(x)
 #else
@@ -98,7 +104,7 @@ inline static T* GnAllocate(std::size_t count = 1, std::size_t align = alignof(T
 template<typename T, std::enable_if_t<std::is_pointer_v<T>, bool> = true>
 inline static void GnFree(T ptr, std::size_t align = alignof(std::remove_pointer_t<T>))
 {
-    ::operator delete(ptr, std::align_val_t{ align }, std::nothrow);
+    ::operator delete[](ptr, std::align_val_t{ align }, std::nothrow);
 }
 
 template<typename T>

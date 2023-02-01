@@ -72,7 +72,7 @@ struct GnAdapterD3D12 : public GnAdapter_t
     GnBool IsVertexFormatSupported(GnFormat format) const noexcept override;
     GnBool IsSurfacePresentationSupported(uint32_t queue_group_index, GnSurface surface) const noexcept override;
     void GetSurfaceProperties(GnSurface surface, GnSurfaceProperties* properties) const noexcept override;
-    GnResult GetSurfaceFormats(GnSurface surface, uint32_t* num_surface_formats, GnFormat* formats) const noexcept;
+    GnResult GetSurfaceFormats(GnSurface surface, uint32_t* num_surface_formats, GnFormat* formats) const noexcept override;
     GnResult GnEnumerateSurfaceFormats(GnSurface surface, void* userdata, GnGetSurfaceFormatCallbackFn callback_fn) const noexcept override;
     GnResult CreateDevice(const GnDeviceDesc* desc, GnDevice* device) noexcept override;
 };
@@ -214,7 +214,7 @@ struct GnDeviceD3D12 : public GnDevice_t
     void DestroyPipelineLayout(GnPipelineLayout pipeline_layout) noexcept override;
     void DestroyPipeline(GnPipeline pipeline) noexcept override;
     void DestroyDescriptorPool(GnDescriptorPool descriptor_pool) noexcept override;
-    void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept;
+    void DestroyCommandLists(GnCommandPool command_pool, uint32_t num_command_lists, const GnCommandList* command_lists) noexcept override;
     void DestroyCommandPool(GnCommandPool command_pool) noexcept override;
     void GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept override;
     GnResult BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept override;
@@ -311,6 +311,7 @@ inline UINT GnConvertToD3D12ComponentMapping(GnComponentSwizzle swizzle, D3D12_S
         case GnComponentSwizzle_G:      return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1;
         case GnComponentSwizzle_B:      return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2;
         case GnComponentSwizzle_A:      return D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3;
+        default:                        break;
     }
 
     return identity;
@@ -349,7 +350,7 @@ inline D3D12_RESOURCE_STATES GnConvertToD3D12ResourceStates(GnResourceAccessFlag
         if (access & GnResourceAccess_IndexBuffer)
             ret |= D3D12_RESOURCE_STATE_INDEX_BUFFER;
 
-        if (access & (GnResourceAccess_ColorTargetRead | GnResourceAccess_ColorTargetWrite))
+        if (access & color_attachment_access)
             ret |= D3D12_RESOURCE_STATE_RENDER_TARGET;
 
         if (access & storage_access)
@@ -384,9 +385,10 @@ ID3D12CommandSignature* GnCreateCommandSignatureD3D12(ID3D12Device* device, D3D1
     desc.pArgumentDescs = &arg_desc;
 
     switch (arg_type) {
-        case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS); break;
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW:         desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS); break;
         case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: desc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS); break;
-        case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: desc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS); break;
+        case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH:     desc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS); break;
+        default:                                        break;
     }
     
     return SUCCEEDED(device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&cmd_signature))) ? cmd_signature : nullptr;
@@ -429,7 +431,6 @@ GnResult GnCreateInstanceD3D12(const GnInstanceDesc* desc, GnInstance* instance)
     uint32_t adapter_idx = 0;
     while (factory->EnumAdapters1(adapter_idx, &current_adapter) != DXGI_ERROR_NOT_FOUND) adapter_idx++;
 
-    // This may waste some memory, but we also need to filter out incompatible adapters. Optimize?
     uint32_t num_dxgi_adapters = adapter_idx;
     new_instance->d3d12_adapters = (GnAdapterD3D12*)std::malloc(sizeof(GnAdapterD3D12) * num_dxgi_adapters);
     adapter_idx = 0;
@@ -674,6 +675,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
             case GnQueueType_Direct:    queue_group.num_queues = 1; break;
             case GnQueueType_Compute:   queue_group.num_queues = 8; break;
             case GnQueueType_Copy:      queue_group.num_queues = 1; break;
+            default:                    GN_UNREACHABLE();
         }
     }
 
@@ -692,6 +694,8 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
             break;
         case D3D12_MEMORY_POOL_L1:
             device_memory_type.attribute = GnMemoryAttribute_DeviceLocal;
+            break;
+        default:
             break;
     }
 
@@ -802,7 +806,7 @@ GnResult GnAdapterD3D12::GnEnumerateSurfaceFormats(GnSurface surface, void* user
 
 GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, GnDevice* device) noexcept
 {
-    GnDeviceD3D12* new_device = new(std::nothrow) GnDeviceD3D12;
+    GnDeviceD3D12* new_device = new(std::nothrow) GnDeviceD3D12();
 
     if (new_device == nullptr) {
         return GnError_OutOfHostMemory;
@@ -815,7 +819,13 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, GnDevice* device
         total_enabled_queues += new_device->num_enabled_queues[i];
     }
 
+    if (total_enabled_queues == 0) {
+        delete new_device;
+        return GnError_InvalidArgs;
+    }
+
     GnQueueD3D12* queues = (GnQueueD3D12*)std::malloc(sizeof(GnQueueD3D12) * total_enabled_queues);
+
     if (!queues) {
         delete new_device;
         return GnError_OutOfHostMemory;
@@ -1010,7 +1020,7 @@ GnResult GnDeviceD3D12::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, G
 
     GnSmallVector<D3D12_ROOT_PARAMETER, 32> root_parameters;
 
-    if (!root_parameters.resize(desc->num_resources + desc->num_resource_tables))
+    if (!root_parameters.resize((size_t)desc->num_resources + desc->num_resource_tables))
         return GnError_OutOfHostMemory;
 
     for (uint32_t i = 0; i < desc->num_resources; i++) {

@@ -125,7 +125,7 @@ struct Triangle : public GnExampleApp
         }
     }
 
-    void OnRender()
+    void OnRender() override
     {
         uint32_t frame_index = GnGetCurrentBackBufferIndex(swapchain);
         auto& current_frame = frame_data[frame_index];
