@@ -1,0 +1,2 @@
+gn_add_compute_example(gn_example_hello_compute hello_compute.cpp)
+gn_add_shader_example(TARGET gn_example_hello_compute GLSL_COMPUTE hello_compute.comp)

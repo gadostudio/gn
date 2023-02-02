@@ -12,9 +12,8 @@ option(GN_DONT_USE_DEPS "Disable external dependencies" OFF)
 option(GN_BUILD_EXAMPLES "Build examples (must build static library)" ON)
 option(GN_BUILD_TESTS "Build tests (must build static library)" OFF)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
-set(CMAKE_EXC TRUE)
 
 if(GN_DOWNLOAD_EXTERN_DEPS)
     include(FetchContent)
@@ -25,13 +24,11 @@ if(MSVC)
 endif()
 
 add_library(gn INTERFACE)
-set_property(TARGET gn PROPERTY CXX_STANDARD 17)
 target_include_directories(gn
     INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
               $<INSTALL_INTERFACE:include>)
 
 add_library(gnsl INTERFACE)
-set_property(TARGET gnsl PROPERTY CXX_STANDARD 17)
 target_include_directories(gnsl
     INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
               $<INSTALL_INTERFACE:include>)
@@ -55,16 +52,20 @@ if(GN_STATIC_BUILD OR GN_BUILD_EXAMPLES OR GN_BUILD_TESTS)
     endif()
 
     add_library(gn-static STATIC src/gn_impl_stub.cpp)
+    target_compile_features(gn-static PUBLIC cxx_std_17)
     target_link_libraries(gn-static PRIVATE ${GN_STATIC_DEPS} ${CMAKE_DL_LIBS})
     target_include_directories(gn-static
         PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                $<INSTALL_INTERFACE:include>)
 
     add_library(gnsl-static STATIC src/gnsl_impl_stub.cpp)
-    target_link_libraries(gn-static PRIVATE gnsl)
+    target_compile_features(gnsl-static PUBLIC cxx_std_17)
+    target_link_libraries(gnsl-static PRIVATE gnsl)
     target_include_directories(gnsl-static
         PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                $<INSTALL_INTERFACE:include>)
+
+    get_property(GN_CXX_STD TARGET gn-static PROPERTY CXX_STANDARD)
 
     if(GN_BUILD_EXAMPLES)
         add_subdirectory(examples)

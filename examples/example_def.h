@@ -6,7 +6,7 @@
 
 #define EX_THROW_IF(x) \
     if ((x)) { \
-        std::cout << #x << "\n"; \
+        std::cout << "Error: " << #x << "\n"; \
         std::abort(); \
     }
 

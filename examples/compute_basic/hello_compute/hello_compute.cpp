@@ -10,7 +10,7 @@ const std::array<float, 8> buffer_data = {
 int main()
 {
     // Load shader
-    auto compute_shader = GnLoadSPIRV(GN_EXAMPLE_SRC_DIR "/compute_basic/hello_compute/hello_compute.comp.spv");
+    auto compute_shader = GnLoadSPIRV("hello_compute.comp.spv");
     EX_THROW_IF(!compute_shader.has_value());
 
     std::cout << "Basic GPU Compute Shader Sample" << std::endl;
@@ -56,7 +56,7 @@ int main()
 
     // --- Build compute pipeline ---
     GnComputePipelineDesc pipeline_desc{};
-    pipeline_desc.cs.size = compute_shader->size() * sizeof(uint32_t);
+    pipeline_desc.cs.size = compute_shader->size();
     pipeline_desc.cs.bytecode = compute_shader->data();
     pipeline_desc.cs.entry_point = "main";
     pipeline_desc.layout = pipeline_layout;
@@ -140,15 +140,15 @@ int main()
     buffer_barrier[0].buffer = src_buffer;
     buffer_barrier[0].offset = 0;
     buffer_barrier[0].size = GN_WHOLE_SIZE;
-    buffer_barrier[0].access_before = GnResourceAccess_HostWrite;
-    buffer_barrier[0].access_after = GnResourceAccess_CSRead;
+    buffer_barrier[0].prev_access = GnResourceAccess_HostWrite;
+    buffer_barrier[0].next_access = GnResourceAccess_CSRead;
     buffer_barrier[0].queue_group_index_before = 0;
     buffer_barrier[0].queue_group_index_after = 0;
     buffer_barrier[1].buffer = dst_buffer;
     buffer_barrier[1].offset = 0;
     buffer_barrier[1].size = GN_WHOLE_SIZE;
-    buffer_barrier[1].access_before = GnResourceAccess_Undefined;
-    buffer_barrier[1].access_after = GnResourceAccess_CSWrite;
+    buffer_barrier[1].prev_access = GnResourceAccess_Undefined;
+    buffer_barrier[1].next_access = GnResourceAccess_CSWrite;
     buffer_barrier[1].queue_group_index_before = 0;
     buffer_barrier[1].queue_group_index_after = 0;
 
@@ -169,8 +169,8 @@ int main()
     buffer_barrier[0].buffer = dst_buffer;
     buffer_barrier[0].offset = 0;
     buffer_barrier[0].size = GN_WHOLE_SIZE;
-    buffer_barrier[0].access_before = GnResourceAccess_CSWrite;
-    buffer_barrier[0].access_after = GnResourceAccess_HostRead;
+    buffer_barrier[0].prev_access = GnResourceAccess_CSWrite;
+    buffer_barrier[0].next_access = GnResourceAccess_HostRead;
     buffer_barrier[0].queue_group_index_before = 0;
     buffer_barrier[0].queue_group_index_after = 0;
 

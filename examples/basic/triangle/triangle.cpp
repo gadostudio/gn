@@ -191,7 +191,7 @@ struct Triangle : public GnExampleApp
         // Set the viewport bounds.
         GnCmdSetViewport(current_frame.command_list, 0, 0.0f, 0.0f, 640.0f, 480.0f, 0.0f, 1.0f);
         
-        // Set the scissor rectangle. The scissor rectangle specifies the drawing area in which the drawing will be performed.
+        // Set the scissor rectangle. The scissor rectangle specifies the drawing area where the drawing will be performed.
         // When primitives are drawn outside the drawing region, the rasterizer will discard its fragment.
         GnCmdSetScissor(current_frame.command_list, 0, 0, 0, 640, 480);
 

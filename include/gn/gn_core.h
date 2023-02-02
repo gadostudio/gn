@@ -13,11 +13,13 @@
 #include <shared_mutex>
 #include <functional>
 
-//#if defined(_MSC_VER)
-//#define GN_COMPILER_MSVC
-//#elif defined(__clang__)
-//#define GN_COMPILER_CLANG
-//#endif
+#if defined(_MSC_VER)
+#define GN_COMPILER_MSVC
+#elif defined(__clang__)
+#define GN_COMPILER_CLANG
+#elif defined(__GNUC__)
+#define GN_COMPILER_GCC
+#endif
 
 #ifdef NDEBUG
 #define GN_DBG_ASSERT(x)
@@ -26,10 +28,9 @@
 #endif
 
 #define GN_ASSERT(x) assert(x)
-
 #define GN_CHECK(x) GN_DBG_ASSERT(x)
 
-#ifdef _MSC_VER
+#ifdef GN_COMPILER_MSVC
 #define GN_SAFEBUFFERS __declspec(safebuffers)
 #define GN_COMPILER_UNREACHABLE __assume(0)
 #else
@@ -37,12 +38,16 @@
 #define GN_COMPILER_UNREACHABLE
 #endif
 
+#if __has_cpp_attribute(unlikely)
+#define GN_UNLIKELY [[unlikely]]
+#else
+#define GN_UNLIKELY
+#endif
+
 #ifdef NDEBUG
 #define GN_UNREACHABLE() GN_COMPILER_UNREACHABLE
 #else
-#define GN_UNREACHABLE() \
-    GN_ASSERT(false && "Unreachable"); \
-    GN_COMPILER_UNREACHABLE
+#define GN_UNREACHABLE() GN_ASSERT(false && "Unreachable");
 #endif
 
 #if defined(_WIN32)
