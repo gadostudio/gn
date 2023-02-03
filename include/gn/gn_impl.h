@@ -285,11 +285,19 @@ struct GnCommandList_t : public GnTrackedResource<GnCommandList_t>
     bool                        recording = false;
     bool                        inside_render_pass = false;
     bool                        standalone = false;
+    GnResult                    last_error = GnSuccess;
 
     virtual GnResult Begin(const GnCommandListBeginDesc* desc) noexcept = 0;
+    
     virtual void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept = 0;
+    
     virtual void EndRenderPass() noexcept = 0;
-    virtual void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept = 0;
+    
+    virtual void Barrier(uint32_t num_buffer_barriers,
+                         const GnBufferBarrier* buffer_barriers,
+                         uint32_t num_texture_barriers, 
+                         const GnTextureBarrier* texture_barriers) noexcept = 0;
+
     virtual GnResult End() noexcept = 0;
 };
 

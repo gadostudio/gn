@@ -7,6 +7,29 @@ const std::array<float, 8> buffer_data = {
     1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f
 };
 
+void CreateBuffer(GnAdapter adapter, GnDevice device, GnDeviceSize size, GnMemoryAttributeFlags preferred_memory, GnMemory* memory, GnBuffer* buffer)
+{
+    GnBufferDesc buffer_desc{};
+    buffer_desc.size = size;
+    buffer_desc.usage = GnBufferUsage_Storage;
+
+    EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, buffer));
+
+    GnMemoryRequirements requirements{};
+    GnGetBufferMemoryRequirements(device, *buffer, &requirements);
+
+    GnMemoryDesc memory_desc{};
+    memory_desc.size = requirements.size;
+    memory_desc.memory_type_index = GnFindSupportedMemoryType(
+        adapter, requirements.supported_memory_type_bits,
+        preferred_memory, GnMemoryAttribute_HostVisible,
+        0);
+
+    EX_THROW_IF_FAILED(GnCreateMemory(device, &memory_desc, memory));
+
+    GnBindBufferMemory(device, *buffer, *memory, 0);
+}
+
 int main()
 {
     // Load shader
@@ -65,41 +88,13 @@ int main()
     EX_THROW_IF_FAILED(GnCreateComputePipeline(device, &pipeline_desc, &compute_pipeline));
 
     // --- Create input and output buffer ---
-    GnBufferDesc buffer_desc{};
-    buffer_desc.size = sizeof(buffer_data);
-    buffer_desc.usage = GnBufferUsage_Storage;
-
     GnBuffer src_buffer;
-    EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &src_buffer));
+    GnMemory src_buffer_memory;
+    CreateBuffer(adapter, device, sizeof(buffer_data), GnMemoryAttribute_HostVisible, &src_buffer_memory, &src_buffer);
 
     GnBuffer dst_buffer;
-    EX_THROW_IF_FAILED(GnCreateBuffer(device, &buffer_desc, &dst_buffer));
-
-    // --- Allocate memory for input and output buffer ---
-    GnMemoryRequirements requirements{};
-    GnGetBufferMemoryRequirements(device, src_buffer, &requirements);
-
-    GnMemoryDesc memory_desc{};
-    memory_desc.size = requirements.size;
-    memory_desc.memory_type_index = GnFindSupportedMemoryType(
-        adapter, requirements.supported_memory_type_bits,
-        GnMemoryAttribute_HostVisible, GnMemoryAttribute_HostVisible,
-        0);
-    
-    GnMemory src_buffer_memory;
-    EX_THROW_IF_FAILED(GnCreateMemory(device, &memory_desc, &src_buffer_memory));
-
-    memory_desc.memory_type_index = GnFindSupportedMemoryType(
-        adapter, requirements.supported_memory_type_bits,
-        GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCached,
-        GnMemoryAttribute_HostVisible,
-        0);
-
     GnMemory dst_buffer_memory;
-    EX_THROW_IF_FAILED(GnCreateMemory(device, &memory_desc, &dst_buffer_memory));
-
-    GnBindBufferMemory(device, src_buffer, src_buffer_memory, 0);
-    GnBindBufferMemory(device, dst_buffer, dst_buffer_memory, 0);
+    CreateBuffer(adapter, device, sizeof(buffer_data), GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCached, &dst_buffer_memory, &dst_buffer);
 
     std::cout << "Input: " << std::endl;
 
@@ -162,6 +157,7 @@ int main()
     GnCmdSetComputeStorageBuffer(command_list, 0, src_buffer, 0);
     GnCmdSetComputeStorageBuffer(command_list, 1, dst_buffer, 0);
 
+    // Dispatch the threads
     GnCmdDispatch(command_list, 8, 1, 1);
 
     // Insert a barrier to make sure everything is done before we read dst_buffer.

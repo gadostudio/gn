@@ -247,7 +247,7 @@ struct GnPool
     }
 };
 
-template<typename T, std::enable_if_t<std::is_pod_v<T>, bool> = true>
+template<typename T, std::enable_if_t<std::is_trivial_v<T>, bool> = true>
 struct GnVector
 {
     T* first_ptr = nullptr;

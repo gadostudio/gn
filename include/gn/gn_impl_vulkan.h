@@ -112,6 +112,7 @@ struct GnVulkanDeviceFunctions
     PFN_vkDestroyDescriptorSetLayout vkDestroyDescriptorSetLayout;
     PFN_vkCreateDescriptorPool vkCreateDescriptorPool;
     PFN_vkDestroyDescriptorPool vkDestroyDescriptorPool;
+    PFN_vkResetDescriptorPool vkResetDescriptorPool;
     PFN_vkAllocateDescriptorSets vkAllocateDescriptorSets;
     PFN_vkFreeDescriptorSets vkFreeDescriptorSets;
     PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets;
@@ -430,8 +431,9 @@ struct GnDescriptorStreamVK
 
     GnDescriptorStreamVK(GnDeviceVK* impl_device);
     ~GnDescriptorStreamVK();
-    VkDescriptorSet AllocateDescriptorSet(GnPipelineLayoutVK* pipeline_layout) noexcept;
+    GnResult AllocateDescriptorSet(GnPipelineLayoutVK* pipeline_layout, VkDescriptorSet* descriptor_set) noexcept;
     GnDescriptorStreamChunkVK* CreateChunk(uint32_t max_descriptor_sets, uint32_t max_descriptors) noexcept;
+    void Reset() noexcept;
 };
 
 struct GnCommandListVK : public GnCommandList_t
@@ -591,7 +593,7 @@ struct GnDeviceVK : public GnDevice_t
     GnResult DeviceWaitIdle() noexcept override;
     GnResult ResetCommandPool(GnCommandPool command_pool) noexcept override;
 
-    VkResult CreateRenderPass(const GnRenderPassCacheKey* desc, VkRenderPass* render_pass) noexcept;
+    GnResult CreateRenderPass(const GnRenderPassCacheKey* desc, VkRenderPass* render_pass) noexcept;
 };
 
 // -------------------------------------------------------
@@ -1250,6 +1252,7 @@ bool GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkDestroyDescriptorSetLayout);
     GN_LOAD_DEVICE_FN(vkCreateDescriptorPool);
     GN_LOAD_DEVICE_FN(vkDestroyDescriptorPool);
+    GN_LOAD_DEVICE_FN(vkResetDescriptorPool);
     GN_LOAD_DEVICE_FN(vkAllocateDescriptorSets);
     GN_LOAD_DEVICE_FN(vkFreeDescriptorSets);
     GN_LOAD_DEVICE_FN(vkUpdateDescriptorSets);
@@ -3654,10 +3657,12 @@ GnResult GnDeviceVK::DeviceWaitIdle() noexcept
 
 GnResult GnDeviceVK::ResetCommandPool(GnCommandPool command_pool) noexcept
 {
+    GnCommandPoolVK* impl_command_pool = GN_TO_VULKAN(GnCommandPool, command_pool);
+    impl_command_pool->descriptor_stream.Reset();
     return GnConvertFromVkResult(fn.vkResetCommandPool(device, GN_TO_VULKAN(GnCommandPool, command_pool)->cmd_pool, 0));
 }
 
-VkResult GnDeviceVK::CreateRenderPass(const GnRenderPassCacheKey* desc, VkRenderPass* render_pass) noexcept
+GnResult GnDeviceVK::CreateRenderPass(const GnRenderPassCacheKey* desc, VkRenderPass* render_pass) noexcept
 {
     GnSmallVector<VkAttachmentDescription, 32> attachments;
     VkAttachmentReference color_att_refs[GN_MAX_COLOR_TARGETS];
@@ -3763,7 +3768,7 @@ VkResult GnDeviceVK::CreateRenderPass(const GnRenderPassCacheKey* desc, VkRender
     rp_info.dependencyCount = 0;
     rp_info.pDependencies = nullptr;
 
-    return fn.vkCreateRenderPass(device, &rp_info, nullptr, render_pass);
+    return GnConvertFromVkResult(fn.vkCreateRenderPass(device, &rp_info, nullptr, render_pass));
 }
 
 // -- [GnQueueVK] --
@@ -4356,13 +4361,13 @@ GnDescriptorStreamVK::~GnDescriptorStreamVK()
     current_chunk = nullptr;
 }
 
-VkDescriptorSet GnDescriptorStreamVK::AllocateDescriptorSet(GnPipelineLayoutVK* pipeline_layout) noexcept
+GnResult GnDescriptorStreamVK::AllocateDescriptorSet(GnPipelineLayoutVK* pipeline_layout, VkDescriptorSet* descriptor_set) noexcept
 {
     if (current_chunk == nullptr) {
         first_chunk = CreateChunk(32, 64);
         
         if (first_chunk == nullptr)
-            return VK_NULL_HANDLE;
+            return GnError_OutOfHostMemory;
 
         current_chunk = first_chunk;
     }
@@ -4381,7 +4386,7 @@ VkDescriptorSet GnDescriptorStreamVK::AllocateDescriptorSet(GnPipelineLayoutVK* 
             GnDescriptorStreamChunkVK* new_chunk = CreateChunk(max_descriptor_sets, max_descriptors);
 
             if (new_chunk == nullptr)
-                return VK_NULL_HANDLE;
+                return GnError_OutOfHostMemory;
 
             current_chunk->next = new_chunk;
             current_chunk = new_chunk;
@@ -4395,16 +4400,16 @@ VkDescriptorSet GnDescriptorStreamVK::AllocateDescriptorSet(GnPipelineLayoutVK* 
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts = &pipeline_layout->global_resource_layout;
 
-    VkDescriptorSet descriptor_set;
+    VkResult result = impl_device->fn.vkAllocateDescriptorSets(impl_device->device, &alloc_info, descriptor_set);
 
-    if (GN_VULKAN_FAILED(impl_device->fn.vkAllocateDescriptorSets(impl_device->device, &alloc_info, &descriptor_set)))
-        return VK_NULL_HANDLE;
+    if (GN_VULKAN_FAILED(result))
+        return GnConvertFromVkResult(result);
 
     current_chunk->num_uniform_buffers += pipeline_layout->num_global_uniform_buffers;
     current_chunk->num_storage_buffers += pipeline_layout->num_global_storage_buffers;
     current_chunk->num_descriptor_sets++;
 
-    return descriptor_set;
+    return GnSuccess;
 }
 
 GnDescriptorStreamChunkVK* GnDescriptorStreamVK::CreateChunk(uint32_t max_descriptor_sets, uint32_t max_descriptors) noexcept
@@ -4446,6 +4451,19 @@ GnDescriptorStreamChunkVK* GnDescriptorStreamVK::CreateChunk(uint32_t max_descri
     return chunk;
 }
 
+void GnDescriptorStreamVK::Reset() noexcept
+{
+    GnDescriptorStreamChunkVK* chunk = first_chunk;
+    
+    // Reset all descriptor pool allocations
+    while (chunk) {
+
+        chunk = chunk->next;
+    }
+
+    current_chunk = first_chunk;
+}
+
 // -- [GnCommandPoolVK] --
 
 GnCommandPoolVK::GnCommandPoolVK(GnDeviceVK* impl_device, uint32_t max_command_lists, VkCommandBufferLevel level, VkCommandPool cmd_pool) noexcept :
@@ -4456,6 +4474,8 @@ GnCommandPoolVK::GnCommandPoolVK(GnDeviceVK* impl_device, uint32_t max_command_l
 {
 }
 
+// We can't really have D3D12-like dynamic resource binding in Vulkan without VK_KHR_push_descriptor, so we have to emulate it with descriptor sets.
+// We also have to sacrifice one of the descriptor set slot that the GPU/driver supports :(
 GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_list,
                                              VkCommandBuffer        cmd_buf,
                                              uint32_t&              global_descriptor_write_mask,
@@ -4466,7 +4486,7 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
     GnPipelineLayoutVK* pipeline_layout = GN_TO_VULKAN(GnPipelineLayout, pipeline_state.pipeline_layout);
     VkPipelineLayout vk_pipeline_layout = pipeline_layout->pipeline_layout;
     
-    // ---- Bind resource table ----
+    // ---- Bind descriptor table ----
     const uint32_t first_rtable_index = pipeline_state.descriptor_tables_upd_range.first;
     const uint32_t num_rtable_updates = pipeline_state.descriptor_tables_upd_range.last - first_rtable_index;
 
@@ -4496,14 +4516,17 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
 
         // Should we check for global_descriptor_write_mask?
         if (global_descriptor_write_mask != 0) {
+            VkDescriptorSet descriptor_set;
             VkDescriptorBufferInfo buffer_descriptors[32];
             VkWriteDescriptorSet write_descriptors[32];
             uint32_t num_global_descriptors = pipeline_layout->num_resources;
-
             GnCommandPoolVK* impl_cmd_pool = impl_cmd_list->parent_cmd_pool;
-            VkDescriptorSet descriptor_set = impl_cmd_pool->descriptor_stream.AllocateDescriptorSet(pipeline_layout);
+            GnResult result = impl_cmd_pool->descriptor_stream.AllocateDescriptorSet(pipeline_layout, &descriptor_set);
 
-            GN_ASSERT(descriptor_set != nullptr && "Cannot allocate descriptor set for global resource.");
+            if (GN_FAILED(result)) {
+                impl_cmd_list->last_error = result;
+                return;
+            }
 
             uint32_t num_write_descriptors = 0;
             for (uint32_t i = 0; i < 32 && num_global_descriptors != 0; i++) {
@@ -4512,7 +4535,6 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
                 if (!GnContainsBit(global_descriptor_write_mask, write_mask))
                     continue;
 
-                // TODO(native-m): Should allocation error be handled?
                 auto& buffer_descriptor = buffer_descriptors[num_write_descriptors];
                 buffer_descriptor.buffer = GN_TO_VULKAN(GnBuffer, pipeline_state.global_buffers[i])->buffer;
                 buffer_descriptor.offset = 0;
@@ -4740,8 +4762,13 @@ void GnCommandListVK::BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcep
     if (!render_pass) {
         // Create a new render pass if there is no desired render pass exists in the cache
         VkRenderPass new_render_pass;
-        if (GN_VULKAN_FAILED(parent_cmd_pool->parent_device->CreateRenderPass(&rp_cache_key, &new_render_pass)))
-            GN_ASSERT(false);
+        GnResult result = parent_cmd_pool->parent_device->CreateRenderPass(&rp_cache_key, &new_render_pass);
+
+        if (GN_FAILED(result)) {
+            last_error = result;
+            return;
+        }
+
         render_pass_cache.Insert(rp_cache_key, new_render_pass);
         render_pass.emplace(new_render_pass);
     }
@@ -4769,8 +4796,13 @@ void GnCommandListVK::BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcep
         fb_info.layers = 1;
 
         VkFramebuffer new_framebuffer;
-        if (GN_VULKAN_FAILED(fn.vkCreateFramebuffer(parent_cmd_pool->parent_device->device, &fb_info, nullptr, &new_framebuffer)))
-            GN_ASSERT(false);
+        VkResult result = fn.vkCreateFramebuffer(parent_cmd_pool->parent_device->device, &fb_info, nullptr, &new_framebuffer);
+        
+        if (GN_VULKAN_FAILED(result)) {
+            last_error = GnConvertFromVkResult(result);
+            return;
+        }
+
         framebuffer_cache.Insert(fb_cache_key, new_framebuffer);
         framebuffer.emplace(new_framebuffer);
     }
@@ -4815,7 +4847,10 @@ void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
     auto& pending_image_barriers = parent_cmd_pool->pending_image_barriers;
 
     if (num_buffer_barriers > 0) {
-        pending_buffer_barriers.resize(num_buffer_barriers);
+        if (!pending_buffer_barriers.resize(num_buffer_barriers)) {
+            last_error = GnError_OutOfHostMemory;
+            return;
+        }
 
         for (uint32_t i = 0; i < num_buffer_barriers; i++) {
             const GnBufferBarrier& buffer_barrier = buffer_barriers[i];
@@ -4837,7 +4872,10 @@ void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
     }
 
     if (num_texture_barriers > 0) {
-        pending_image_barriers.resize(num_texture_barriers);
+        if (!pending_image_barriers.resize(num_texture_barriers)) {
+            last_error = GnError_OutOfHostMemory;
+            return;
+        }
 
         for (uint32_t i = 0; i < num_texture_barriers; i++) {
             const GnTextureBarrier& texture_barrier = texture_barriers[i];
@@ -4880,6 +4918,9 @@ void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
 
 GnResult GnCommandListVK::End() noexcept
 {
+    if (GN_FAILED(last_error))
+        return last_error;
+
     return GnConvertFromVkResult(fn.vkEndCommandBuffer(static_cast<VkCommandBuffer>(cmd_private_data)));
 }
 
