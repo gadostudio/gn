@@ -18,7 +18,6 @@ struct FrameData
 struct VertexBuffer : public GnExampleApp
 {
     std::vector<FrameData> frame_data;
-    GnRenderGraph main_render_graph{};
     GnBuffer vertex_buffer{};
     GnMemory vertex_buffer_mem{};
     GnBuffer index_buffer{};
