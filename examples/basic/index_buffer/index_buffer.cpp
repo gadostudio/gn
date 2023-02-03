@@ -21,6 +21,8 @@ struct VertexBuffer : public GnExampleApp
     GnRenderGraph main_render_graph{};
     GnBuffer vertex_buffer{};
     GnMemory vertex_buffer_mem{};
+    GnBuffer index_buffer{};
+    GnMemory index_buffer_mem{};
     GnPipeline pipeline{};
 
     virtual ~VertexBuffer()
@@ -34,8 +36,37 @@ struct VertexBuffer : public GnExampleApp
         }
 
         GnDestroyBuffer(device, vertex_buffer);
+        GnDestroyBuffer(device, index_buffer);
         GnDestroyMemory(device, vertex_buffer_mem);
+        GnDestroyMemory(device, index_buffer_mem);
         GnDestroyPipeline(device, pipeline);
+    }
+
+    void CreateBuffer(GnBufferUsageFlags usage, GnDeviceSize size, GnMemory* memory, GnBuffer* buffer)
+    {
+        GnBufferDesc vtx_buf_desc;
+        vtx_buf_desc.size = size;
+        vtx_buf_desc.usage = usage;
+        EX_THROW_IF_FAILED(GnCreateBuffer(device, &vtx_buf_desc, buffer));
+
+        GnMemoryRequirements memory_requirements;
+        GnGetBufferMemoryRequirements(device, *buffer, &memory_requirements);
+
+        uint32_t memory_type_index = GnFindSupportedMemoryType(
+            adapter, memory_requirements.supported_memory_type_bits,
+            GnMemoryAttribute_HostVisible | GnMemoryAttribute_DeviceLocal,
+            GnMemoryAttribute_HostVisible,
+            0);
+
+        EX_THROW_IF(memory_type_index == GN_INVALID);
+
+        GnMemoryDesc buf_memory_desc;
+        buf_memory_desc.flags = GnMemoryUsage_AlwaysMapped;
+        buf_memory_desc.memory_type_index = memory_type_index;
+        buf_memory_desc.size = memory_requirements.size;
+        EX_THROW_IF_FAILED(GnCreateMemory(device, &buf_memory_desc, memory));
+
+        GnBindBufferMemory(device, *buffer, *memory, 0);
     }
 
     void OnStart() override
@@ -44,14 +75,14 @@ struct VertexBuffer : public GnExampleApp
         auto fragment_shader = GnLoadSPIRV("shader.frag.spv");
 
         GnShaderBytecode vs_bytecode{};
-        vs_bytecode.size                            = vertex_shader->size();
-        vs_bytecode.bytecode                        = vertex_shader->data();
-        vs_bytecode.entry_point                     = "main";
+        vs_bytecode.size = vertex_shader->size();
+        vs_bytecode.bytecode = vertex_shader->data();
+        vs_bytecode.entry_point = "main";
 
         GnShaderBytecode fs_bytecode{};
-        fs_bytecode.size                            = fragment_shader->size();
-        fs_bytecode.bytecode                        = fragment_shader->data();
-        fs_bytecode.entry_point                     = "main";
+        fs_bytecode.size = fragment_shader->size();
+        fs_bytecode.bytecode = fragment_shader->data();
+        fs_bytecode.entry_point = "main";
 
         static const GnVertexAttributeDesc vertex_attributes[] = {
             { 0, 0, GnFormat_Float32x2, 0 },
@@ -64,88 +95,68 @@ struct VertexBuffer : public GnExampleApp
         input_slot.input_rate = GnVertexInputRate_PerVertex;
 
         GnVertexInputStateDesc vertex_input{};
-        vertex_input.num_input_slots                = 1;
-        vertex_input.input_slots                    = &input_slot;
-        vertex_input.num_attributes                 = 2;
-        vertex_input.attribute                      = vertex_attributes;
+        vertex_input.num_input_slots = 1;
+        vertex_input.input_slots = &input_slot;
+        vertex_input.num_attributes = 2;
+        vertex_input.attribute = vertex_attributes;
 
         GnInputAssemblyStateDesc input_assembly{};
-        input_assembly.topology                     = GnPrimitiveTopology_TriangleList;
-        input_assembly.primitive_restart            = GnPrimitiveRestart_Disable;
+        input_assembly.topology = GnPrimitiveTopology_TriangleList;
+        input_assembly.primitive_restart = GnPrimitiveRestart_Disable;
 
         GnRasterizationStateDesc rasterization{};
-        rasterization.polygon_mode                  = GnPolygonMode_Fill;
-        rasterization.cull_mode                     = GnCullMode_Back;
+        rasterization.polygon_mode = GnPolygonMode_Fill;
+        rasterization.cull_mode = GnCullMode_Back;
 
         GnFragmentInterfaceStateDesc fragment_interface{};
-        fragment_interface.num_color_targets        = 1;
-        fragment_interface.color_target_formats     = &surface_format;
+        fragment_interface.num_color_targets = 1;
+        fragment_interface.color_target_formats = &surface_format;
 
         GnGraphicsPipelineDesc graphics_pipeline{};
-        graphics_pipeline.vs                        = &vs_bytecode;
-        graphics_pipeline.fs                        = &fs_bytecode;
-        graphics_pipeline.vertex_input              = &vertex_input;
-        graphics_pipeline.input_assembly            = &input_assembly;
-        graphics_pipeline.rasterization             = &rasterization;
-        graphics_pipeline.multisample               = nullptr;
-        graphics_pipeline.fragment_interface        = &fragment_interface;
-        graphics_pipeline.depth_stencil             = nullptr;
-        graphics_pipeline.blend                     = nullptr;
-        graphics_pipeline.num_viewports             = 1;
-        graphics_pipeline.layout                    = nullptr;
+        graphics_pipeline.vs = &vs_bytecode;
+        graphics_pipeline.fs = &fs_bytecode;
+        graphics_pipeline.vertex_input = &vertex_input;
+        graphics_pipeline.input_assembly = &input_assembly;
+        graphics_pipeline.rasterization = &rasterization;
+        graphics_pipeline.multisample = nullptr;
+        graphics_pipeline.fragment_interface = &fragment_interface;
+        graphics_pipeline.depth_stencil = nullptr;
+        graphics_pipeline.blend = nullptr;
+        graphics_pipeline.num_viewports = 1;
+        graphics_pipeline.layout = nullptr;
 
         GnCreateGraphicsPipeline(device, &graphics_pipeline, &pipeline);
 
         static const VertexAttrib vertex_data[] = {
-            {  0.0f,  0.5f, 255, 0,   0,   255 },
-            {  0.5f, -0.5f, 0,   255, 0,   255 },
+            { -0.5f,  0.5f, 255, 0,   0,   255 },
+            {  0.5f,  0.5f, 0,   255, 0,   255 },
             { -0.5f, -0.5f, 0,   0,   255, 255 },
+            {  0.5f, -0.5f, 255, 0,   0,   255 },
         };
 
-        // When creating a vertex buffer, make sure that the buffer usage is set to GnBufferUsage_Vertex
-        GnBufferDesc vtx_buf_desc;
-        vtx_buf_desc.size = sizeof(vertex_data);
-        vtx_buf_desc.usage = GnBufferUsage_Vertex;
-        GnCreateBuffer(device, &vtx_buf_desc, &vertex_buffer);
+        static const uint32_t index_data[] = {
+            0, 1, 2, 2, 1, 3
+        };
 
-        GnMemoryRequirements memory_requirements;
-        GnGetBufferMemoryRequirements(device, vertex_buffer, &memory_requirements);
-
-        // Here, we are going to find a proper memory type for the vertex buffer. For simplicity,
-        // we are going to use a "host-visible" memory so that we can map the buffer and copy
-        // the vertex data directly into it from the CPU. We prefer a "device-local" memory
-        // that is also "host-visible". "Device-local" memory is the most efficient since
-        // it basically the dedicated GPU memory that the GPU can access.
-        uint32_t buffer_memory_type_index = GnFindSupportedMemoryType(
-            adapter, memory_requirements.supported_memory_type_bits,
-            // Here we are going to find the most efficient memory that the GPU and CPU can access.
-            GnMemoryAttribute_HostVisible | GnMemoryAttribute_DeviceLocal,
-            // We fallback to the regular host-visible memory if the GPU does not support a host-visible and device-local memory.
-            GnMemoryAttribute_HostVisible, 
-            0);
-
-        EX_THROW_IF(buffer_memory_type_index == GN_INVALID);
-
-        // Finally we can allocate the memory based on requirements and type that was choosen.
-        GnMemoryDesc vtx_buf_memory_desc;
-        vtx_buf_memory_desc.flags = GnMemoryUsage_AlwaysMapped;
-        vtx_buf_memory_desc.memory_type_index = buffer_memory_type_index;
-        vtx_buf_memory_desc.size = memory_requirements.size;
-        GnCreateMemory(device, &vtx_buf_memory_desc, &vertex_buffer_mem);
-
-        GnBindBufferMemory(device, vertex_buffer, vertex_buffer_mem, 0);
+        CreateBuffer(GnBufferUsage_Vertex, sizeof(vertex_data), &vertex_buffer_mem, &vertex_buffer);
+        CreateBuffer(GnBufferUsage_Index, sizeof(index_data), &index_buffer_mem, &index_buffer);
 
         void* vertex_buffer_addr;
         GnMapBuffer(device, vertex_buffer, nullptr, &vertex_buffer_addr);
         std::memcpy(vertex_buffer_addr, vertex_data, sizeof(vertex_data));
         GnUnmapBuffer(device, vertex_buffer, nullptr);
 
+        void* index_buffer_addr;
+        GnMapBuffer(device, index_buffer, nullptr, &index_buffer_addr);
+        std::memcpy(index_buffer_addr, index_data, sizeof(index_data));
+        GnUnmapBuffer(device, index_buffer, nullptr);
+
         GnCommandPoolDesc cmd_pool_desc{};
         cmd_pool_desc.usage = GnCommandPoolUsage_Transient;
         cmd_pool_desc.command_list_usage = GnCommandListUsage_Primary;
         cmd_pool_desc.queue_group_index = direct_queue_group;
         cmd_pool_desc.max_allocated_cmd_list = 1;
-        
+
         GnCommandListDesc cmd_list_desc{};
         cmd_list_desc.usage = GnCommandListUsage_Primary;
         cmd_list_desc.queue_group_index = direct_queue_group;
@@ -162,7 +173,7 @@ struct VertexBuffer : public GnExampleApp
         view.subresource_range.num_array_layers = 1;
 
         frame_data.resize(num_swapchain_buffers);
-        
+
         for (uint32_t i = 0; i < num_swapchain_buffers; i++) {
             FrameData& data = frame_data[i];
             GnCreateCommandPool(device, &cmd_pool_desc, &data.command_pool);
@@ -231,7 +242,8 @@ struct VertexBuffer : public GnExampleApp
         GnCmdSetViewport(current_frame.command_list, 0, 0.0f, 0.0f, 640.0f, 480.0f, 0.0f, 1.0f);
         GnCmdSetScissor(current_frame.command_list, 0, 0, 0, 640, 480);
         GnCmdSetVertexBuffer(current_frame.command_list, 0, vertex_buffer, 0);
-        GnCmdDraw(current_frame.command_list, 3, 0);
+        GnCmdSetIndexBuffer(current_frame.command_list, index_buffer, 0, GnIndexFormat_Uint32);
+        GnCmdDrawIndexed(current_frame.command_list, 6, 0, 0);
 
         GnCmdEndRenderPass(current_frame.command_list);
 
@@ -253,4 +265,4 @@ struct VertexBuffer : public GnExampleApp
         GnEnqueueCommandLists(queue, 1, &current_frame.command_list);
         GnFlushQueue(queue, current_frame.fence);
     }
-} vertex_buffer;
+} index_buffer;

@@ -267,26 +267,26 @@ struct GnCommandListState
 typedef void (GN_FPTR* GnFlushStateFn)(GnCommandList command_list);
 typedef void (GN_FPTR* GnFlushComputeStateFn)(GnCommandList command_list);
 typedef void (GN_FPTR* GnDrawCmdFn)(void* cmd_data, uint32_t num_vertices, uint32_t num_instances, uint32_t first_vertex, uint32_t first_instance);
-typedef void (GN_FPTR* GnDrawIndexedCmdFn)(void* cmd_data, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance);
+typedef void (GN_FPTR* GnDrawIndexedCmdFn)(void* cmd_data, uint32_t num_indices, uint32_t num_instances, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance);
 typedef void (GN_FPTR* GnDispatchCmdFn)(void* cmd_data, uint32_t num_thread_group_x, uint32_t num_thread_group_y, uint32_t num_thread_group_z);
+typedef void (GN_FPTR* GnBarrierCmdFn)(GnCommandList command_list);
 
 struct GnCommandList_t : public GnTrackedResource<GnCommandList_t>
 {
-    GnCommandListState          state{};
+    GnCommandListState  state{};
+    
+    GnFlushStateFn      flush_gfx_state_fn;
+    GnFlushStateFn      flush_compute_state_fn;
+    GnDrawCmdFn         draw_cmd_fn;
+    GnDrawIndexedCmdFn  draw_indexed_cmd_fn;
+    GnDispatchCmdFn     dispatch_cmd_fn;
+    void*               cmd_private_data = nullptr;
 
-    // Function pointer for certain functions are defined here to avoid vtables and function call indirections.
-    GnFlushStateFn              flush_gfx_state_fn;
-    GnFlushComputeStateFn       flush_compute_state_fn;
-    GnDrawCmdFn                 draw_cmd_fn;
-    GnDrawIndexedCmdFn          draw_indexed_cmd_fn;
-    GnDispatchCmdFn             dispatch_cmd_fn;
-    void*                       cmd_private_data = nullptr;
-
-    bool                        recording = false;
-    bool                        inside_render_pass = false;
-    bool                        standalone = false;
-    GnResult                    last_error = GnSuccess;
-
+    bool                recording = false;
+    bool                inside_render_pass = false;
+    bool                standalone = false;
+    GnResult            last_error = GnSuccess;
+    
     virtual GnResult Begin(const GnCommandListBeginDesc* desc) noexcept = 0;
     
     virtual void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept = 0;
@@ -1221,8 +1221,7 @@ void GnCmdSetGraphicsShaderConstants(GnCommandList command_list, uint32_t offset
 
 void GnCmdSetIndexBuffer(GnCommandList command_list, GnBuffer index_buffer, GnDeviceSize offset, GnIndexFormat index_format)
 {
-    // Don't update if it's the same
-    if (index_buffer == command_list->state.index_buffer || offset == command_list->state.index_buffer_offset) return;
+    if (index_buffer == command_list->state.index_buffer && offset == command_list->state.index_buffer_offset) return;
     command_list->state.index_buffer = index_buffer;
     command_list->state.index_buffer_offset = offset;
     command_list->state.index_format = index_format;
@@ -1369,7 +1368,7 @@ void GnCmdDrawIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnD
 void GnCmdDrawIndexed(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, int32_t vertex_offset)
 {
     if (command_list->state.graphics_state_updated()) command_list->flush_gfx_state_fn(command_list);
-    command_list->draw_indexed_cmd_fn(command_list->cmd_private_data, num_indices, first_index, 1, vertex_offset, 0);
+    command_list->draw_indexed_cmd_fn(command_list->cmd_private_data, num_indices, 1, first_index, vertex_offset, 0);
 }
 
 void GnCmdDrawIndexedInstanced(GnCommandList command_list, uint32_t num_indices, uint32_t first_index, uint32_t num_instances, int32_t vertex_offset, uint32_t first_instance)

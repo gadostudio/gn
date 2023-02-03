@@ -1,0 +1,2 @@
+gn_add_graphics_example(gn_example_index_buffer index_buffer.cpp)
+gn_add_shader_example(TARGET gn_example_index_buffer GLSL_VERTEX shader.vert GLSL_FRAGMENT shader.frag)

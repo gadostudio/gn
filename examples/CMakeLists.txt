@@ -61,6 +61,8 @@ function(gn_add_shader_example)
 endfunction()
 
 add_subdirectory("basic/hello_world")
+add_subdirectory("basic/index_buffer")
+add_subdirectory("basic/staging_buffer")
 add_subdirectory("basic/triangle")
 add_subdirectory("basic/vertex_buffer")
 add_subdirectory("compute_basic/hello_compute")

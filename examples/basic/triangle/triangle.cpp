@@ -1,11 +1,5 @@
 #include "../../example_lib.h"
 
-struct VertexAttrib
-{
-    float x, y;
-    float r, g, b, a;
-};
-
 struct FrameData
 {
     GnTexture swapchain_texture;
@@ -35,8 +29,8 @@ struct Triangle : public GnExampleApp
 
     void OnStart() override
     {
-        auto vertex_shader = GnLoadSPIRV("triangle.vert.spv");
-        auto fragment_shader = GnLoadSPIRV("triangle.frag.spv");
+        auto vertex_shader = GnLoadSPIRV("shader.vert.spv");
+        auto fragment_shader = GnLoadSPIRV("shader.frag.spv");
 
         GnShaderBytecode vs_bytecode{};
         vs_bytecode.size                            = vertex_shader->size();
@@ -222,4 +216,4 @@ struct Triangle : public GnExampleApp
         GnEnqueueCommandLists(queue, 1, &current_frame.command_list);
         GnFlushQueue(queue, current_frame.fence);
     }
-} hello_triangle;
+} triangle;

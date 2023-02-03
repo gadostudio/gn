@@ -4579,7 +4579,7 @@ GN_SAFEBUFFERS void GnFlushResourceBindingVK(GnCommandListVK*       impl_cmd_lis
     }
 }
 
-GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcept
+GN_SAFEBUFFERS void GnFlushGraphicsStateVK(GnCommandList command_list) noexcept
 {
     GnCommandListVK* impl_cmd_list = GN_TO_VULKAN(GnCommandList, command_list);
     VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->cmd_private_data;
@@ -4677,7 +4677,7 @@ GN_SAFEBUFFERS void GnGraphicsStateFlusherVK(GnCommandList command_list) noexcep
     state.update_flags.u32 = 0; // Reset update flags
 };
 
-GN_SAFEBUFFERS void GnComputeStateFlusherVK(GnCommandList command_list) noexcept
+GN_SAFEBUFFERS void GnFlushComputeStateVK(GnCommandList command_list) noexcept
 {
     GnCommandListVK* impl_cmd_list = (GnCommandListVK*)command_list;
     VkCommandBuffer cmd_buf = (VkCommandBuffer)impl_cmd_list->cmd_private_data;
@@ -4722,13 +4722,13 @@ GnCommandListVK::GnCommandListVK(GnCommandPoolVK* parent_cmd_pool) noexcept :
     cmd_set_scissor = fn.vkCmdSetScissor;
     cmd_set_stencil_reference = fn.vkCmdSetStencilReference;
     cmd_set_blend_constants = fn.vkCmdSetBlendConstants;
+
+    // Called in draw/dispatch calls.
+    flush_gfx_state_fn = &GnFlushGraphicsStateVK;
+    flush_compute_state_fn = &GnFlushComputeStateVK;
     draw_cmd_fn = (GnDrawCmdFn)fn.vkCmdDraw;
     draw_indexed_cmd_fn = (GnDrawIndexedCmdFn)fn.vkCmdDrawIndexed;
     dispatch_cmd_fn = (GnDispatchCmdFn)fn.vkCmdDispatch;
-
-    // Called in draw/dispatch calls.
-    flush_gfx_state_fn = GnGraphicsStateFlusherVK;
-    flush_compute_state_fn = GnComputeStateFlusherVK;
 }
 
 GnCommandListVK::~GnCommandListVK()
