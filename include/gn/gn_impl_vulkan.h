@@ -4454,10 +4454,16 @@ GnDescriptorStreamChunkVK* GnDescriptorStreamVK::CreateChunk(uint32_t max_descri
 void GnDescriptorStreamVK::Reset() noexcept
 {
     GnDescriptorStreamChunkVK* chunk = first_chunk;
-    
+    if (!chunk) return; // early exit
+
+    auto reset_descriptor_pool = impl_device->fn.vkResetDescriptorPool;
+
     // Reset all descriptor pool allocations
     while (chunk) {
-
+        reset_descriptor_pool(impl_device->device, chunk->descriptor_pool, 0);
+        chunk->num_descriptor_sets = 0;
+        chunk->num_storage_buffers = 0;
+        chunk->num_uniform_buffers = 0;
         chunk = chunk->next;
     }
 
