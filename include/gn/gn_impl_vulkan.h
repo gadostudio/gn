@@ -138,6 +138,7 @@ struct GnVulkanDeviceFunctions
     PFN_vkCmdDraw vkCmdDraw;
     PFN_vkCmdDrawIndexed vkCmdDrawIndexed;
     PFN_vkCmdDispatch vkCmdDispatch;
+    PFN_vkCmdCopyBuffer vkCmdCopyBuffer;
     PFN_vkCmdCopyImage vkCmdCopyImage;
     PFN_vkCmdBlitImage vkCmdBlitImage;
     PFN_vkCmdClearColorImage vkCmdClearColorImage;
@@ -462,6 +463,7 @@ struct GnCommandListVK : public GnCommandList_t
     void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept override;
     void EndRenderPass() noexcept override;
     void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept override;
+    void CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size) noexcept override;
     GnResult End() noexcept override;
 };
 
@@ -1278,6 +1280,7 @@ bool GnVulkanFunctionDispatcher::LoadDeviceFunctions(VkInstance instance, VkDevi
     GN_LOAD_DEVICE_FN(vkCmdDraw);
     GN_LOAD_DEVICE_FN(vkCmdDrawIndexed);
     GN_LOAD_DEVICE_FN(vkCmdDispatch);
+    GN_LOAD_DEVICE_FN(vkCmdCopyBuffer);
     GN_LOAD_DEVICE_FN(vkCmdCopyImage);
     GN_LOAD_DEVICE_FN(vkCmdBlitImage);
     GN_LOAD_DEVICE_FN(vkCmdClearColorImage);
@@ -3540,6 +3543,9 @@ GnResult GnDeviceVK::MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_rang
     if (impl_memory == nullptr)
         return GnError_MemoryMapFailed;
 
+    if (!impl_memory->IsHostVisible())
+        return GnError_MemoryMapFailed;
+
     std::scoped_lock lock(impl_memory->mapping_lock);
 
     if (impl_memory->mapped_address == nullptr) {
@@ -3580,6 +3586,9 @@ void GnDeviceVK::UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range)
     if (impl_memory == nullptr)
         return;
 
+    if (!impl_memory->IsHostVisible())
+        return;
+
     std::scoped_lock lock(impl_memory->mapping_lock);
 
     // Non-host-coherent memory needs to be flushed manually.
@@ -3603,6 +3612,9 @@ GnResult GnDeviceVK::WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memo
     GnMemoryVK* impl_memory = impl_buffer->memory;
 
     if (impl_memory == nullptr)
+        return GnError_MemoryMapFailed;
+
+    if (!impl_memory->IsHostVisible())
         return GnError_MemoryMapFailed;
 
     std::scoped_lock lock(impl_memory->mapping_lock);
@@ -4920,6 +4932,19 @@ void GnCommandListVK::Barrier(uint32_t                  num_buffer_barriers,
 
     pending_buffer_barriers.resize(0);
     pending_image_barriers.resize(0);
+}
+
+void GnCommandListVK::CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size) noexcept
+{
+    VkBufferCopy buffer_copy;
+    buffer_copy.srcOffset = src_offset;
+    buffer_copy.dstOffset = dst_offset;
+    buffer_copy.size = size;
+
+    fn.vkCmdCopyBuffer(static_cast<VkCommandBuffer>(cmd_private_data),
+                       GN_TO_VULKAN(GnBuffer, src_buffer)->buffer,
+                       GN_TO_VULKAN(GnBuffer, dst_buffer)->buffer,
+                       1, &buffer_copy);
 }
 
 GnResult GnCommandListVK::End() noexcept

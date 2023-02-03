@@ -131,6 +131,11 @@ struct GnMemory_t
     GnMemoryDesc            desc;
     GnMemoryAttributeFlags  memory_attribute;
 
+    inline bool IsHostVisible() const noexcept
+    {
+        return GnHasBit(memory_attribute, GnMemoryAttribute_HostVisible);
+    }
+
     inline bool IsAlwaysMapped() const noexcept
     {
         return GnHasBit(desc.flags, GnMemoryUsage_AlwaysMapped);
@@ -297,6 +302,8 @@ struct GnCommandList_t : public GnTrackedResource<GnCommandList_t>
                          const GnBufferBarrier* buffer_barriers,
                          uint32_t num_texture_barriers, 
                          const GnTextureBarrier* texture_barriers) noexcept = 0;
+
+    virtual void CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size) noexcept = 0;
 
     virtual GnResult End() noexcept = 0;
 };
@@ -1434,6 +1441,7 @@ void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer,
 
 void GnCmdCopyBuffer(GnCommandList command_list, GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size)
 {
+    command_list->CopyBuffer(src_buffer, src_offset, dst_buffer, dst_offset, size);
 }
 
 void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnTexture dst_texture)
