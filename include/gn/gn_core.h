@@ -247,6 +247,67 @@ struct GnPool
     }
 };
 
+template<typename T>
+struct GnStackHandle
+{
+
+};
+
+struct GnStackAllocator
+{
+    std::byte* first_ptr{};
+    std::byte* last_ptr{};
+    std::byte* end_ptr{};
+
+    ~GnStackAllocator()
+    {
+        if (first_ptr)
+            ::operator delete(first_ptr, std::nothrow);
+    }
+
+    inline void* allocate_raw(size_t size)
+    {
+        size_t last_alloc_size = alloc_size();
+        size_t new_size = last_alloc_size + size;
+
+        if (new_size > alloc_size()) {
+            void* mem = ::operator new(new_size, std::nothrow);
+            
+            if (!mem)
+                return nullptr;
+
+            first_ptr = (std::byte*)mem;
+            last_ptr = first_ptr + last_alloc_size;
+            end_ptr = first_ptr + new_size;
+        }
+
+        void* ret = last_ptr;
+        last_ptr += size;
+        return ret;
+    }
+
+    template<typename T, std::enable_if_t<std::is_trivial_v<T>, bool> = true>
+    inline void* allocate(size_t align)
+    {
+        return allocate_raw(sizeof(T));
+    }
+
+    inline void free(size_t size)
+    {
+        last_ptr -= size;
+    }
+
+    inline void clear()
+    {
+        last_ptr = first_ptr;
+    }
+
+    inline size_t alloc_size()
+    {
+        return end_ptr - first_ptr;
+    }
+};
+
 template<typename T, std::enable_if_t<std::is_trivial_v<T>, bool> = true>
 struct GnVector
 {
@@ -482,7 +543,7 @@ struct GnSmallVector
     }
 };
 
-template<typename T, size_t Size, std::enable_if_t<std::is_pod_v<T>, bool> = true>
+template<typename T, size_t Size, std::enable_if_t<std::is_trivial_v<T>, bool> = true>
 struct GnSmallQueue
 {
     T local_storage[Size]{};
@@ -617,7 +678,8 @@ struct GnCacheTable<K, V, CacheKeyTrait<K>>
         }
     };
 
-    using HashMap = std::unordered_map<K, V, KeyFunctionWrapper, KeyFunctionWrapper>;// TODO: Implement hash map for the cache table
+    // TODO: Implement hash map for the cache table
+    using HashMap = std::unordered_map<K, V, KeyFunctionWrapper, KeyFunctionWrapper>;
 
     HashMap cache_table;
     mutable std::shared_mutex mutex;

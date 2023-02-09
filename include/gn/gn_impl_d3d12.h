@@ -26,6 +26,9 @@ struct GnCommandPoolD3D12;
 struct GnCommandListD3D12;
 
 #define GN_TO_D3D12(type, x) static_cast<type##D3D12*>(x)
+#define GN_D3D12_MEMORY_TYPE_MASK_BUFFER_OR_TIER_2 0b111
+#define GN_D3D12_MEMORY_TYPE_MASK_NON_RT_DS_TEXTURE 0b111000
+#define GN_D3D12_MEMORY_TYPE_MASK_RT_DS_TEXTURE 0b111000000
 
 typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY_1)(REFIID riid, _COM_Outptr_ void** ppFactory);
 
@@ -63,6 +66,7 @@ struct GnAdapterD3D12 : public GnAdapter_t
     IDXGIAdapter1*                      adapter = nullptr;
     D3D_FEATURE_LEVEL                   feature_level = D3D_FEATURE_LEVEL_11_0;
     D3D12_FEATURE_DATA_FORMAT_SUPPORT   fmt_support[GnFormat_Count];
+    D3D12_FEATURE_DATA_D3D12_OPTIONS    options{};
 
     GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D12Device* device) noexcept;
     ~GnAdapterD3D12();
@@ -102,18 +106,21 @@ struct GnMemoryD3D12 : public GnMemory_t
 struct GnBufferD3D12 : public GnBuffer_t
 {
     ID3D12Resource* buffer;
+    D3D12_RESOURCE_DESC resource_desc;
     D3D12_GPU_VIRTUAL_ADDRESS buffer_va;
 };
 
 struct GnTextureD3D12 : public GnTexture_t
 {
     ID3D12Resource* texture;
+    D3D12_RESOURCE_DESC resource_desc;
 };
 
 struct GnTextureViewD3D12 : public GnTextureView_t
 {
     D3D12_SHADER_RESOURCE_VIEW_DESC     srv_desc;
     D3D12_UNORDERED_ACCESS_VIEW_DESC    uav_desc;
+    ID3D12DescriptorHeap*               rtv_or_dsv_heap;
     bool                                non_sampled_view_compatible;
 };
 
@@ -125,6 +132,7 @@ struct GnPipelineLayoutD3D12 : public GnPipelineLayout_t
 struct GnPipelineD3D12 : public GnPipeline_t
 {
     ID3D12PipelineState* pipeline_state;
+    D3D12_PRIMITIVE_TOPOLOGY primitive_topology;
 };
 
 struct GnCommandPoolD3D12 : public GnCommandPool_t
@@ -151,9 +159,23 @@ struct GnCommandListD3D12 : public GnCommandList_t
     GnCommandListD3D12(GnQueueType queue_type, ID3D12GraphicsCommandList* cmd_list) noexcept;
 
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
+    
     void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept override;
+    
     void EndRenderPass() noexcept override;
+
     void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept override;
+
+    void CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size) noexcept override;
+
+    void CopyTexture(GnTexture src_texture,
+                     GnOffset3 src_offset,
+                     GnResourceAccessFlags src_texture_access,
+                     GnTexture dst_texture,
+                     GnOffset3 dst_offset,
+                     GnResourceAccessFlags dst_texture_access,
+                     GnExtent3 extent) noexcept override;
+
     GnResult End() noexcept override;
 };
 
@@ -175,6 +197,11 @@ struct GnObjectTypesD3D12
     using CommandList           = GnCommandListD3D12;
 };
 
+struct GnStagingDescriptorHeapD3D12
+{
+    
+};
+
 struct GnDeviceD3D12 : public GnDevice_t
 {
     ID3D12Device*                       device = nullptr;
@@ -186,7 +213,10 @@ struct GnDeviceD3D12 : public GnDevice_t
     uint32_t                            sampler_descriptor_size;
     uint32_t                            render_target_descriptor_size;
     uint32_t                            depth_stencil_target_descriptor_size;
+    D3D12_RESOURCE_HEAP_TIER            resource_heap_tier;
     GnObjectPool<GnObjectTypesD3D12>    pool;
+    GnStagingDescriptorHeapD3D12        srv_and_uav_staging_descriptor_heap{};
+    GnStagingDescriptorHeapD3D12        rtv_or_dsv_staging_descriptor_heap{};
 
     virtual ~GnDeviceD3D12();
     GnResult CreateSwapchain(const GnSwapchainDesc* desc, GnSwapchain* swapchain) noexcept override;
@@ -269,37 +299,48 @@ inline static DXGI_FORMAT GnConvertToDxgiFormat(GnFormat format) noexcept
         case GnFormat_RGBA32Uint:   return DXGI_FORMAT_R32G32B32A32_UINT;
         case GnFormat_RGBA32Sint:   return DXGI_FORMAT_R32G32B32A32_SINT;
         case GnFormat_RGBA32Float:  return DXGI_FORMAT_R32G32B32A32_FLOAT;
-        default:                    GN_UNREACHABLE();
+        default:                    break;
     }
 
     return DXGI_FORMAT_UNKNOWN;
 }
 
-inline D3D12_COMMAND_LIST_TYPE GnConvertToD3D12CommandListType(uint32_t queue_index)
+inline uint32_t GnGetMemoryTypeMaskD3D12(GnTextureUsageFlags usage, D3D12_RESOURCE_HEAP_TIER tier)
 {
-    switch (queue_index) {
-        case 0:     return D3D12_COMMAND_LIST_TYPE_DIRECT;
-        case 1:     return D3D12_COMMAND_LIST_TYPE_COMPUTE;
-        case 2:     return D3D12_COMMAND_LIST_TYPE_COPY;
-        default:    GN_UNREACHABLE();
-    }
-
-    return D3D12_COMMAND_LIST_TYPE_DIRECT;
-}
-
-inline D3D12_ROOT_PARAMETER_TYPE GnConvertToD3D12RootParameterType(GnResourceType type, bool read_only)
-{
-    switch (type) {
-        case GnResourceType_UniformBuffer:
-            return D3D12_ROOT_PARAMETER_TYPE_CBV;
-        case GnResourceType_StorageBuffer:
-            return read_only ? D3D12_ROOT_PARAMETER_TYPE_SRV : D3D12_ROOT_PARAMETER_TYPE_UAV;
+    switch (tier) {
+        case D3D12_RESOURCE_HEAP_TIER_1:
+            return GnHasBit(usage, GnTextureUsage_ColorTarget, GnTextureUsage_DepthStencilTarget) ?
+                GN_D3D12_MEMORY_TYPE_MASK_RT_DS_TEXTURE :
+                GN_D3D12_MEMORY_TYPE_MASK_NON_RT_DS_TEXTURE;
+        case D3D12_RESOURCE_HEAP_TIER_2:
+            return GN_D3D12_MEMORY_TYPE_MASK_BUFFER_OR_TIER_2;
         default:
             GN_UNREACHABLE();
-            break;
     }
 
-    return D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    return {};
+}
+
+inline D3D12_RESOURCE_FLAGS GnConvertToD3D12BufferResourceFlags(GnBufferUsageFlags usage)
+{
+    D3D12_RESOURCE_FLAGS ret = D3D12_RESOURCE_FLAG_NONE;
+
+    if (!GnHasBit(usage, GnBufferUsage_StorageReadOnly)) ret |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    if (GnHasBit(usage, GnBufferUsage_Storage)) ret |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    return ret;
+}
+
+inline D3D12_RESOURCE_FLAGS GnConvertToD3D12TextureResourceFlags(GnTextureUsageFlags usage)
+{
+    D3D12_RESOURCE_FLAGS ret = D3D12_RESOURCE_FLAG_NONE;
+
+    if (!GnHasBit(usage, GnTextureUsage_Sampled)) ret |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    if (GnHasBit(usage, GnTextureUsage_Storage)) ret |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (GnHasBit(usage, GnTextureUsage_ColorTarget)) ret |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if (GnHasBit(usage, GnTextureUsage_DepthStencilTarget)) ret |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    return ret;
 }
 
 inline UINT GnConvertToD3D12ComponentMapping(GnComponentSwizzle swizzle, D3D12_SHADER_COMPONENT_MAPPING identity)
@@ -316,6 +357,114 @@ inline UINT GnConvertToD3D12ComponentMapping(GnComponentSwizzle swizzle, D3D12_S
 
     return identity;
 };
+
+
+inline D3D12_BLEND GnConvertToD3D12Blend(GnBlendFactor blend_factor)
+{
+    switch (blend_factor) {
+        case GnBlendFactor_Zero:                return D3D12_BLEND_ZERO;
+        case GnBlendFactor_One:                 return D3D12_BLEND_ONE;
+        case GnBlendFactor_SrcColor:            return D3D12_BLEND_SRC_COLOR;
+        case GnBlendFactor_InvSrcColor:         return D3D12_BLEND_INV_SRC_COLOR;
+        case GnBlendFactor_DstColor:            return D3D12_BLEND_DEST_COLOR;
+        case GnBlendFactor_InvDstColor:         return D3D12_BLEND_INV_DEST_COLOR;
+        case GnBlendFactor_SrcAlpha:            return D3D12_BLEND_SRC_ALPHA;
+        case GnBlendFactor_InvSrcAlpha:         return D3D12_BLEND_INV_SRC_ALPHA;
+        case GnBlendFactor_DstAlpha:            return D3D12_BLEND_DEST_ALPHA;
+        case GnBlendFactor_InvDstAlpha:         return D3D12_BLEND_INV_DEST_ALPHA;
+        case GnBlendFactor_SrcAlphaSaturate:    return D3D12_BLEND_SRC_ALPHA_SAT;
+        case GnBlendFactor_BlendConstant:       return D3D12_BLEND_BLEND_FACTOR;
+        case GnBlendFactor_InvBlendConstant:    return D3D12_BLEND_INV_BLEND_FACTOR;
+        default:                                GN_UNREACHABLE();
+    }
+
+    return {};
+}
+
+inline D3D12_BLEND_OP GnConvertToD3D12BlendOp(GnBlendOp blend_op)
+{
+    switch (blend_op) {
+        case GnBlendOp_Add:         return D3D12_BLEND_OP_ADD;
+        case GnBlendOp_Subtract:    return D3D12_BLEND_OP_SUBTRACT;
+        case GnBlendOp_RevSubtract: return D3D12_BLEND_OP_REV_SUBTRACT;
+        case GnBlendOp_Max:         return D3D12_BLEND_OP_MAX;
+        case GnBlendOp_Min:         return D3D12_BLEND_OP_MIN;
+        default:                    GN_UNREACHABLE();
+    }
+
+    return {};
+}
+
+inline D3D12_COMPARISON_FUNC GnConvertToD3D12ComparisonFunc(GnCompareOp compare_op)
+{
+    switch (compare_op) {
+        case GnCompareOp_Never:             return D3D12_COMPARISON_FUNC_NEVER;
+        case GnCompareOp_Equal:             return D3D12_COMPARISON_FUNC_EQUAL;
+        case GnCompareOp_NotEqual:          return D3D12_COMPARISON_FUNC_NOT_EQUAL;
+        case GnCompareOp_Less:              return D3D12_COMPARISON_FUNC_LESS;
+        case GnCompareOp_LessOrEqual:       return D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        case GnCompareOp_Greater:           return D3D12_COMPARISON_FUNC_GREATER;
+        case GnCompareOp_GreaterOrEqual:    return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+        case GnCompareOp_Always:            return D3D12_COMPARISON_FUNC_ALWAYS;
+        default:                            GN_UNREACHABLE();
+    }
+
+    return {};
+}
+
+inline D3D12_STENCIL_OP GnConvertToD3D12StencilOp(GnStencilOp stencil_op)
+{
+    switch (stencil_op) {
+        case GnStencilOp_Keep:              return D3D12_STENCIL_OP_KEEP;
+        case GnStencilOp_Zero:              return D3D12_STENCIL_OP_ZERO;
+        case GnStencilOp_Replace:           return D3D12_STENCIL_OP_REPLACE;
+        case GnStencilOp_IncrementClamp:    return D3D12_STENCIL_OP_INCR_SAT;
+        case GnStencilOp_DecrementClamp:    return D3D12_STENCIL_OP_DECR_SAT;
+        case GnStencilOp_Invert:            return D3D12_STENCIL_OP_INVERT;
+        case GnStencilOp_Increment:         return D3D12_STENCIL_OP_INCR;
+        case GnStencilOp_Decrement:         return D3D12_STENCIL_OP_DECR;
+        default:                            GN_UNREACHABLE();
+    }
+
+    return {};
+}
+
+inline D3D12_INDEX_BUFFER_STRIP_CUT_VALUE GnConvertToD3D12PrimitiveRestart(GnPrimitiveRestart restart)
+{
+    switch (restart) {
+        case GnPrimitiveRestart_Disable:    return D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+        case GnPrimitiveRestart_Uint16Max:  return D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF;
+        case GnPrimitiveRestart_Uint32Max:  return D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;
+    }
+
+    return {};
+}
+
+inline D3D12_COMMAND_LIST_TYPE GnConvertToD3D12CommandListType(uint32_t queue_index)
+{
+    switch (queue_index) {
+        case 0:     return D3D12_COMMAND_LIST_TYPE_DIRECT;
+        case 1:     return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        case 2:     return D3D12_COMMAND_LIST_TYPE_COPY;
+        default:    GN_UNREACHABLE();
+    }
+
+    return {};
+}
+
+inline D3D12_ROOT_PARAMETER_TYPE GnConvertToD3D12RootParameterType(GnResourceType type, bool read_only)
+{
+    switch (type) {
+        case GnResourceType_UniformBuffer:
+            return D3D12_ROOT_PARAMETER_TYPE_CBV;
+        case GnResourceType_StorageBuffer:
+            return read_only ? D3D12_ROOT_PARAMETER_TYPE_SRV : D3D12_ROOT_PARAMETER_TYPE_UAV;
+        default:
+            GN_UNREACHABLE();
+    }
+
+    return {};
+}
 
 inline D3D12_RESOURCE_STATES GnConvertToD3D12ResourceStates(GnResourceAccessFlags access)
 {
@@ -570,7 +719,6 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         cache_coherent_uma = architecture.CacheCoherentUMA;
     }
 
-    D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
     device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
 
     static const D3D_FEATURE_LEVEL feature_levels[] = {
@@ -654,7 +802,7 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support[format], sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT));
     }
 
-    // Since we can't get the number of queues in D3D12, we have to assume most GPUs supports multiple queues.
+    // Since we can't get the number of queues in D3D12, we have to assume all GPUs supports multiple queues.
     num_queue_groups = 3;
 
     // Check if timestamps can be queried on copy queue
@@ -679,30 +827,56 @@ GnAdapterD3D12::GnAdapterD3D12(GnInstance instance, IDXGIAdapter1* adapter, ID3D
         }
     }
 
-    memory_properties.memory_pools[0].type = GnMemoryPoolType_Device;
-    memory_properties.memory_pools[1].type = GnMemoryPoolType_Host;
+    memory_properties.memory_pools[0].type = GnMemoryPoolType_Host;
+    memory_properties.memory_pools[1].type = GnMemoryPoolType_Device;
 
     D3D12_HEAP_PROPERTIES default_heap_properties = device->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_DEFAULT);
-    GnMemoryType& device_memory_type = memory_properties.memory_types[0];
-    device_memory_type.pool_index = 0;
+    if (options.ResourceHeapTier == D3D12_RESOURCE_HEAP_TIER_2) {
+        memory_properties.memory_types[0].pool_index = 0;
+        memory_properties.memory_types[0].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent;
+        memory_properties.memory_types[1].pool_index = 0;
+        memory_properties.memory_types[1].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent | GnMemoryAttribute_HostCached;
 
-    switch (default_heap_properties.MemoryPoolPreference) {
-        case D3D12_MEMORY_POOL_L0:
-            device_memory_type.attribute = GnMemoryAttribute_DeviceLocal | GnMemoryAttribute_HostVisible;
-            if (cache_coherent_uma)
-                device_memory_type.attribute |= GnMemoryAttribute_HostCoherent;
-            break;
-        case D3D12_MEMORY_POOL_L1:
-            device_memory_type.attribute = GnMemoryAttribute_DeviceLocal;
-            break;
-        default:
-            break;
+        GnMemoryType& device_memory_type = memory_properties.memory_types[2];
+        device_memory_type.pool_index = 1;
+
+        switch (default_heap_properties.MemoryPoolPreference) {
+            case D3D12_MEMORY_POOL_L0:
+                device_memory_type.attribute = GnMemoryAttribute_DeviceLocal | GnMemoryAttribute_HostVisible;
+                if (cache_coherent_uma)
+                    device_memory_type.attribute |= GnMemoryAttribute_HostCoherent;
+                break;
+            case D3D12_MEMORY_POOL_L1:
+                device_memory_type.attribute = GnMemoryAttribute_DeviceLocal;
+                break;
+            default:
+                break;
+        }
     }
+    // In case of device with resource heap tier 1, we need to separate each memory type into three categories for buffers and textures.
+    else {
+        for (uint32_t i = 0; i < 3; i++) {
+            GnMemoryType* memory_types = &memory_properties.memory_types[i * 3];
+            memory_types[0].pool_index = 0;
+            memory_types[0].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent;
+            memory_types[1].pool_index = 0;
+            memory_types[1].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent | GnMemoryAttribute_HostCached;
 
-    memory_properties.memory_types[1].pool_index = 1;
-    memory_properties.memory_types[1].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent;
-    memory_properties.memory_types[2].pool_index = 1;
-    memory_properties.memory_types[2].attribute = GnMemoryAttribute_HostVisible | GnMemoryAttribute_HostCoherent | GnMemoryAttribute_HostCached;
+            memory_types[2].pool_index = 1;
+            switch (default_heap_properties.MemoryPoolPreference) {
+                case D3D12_MEMORY_POOL_L0:
+                    memory_types[2].attribute = GnMemoryAttribute_DeviceLocal | GnMemoryAttribute_HostVisible;
+                    if (cache_coherent_uma)
+                        memory_types[2].attribute |= GnMemoryAttribute_HostCoherent;
+                    break;
+                case D3D12_MEMORY_POOL_L1:
+                    memory_types[2].attribute = GnMemoryAttribute_DeviceLocal;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
 }
 
 GnAdapterD3D12::~GnAdapterD3D12()
@@ -720,8 +894,8 @@ GnTextureFormatFeatureFlags GnAdapterD3D12::GetTextureFormatFeatureSupport(GnFor
     GnTextureFormatFeatureFlags ret = GnTextureFormatFeature_CopySrc | GnTextureFormatFeature_CopyDst | GnTextureFormatFeature_BlitSrc | GnTextureFormatFeature_Sampled;
     if (GnContainsBit(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD)) ret |= GnTextureFormatFeature_StorageRead;
     if (GnContainsBit(fmt.Support2, D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) ret |= GnTextureFormatFeature_StorageWrite;
-    if (GnContainsBit(fmt.Support1, D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) ret |= GnTextureFormatFeature_ColorAttachment | GnTextureFormatFeature_BlitDst;
-    if (GnContainsBit(fmt.Support1, D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
+    if (GnContainsBit(fmt.Support1, D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) ret |= GnTextureFormatFeature_ColorTarget | GnTextureFormatFeature_BlitDst;
+    if (GnContainsBit(fmt.Support1, D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)) ret |= GnTextureFormatFeature_DepthStencilTarget;
 
     /*
         https://docs.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1
@@ -885,6 +1059,7 @@ GnResult GnAdapterD3D12::CreateDevice(const GnDeviceDesc* desc, GnDevice* device
     new_device->sampler_descriptor_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
     new_device->render_target_descriptor_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     new_device->depth_stencil_target_descriptor_size = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    new_device->resource_heap_tier = options.ResourceHeapTier;
 
     *device = new_device;
 
@@ -919,26 +1094,263 @@ GnResult GnDeviceD3D12::CreateFence(GnBool signaled, GnFence* fence) noexcept
 
 GnResult GnDeviceD3D12::CreateMemory(const GnMemoryDesc* desc, GnMemory* memory) noexcept
 {
+    uint32_t heap_type_group = desc->memory_type_index % 3;
+    D3D12_HEAP_TYPE heap_type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES; // resource heap tier 2 can have both buffer and memory in one heap
+    UINT64 alignment = 0;
+
+    if (GnHasBit(desc->flags, GnMemoryUsage_MultisampledResourcePlacement))
+        alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+
+    switch (heap_type_group) {
+        case 0:     heap_type = D3D12_HEAP_TYPE_UPLOAD; break;
+        case 1:     heap_type = D3D12_HEAP_TYPE_READBACK; break;
+        case 2:     heap_type = D3D12_HEAP_TYPE_DEFAULT; break;
+        default:    return GnError_InvalidArgs;
+    }
+
+    // Specialization for device with resource heap tier 1
+    if (resource_heap_tier == D3D12_RESOURCE_HEAP_TIER_1) {
+        uint32_t heap_flags_group = desc->memory_type_index / 3;
+        switch (heap_flags_group) {
+            case 0:     heap_flags |= D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS; break;
+            case 1:     heap_flags |= D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES; break;
+            case 2:     heap_flags |= D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES; break;
+            default:    return GnError_InvalidArgs;
+        }
+    }
+
     D3D12_HEAP_DESC heap_desc;
     heap_desc.SizeInBytes = desc->size;
-    heap_desc.Properties = {};
+    heap_desc.Properties = device->GetCustomHeapProperties(0, heap_type);
+    heap_desc.Alignment = alignment;
+    heap_desc.Flags = heap_flags;
+
+    ID3D12Heap* heap;
+    if (FAILED(device->CreateHeap(&heap_desc, IID_PPV_ARGS(&heap))))
+        return GnError_InternalError;
+
+    if (!pool.memory)
+        pool.memory.emplace(128);
+
+    GnMemoryD3D12* impl_memory = (GnMemoryD3D12*)pool.memory->allocate();
+
+    if (!impl_memory) {
+        GnSafeComRelease(heap);
+        return GnError_OutOfHostMemory;
+    }
+
+    impl_memory->desc = *desc;
+    impl_memory->heap = heap;
+    impl_memory->memory_attribute = parent_adapter->memory_properties.memory_types[desc->memory_type_index].attribute;
+
     return GnError_Unimplemented;
 }
 
 GnResult GnDeviceD3D12::CreateBuffer(const GnBufferDesc* desc, GnBuffer* buffer) noexcept
 {
-    return GnError_Unimplemented;
+    if (!pool.buffer)
+        pool.buffer.emplace(128);
+
+    GnBufferD3D12* impl_buffer = (GnBufferD3D12*)pool.buffer->allocate();
+
+    if (!impl_buffer)
+        return GnError_OutOfHostMemory;
+
+    impl_buffer->desc = *desc;
+    impl_buffer->buffer = nullptr;
+
+    D3D12_RESOURCE_DESC& resource_desc = impl_buffer->resource_desc;
+    resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resource_desc.Alignment = 0;
+    resource_desc.Width = desc->size;
+    resource_desc.Height = 1;
+    resource_desc.DepthOrArraySize = 1;
+    resource_desc.MipLevels = 1;
+    resource_desc.Format = DXGI_FORMAT_UNKNOWN;
+    resource_desc.SampleDesc.Count = 1;
+    resource_desc.SampleDesc.Quality = 0;
+    resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resource_desc.Flags = GnConvertToD3D12BufferResourceFlags(desc->usage);
+
+    D3D12_RESOURCE_ALLOCATION_INFO alloc_info = device->GetResourceAllocationInfo(0, 1, &resource_desc);
+    impl_buffer->memory_requirements.alignment = alloc_info.Alignment;
+    impl_buffer->memory_requirements.size = alloc_info.SizeInBytes;
+    impl_buffer->memory_requirements.supported_memory_type_bits = GN_D3D12_MEMORY_TYPE_MASK_BUFFER_OR_TIER_2;
+
+    *buffer = impl_buffer;
+
+    return GnSuccess;
 }
 
 GnResult GnDeviceD3D12::CreateTexture(const GnTextureDesc* desc, GnTexture* texture) noexcept
 {
+    if (!pool.texture)
+        pool.texture.emplace(128);
+
+    GnTextureD3D12* impl_texture = (GnTextureD3D12*)pool.buffer->allocate();
+
+    if (!impl_texture)
+        return GnError_OutOfHostMemory;
+
+    impl_texture->desc = *desc;
+    impl_texture->swapchain_owned = false;
+    impl_texture->texture = nullptr;
+
+    D3D12_RESOURCE_DESC& resource_desc = impl_texture->resource_desc;
+    resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resource_desc.Alignment = 0;
+    resource_desc.Width = desc->width;
+    resource_desc.Height = desc->height;
+    resource_desc.DepthOrArraySize = desc->type == GnTextureType_3D ? desc->depth : desc->array_layers;
+    resource_desc.MipLevels = desc->mip_levels;
+    resource_desc.Format = GnConvertToDxgiFormat(desc->format);
+    resource_desc.SampleDesc.Count = desc->samples;
+    resource_desc.SampleDesc.Quality = 0;
+    resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resource_desc.Flags = GnConvertToD3D12BufferResourceFlags(desc->usage);
+
+    D3D12_RESOURCE_ALLOCATION_INFO alloc_info = device->GetResourceAllocationInfo(0, 1, &resource_desc);
+    impl_texture->memory_requirements.alignment = alloc_info.Alignment;
+    impl_texture->memory_requirements.size = alloc_info.SizeInBytes;
+    impl_texture->memory_requirements.supported_memory_type_bits = GnGetMemoryTypeMaskD3D12(desc->usage, resource_heap_tier);
+
+    *texture = impl_texture;
+
     return GnError_Unimplemented;
 }
 
 GnResult GnDeviceD3D12::CreateTextureView(const GnTextureViewDesc* desc, GnTextureView* texture_view) noexcept
 {
     const GnTextureDesc& texture_desc = desc->texture->desc;
+    const GnTextureSubresourceRange& subrange = desc->subresource_range;
     bool is_multisample_texture = texture_desc.samples != GnSampleCount_X1;
+    bool is_depth_stencil_target = GnHasBit(texture_desc.usage, GnTextureUsage_DepthStencilTarget);
+    bool is_render_target = is_depth_stencil_target || GnHasBit(texture_desc.usage, GnTextureUsage_ColorTarget);
+    DXGI_FORMAT format = GnConvertToDxgiFormat(desc->format);
+    ID3D12DescriptorHeap* rtv_or_dsv_heap;
+
+    if (is_render_target) {
+        D3D12_DESCRIPTOR_HEAP_DESC descriptor_heap_desc;
+        descriptor_heap_desc.Type = is_depth_stencil_target ? D3D12_DESCRIPTOR_HEAP_TYPE_DSV : D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        descriptor_heap_desc.NumDescriptors = 1;
+        descriptor_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        descriptor_heap_desc.NodeMask = 0;
+
+        if (FAILED(device->CreateDescriptorHeap(&descriptor_heap_desc, IID_PPV_ARGS(&rtv_or_dsv_heap))))
+            return GnError_InternalError;
+
+        if (is_depth_stencil_target) {
+            D3D12_RENDER_TARGET_VIEW_DESC rtv_desc;
+            rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+            rtv_desc.Format = format;
+        }
+    }
+
+    if (GnHasBit(texture_desc.usage, GnTextureUsage_Sampled)) {
+        UINT r_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.r, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0);
+        UINT g_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.g, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1);
+        UINT b_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.b, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2);
+        UINT a_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.a, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
+        srv_desc.Format = format;
+        srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(r_mapping, g_mapping, b_mapping, a_mapping);
+
+        switch (desc->type) {
+            case GnTextureViewType_1D:
+                srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+                srv_desc.Texture1D.MostDetailedMip = subrange.base_mip_level;
+                srv_desc.Texture1D.MipLevels = subrange.num_mip_levels;
+                srv_desc.Texture1D.ResourceMinLODClamp = 0.0f;
+                break;
+
+            case GnTextureViewType_2D:
+                if (is_multisample_texture)
+                    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                else {
+                    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srv_desc.Texture2D.MostDetailedMip = subrange.base_mip_level;
+                    srv_desc.Texture2D.MipLevels = subrange.num_mip_levels;
+                    srv_desc.Texture2D.PlaneSlice = 0;
+                    srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;   
+                }
+                break;
+
+            case GnTextureViewType_3D:
+                srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                srv_desc.Texture3D.MostDetailedMip = subrange.base_mip_level;
+                srv_desc.Texture3D.MipLevels = subrange.num_mip_levels;
+                srv_desc.Texture3D.ResourceMinLODClamp = 0.0f;
+                break;
+
+            case GnTextureViewType_Cube:
+                srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                srv_desc.TextureCube.MostDetailedMip = subrange.base_mip_level;
+                srv_desc.TextureCube.MipLevels = subrange.num_mip_levels;
+                srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
+                break;
+
+            case GnTextureViewType_Array2D:
+                if (is_multisample_texture)
+                    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                else {
+                    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                    srv_desc.Texture2DArray.MostDetailedMip = subrange.base_mip_level;
+                    srv_desc.Texture2DArray.MipLevels = subrange.num_mip_levels;
+                    srv_desc.Texture2DArray.FirstArraySlice = subrange.base_array_layer;
+                    srv_desc.Texture2DArray.ArraySize = subrange.num_array_layers;
+                    srv_desc.Texture2DArray.PlaneSlice = 0;
+                    srv_desc.Texture2DArray.ResourceMinLODClamp = 0.0f;
+                }
+                break;
+            
+            case GnTextureViewType_ArrayCube:
+                srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                srv_desc.TextureCubeArray.MostDetailedMip = subrange.base_mip_level;
+                srv_desc.TextureCubeArray.MipLevels = subrange.num_mip_levels;
+                srv_desc.TextureCubeArray.First2DArrayFace = subrange.base_array_layer;
+                srv_desc.TextureCubeArray.NumCubes = subrange.num_array_layers / 6;
+                srv_desc.TextureCubeArray.ResourceMinLODClamp = 0.0f;
+                break;
+        }
+    }
+
+    if (GnHasBit(texture_desc.usage, GnTextureUsage_Storage)) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
+        uav_desc.Format = format;
+
+        switch (desc->type) {
+            case GnTextureViewType_1D:
+                uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
+                uav_desc.Texture1D.MipSlice = subrange.base_mip_level;
+                break;
+
+            case GnTextureViewType_2D:
+                uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                uav_desc.Texture2D.MipSlice = subrange.base_mip_level;
+                uav_desc.Texture2D.PlaneSlice = 0;
+                break;
+
+            case GnTextureViewType_3D:
+                uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+                uav_desc.Texture3D.MipSlice = subrange.base_mip_level;
+                uav_desc.Texture3D.FirstWSlice = 0;
+                uav_desc.Texture3D.WSize = texture_desc.depth;
+                break;
+
+            case GnTextureViewType_Array2D:
+                uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                uav_desc.Texture2DArray.MipSlice = subrange.base_mip_level;
+                uav_desc.Texture2DArray.FirstArraySlice = subrange.base_array_layer;
+                uav_desc.Texture2DArray.ArraySize = subrange.num_array_layers;
+                uav_desc.Texture2DArray.PlaneSlice = 0;
+                break;
+
+            default:
+                GN_UNREACHABLE();
+        }
+    }
 
     if (!pool.texture_view)
         pool.texture_view.emplace(128);
@@ -948,57 +1360,7 @@ GnResult GnDeviceD3D12::CreateTextureView(const GnTextureViewDesc* desc, GnTextu
     if (view == nullptr)
         return GnError_OutOfHostMemory;
 
-    UINT r_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.r, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0);
-    UINT g_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.g, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1);
-    UINT b_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.b, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2);
-    UINT a_mapping = GnConvertToD3D12ComponentMapping(desc->mapping.a, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
-
-    view->non_sampled_view_compatible =
-        (r_mapping == D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_0) &&
-        (g_mapping == D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1) &&
-        (b_mapping == D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2) &&
-        (a_mapping == D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3);
-
-    view->srv_desc.Format = GnConvertToDxgiFormat(desc->format);
-    view->uav_desc.Format = view->srv_desc.Format;
-    view->srv_desc.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(r_mapping, g_mapping, b_mapping, a_mapping);
-    
-    switch (desc->type) {
-        case GnTextureViewType_1D:
-            view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-            view->uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
-            break;
-        case GnTextureViewType_2D:
-            if (is_multisample_texture) {
-                view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
-            }
-            else {
-                view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                view->uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            }
-            break;
-        case GnTextureViewType_3D:
-            view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-            view->uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-            break;
-        case GnTextureViewType_Cube:
-            view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-            break;
-        case GnTextureViewType_Array2D:
-            if (is_multisample_texture) {
-                view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
-            }
-            else {
-                view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-                view->uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-            }
-            break;
-        case GnTextureViewType_ArrayCube:
-            view->srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
-            break;
-        default:
-            GN_DBG_ASSERT(false && "Unreachable");
-    }
+    view->rtv_or_dsv_heap = is_render_target ? rtv_or_dsv_heap : nullptr;
 
     return GnError_Unimplemented;
 }
@@ -1016,11 +1378,11 @@ GnResult GnDeviceD3D12::CreateDescriptorTableLayout(const GnDescriptorTableLayou
 GnResult GnDeviceD3D12::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPipelineLayout* pipeline_layout) noexcept
 {
     GN_DBG_ASSERT(desc->num_resources <= 8);
-    GN_DBG_ASSERT(desc->num_resource_tables <= 16);
+    GN_DBG_ASSERT(desc->num_descriptor_tables <= 16);
 
     GnSmallVector<D3D12_ROOT_PARAMETER, 32> root_parameters;
 
-    if (!root_parameters.resize((size_t)desc->num_resources + desc->num_resource_tables))
+    if (!root_parameters.resize((size_t)desc->num_resources + desc->num_descriptor_tables))
         return GnError_OutOfHostMemory;
 
     for (uint32_t i = 0; i < desc->num_resources; i++) {
@@ -1032,7 +1394,7 @@ GnResult GnDeviceD3D12::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, G
     }
 
     // Add resource table
-    for (uint32_t i = 0; i < desc->num_resource_tables; i++) {
+    for (uint32_t i = 0; i < desc->num_descriptor_tables; i++) {
         
     }
 
@@ -1053,13 +1415,42 @@ GnResult GnDeviceD3D12::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, G
 
 GnResult GnDeviceD3D12::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, GnPipeline* pipeline) noexcept
 {
+    if (!pool.pipeline)
+        pool.pipeline.emplace(128);
+
+    GnPipelineD3D12* impl_pipeline = (GnPipelineD3D12*)pool.pipeline->allocate();
+
+    if (!impl_pipeline)
+        return GnError_OutOfHostMemory;
+
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline_state_desc{};
     pipeline_state_desc.pRootSignature = GN_TO_D3D12(GnPipelineLayout, desc->layout)->root_signature;
     pipeline_state_desc.VS.pShaderBytecode = desc->vs->bytecode;
     pipeline_state_desc.VS.BytecodeLength = desc->vs->size;
     pipeline_state_desc.PS.pShaderBytecode = desc->fs->bytecode;
     pipeline_state_desc.PS.BytecodeLength = desc->fs->size;
+    pipeline_state_desc.SampleDesc.Count = desc->multisample->num_samples;
+    pipeline_state_desc.DSVFormat = GnConvertToDxgiFormat(desc->fragment_interface->depth_stencil_target_format);
+    pipeline_state_desc.NumRenderTargets = desc->fragment_interface->num_color_targets;
     pipeline_state_desc.BlendState.AlphaToCoverageEnable = desc->multisample->alpha_to_coverage;
+    pipeline_state_desc.BlendState.IndependentBlendEnable = desc->blend->independent_blend;
+
+    for (uint32_t i = 0; i < desc->fragment_interface->num_color_targets; i++) {
+        const GnColorTargetBlendStateDesc& target = desc->blend->blend_states[i];
+        D3D12_RENDER_TARGET_BLEND_DESC& render_target_blend = pipeline_state_desc.BlendState.RenderTarget[i];
+        render_target_blend.BlendEnable = target.blend_enable;
+        render_target_blend.LogicOpEnable = FALSE;
+        render_target_blend.SrcBlend = GnConvertToD3D12Blend(target.src_color_blend_factor);
+        render_target_blend.DestBlend = GnConvertToD3D12Blend(target.dst_color_blend_factor);
+        render_target_blend.BlendOp = GnConvertToD3D12BlendOp(target.color_blend_op);
+        render_target_blend.SrcBlendAlpha = GnConvertToD3D12Blend(target.src_alpha_blend_factor);
+        render_target_blend.DestBlendAlpha = GnConvertToD3D12Blend(target.dst_alpha_blend_factor);
+        render_target_blend.BlendOpAlpha = GnConvertToD3D12BlendOp(target.alpha_blend_op);
+        render_target_blend.LogicOp = D3D12_LOGIC_OP_COPY;
+        render_target_blend.RenderTargetWriteMask = target.color_write_mask;
+        pipeline_state_desc.RTVFormats[i] = GnConvertToDxgiFormat(desc->fragment_interface->color_target_formats[i]);
+    }
+
     pipeline_state_desc.SampleMask = desc->multisample->sample_mask;
     
     switch (desc->rasterization->cull_mode) {
@@ -1083,6 +1474,8 @@ GnResult GnDeviceD3D12::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* des
         case GnPolygonMode_Line:
             pipeline_state_desc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
             break;
+        case GnPolygonMode_Point:
+            return GnError_InvalidArgs;
         default:
             GN_UNREACHABLE();
     }
@@ -1092,25 +1485,125 @@ GnResult GnDeviceD3D12::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* des
     pipeline_state_desc.RasterizerState.DepthBiasClamp = desc->rasterization->depth_bias_clamp;
     pipeline_state_desc.RasterizerState.SlopeScaledDepthBias = desc->rasterization->depth_bias_slope_scale;
     pipeline_state_desc.RasterizerState.DepthClipEnable = !desc->rasterization->unclipped_depth;
-    pipeline_state_desc.NodeMask = 0;
-    
-    return GnResult();
+
+    pipeline_state_desc.DepthStencilState.DepthEnable = desc->depth_stencil->depth_test;
+    pipeline_state_desc.DepthStencilState.DepthWriteMask = desc->depth_stencil->depth_write ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+    pipeline_state_desc.DepthStencilState.DepthFunc = GnConvertToD3D12ComparisonFunc(desc->depth_stencil->depth_compare_op);
+    pipeline_state_desc.DepthStencilState.StencilEnable = desc->depth_stencil->stencil_test;
+    pipeline_state_desc.DepthStencilState.StencilReadMask = desc->depth_stencil->stencil_read_mask;
+    pipeline_state_desc.DepthStencilState.StencilWriteMask = desc->depth_stencil->stencil_write_mask;
+    pipeline_state_desc.DepthStencilState.FrontFace.StencilFailOp = GnConvertToD3D12StencilOp(desc->depth_stencil->front.fail_op);
+    pipeline_state_desc.DepthStencilState.FrontFace.StencilDepthFailOp = GnConvertToD3D12StencilOp(desc->depth_stencil->front.depth_fail_op);
+    pipeline_state_desc.DepthStencilState.FrontFace.StencilPassOp = GnConvertToD3D12StencilOp(desc->depth_stencil->front.pass_op);
+    pipeline_state_desc.DepthStencilState.FrontFace.StencilFunc = GnConvertToD3D12ComparisonFunc(desc->depth_stencil->front.compare_op);
+    pipeline_state_desc.DepthStencilState.BackFace.StencilFailOp = GnConvertToD3D12StencilOp(desc->depth_stencil->back.fail_op);
+    pipeline_state_desc.DepthStencilState.BackFace.StencilDepthFailOp = GnConvertToD3D12StencilOp(desc->depth_stencil->back.depth_fail_op);
+    pipeline_state_desc.DepthStencilState.BackFace.StencilPassOp = GnConvertToD3D12StencilOp(desc->depth_stencil->back.pass_op);
+    pipeline_state_desc.DepthStencilState.BackFace.StencilFunc = GnConvertToD3D12ComparisonFunc(desc->depth_stencil->back.compare_op);
+
+    GnSmallVector<D3D12_INPUT_ELEMENT_DESC, 32> input_elements;
+
+    if (!input_elements.resize(desc->vertex_input->num_attributes))
+        return GnError_OutOfHostMemory;
+
+    for (uint32_t i = 0; i < desc->vertex_input->num_attributes; i++) {
+        const GnVertexInputAttributeDesc& vertex_attribute = desc->vertex_input->attributes[i];
+        const GnVertexInputSlotDesc& input_slot = desc->vertex_input->input_slots[vertex_attribute.slot_binding];
+        D3D12_INPUT_ELEMENT_DESC& input_element = input_elements[i];
+        input_element.SemanticName = "TEXCOORD";
+        input_element.SemanticIndex = vertex_attribute.location;
+        input_element.Format = GnConvertToDxgiFormat(vertex_attribute.format);
+        input_element.InputSlot = vertex_attribute.slot_binding;
+        input_element.AlignedByteOffset = vertex_attribute.offset;
+
+        switch (input_slot.input_rate) {
+            case GnVertexInputRate_PerVertex:
+                input_element.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+                input_element.InstanceDataStepRate = 0;
+                break;
+            case GnVertexInputRate_PerInstance:
+                input_element.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
+                input_element.InstanceDataStepRate = 1;
+                break;
+            default:
+                GN_UNREACHABLE();
+        }
+    }
+
+    pipeline_state_desc.InputLayout.pInputElementDescs = input_elements.storage;
+    pipeline_state_desc.InputLayout.NumElements = desc->vertex_input->num_attributes;
+
+    switch (desc->input_assembly->topology) {
+        case GnPrimitiveTopology_PointList:
+            pipeline_state_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+            pipeline_state_desc.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+            break;
+        case GnPrimitiveTopology_LineList:
+        case GnPrimitiveTopology_LineListAdj:
+            pipeline_state_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+            pipeline_state_desc.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+        case GnPrimitiveTopology_LineStrip:
+        case GnPrimitiveTopology_LineStripAdj:
+            pipeline_state_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+            pipeline_state_desc.IBStripCutValue = GnConvertToD3D12PrimitiveRestart(desc->input_assembly->primitive_restart);
+            break;
+        case GnPrimitiveTopology_TriangleList:
+        case GnPrimitiveTopology_TriangleListAdj:
+            pipeline_state_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            pipeline_state_desc.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+            break;
+        case GnPrimitiveTopology_TriangleStrip:
+        case GnPrimitiveTopology_TriangleStripAdj:
+            pipeline_state_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            pipeline_state_desc.IBStripCutValue = GnConvertToD3D12PrimitiveRestart(desc->input_assembly->primitive_restart);
+            break;
+        default:
+            GN_UNREACHABLE();
+    }
+
+    ID3D12PipelineState* pipeline_state;
+    if (FAILED(device->CreateGraphicsPipelineState(&pipeline_state_desc, IID_PPV_ARGS(&pipeline_state)))) {
+        pool.pipeline->free(impl_pipeline);
+        return GnError_InternalError;
+    }
+
+    impl_pipeline->type = GnPipelineType_Compute;
+    impl_pipeline->num_viewports = 0;
+    impl_pipeline->pipeline_state = pipeline_state;
+
+    *pipeline = impl_pipeline;
+
+    return GnSuccess;
 }
 
 GnResult GnDeviceD3D12::CreateComputePipeline(const GnComputePipelineDesc* desc, GnPipeline* pipeline) noexcept
 {
+    if (!pool.pipeline)
+        pool.pipeline.emplace(128);
+
+    GnPipelineD3D12* impl_pipeline = (GnPipelineD3D12*)pool.pipeline->allocate();
+
+    if (!impl_pipeline)
+        return GnError_OutOfHostMemory;
+
     D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_state_desc{};
     pipeline_state_desc.pRootSignature = GN_TO_D3D12(GnPipelineLayout, desc->layout)->root_signature;
     pipeline_state_desc.CS.pShaderBytecode = desc->cs.bytecode;
     pipeline_state_desc.CS.BytecodeLength = desc->cs.size;
-    pipeline_state_desc.NodeMask = 0;
 
     ID3D12PipelineState* pipeline_state;
-
-    if (FAILED(device->CreateComputePipelineState(&pipeline_state_desc, IID_PPV_ARGS(&pipeline_state))))
+    if (FAILED(device->CreateComputePipelineState(&pipeline_state_desc, IID_PPV_ARGS(&pipeline_state)))) {
+        pool.pipeline->free(impl_pipeline);
         return GnError_InternalError;
+    }
 
-    return GnError_Unimplemented;
+    impl_pipeline->type = GnPipelineType_Compute;
+    impl_pipeline->num_viewports = 0;
+    impl_pipeline->pipeline_state = pipeline_state;
+
+    *pipeline = impl_pipeline;
+
+    return GnSuccess;
 }
 
 GnResult GnDeviceD3D12::CreateDescriptorPool(const GnDescriptorPoolDesc* desc, GnDescriptorPool* descriptor_pool) noexcept
@@ -1220,21 +1713,63 @@ void GnDeviceD3D12::DestroyCommandLists(GnCommandPool command_pool, uint32_t num
 
 void GnDeviceD3D12::GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept
 {
+    *memory_requirements = buffer->memory_requirements;
 }
 
 GnResult GnDeviceD3D12::BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept
 {
+    GnBufferD3D12* impl_buffer = GN_TO_D3D12(GnBuffer, buffer);
+
+    if (FAILED(device->CreatePlacedResource(GN_TO_D3D12(GnMemory, memory)->heap,
+                                            aligned_offset, &impl_buffer->resource_desc,
+                                            D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                            IID_PPV_ARGS(&impl_buffer->buffer))))
+    {
+        return GnError_InternalError;
+    }
+
     return GnError_Unimplemented;
 }
 
 GnResult GnDeviceD3D12::MapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range, void** mapped_memory) noexcept
 {
-    return GnError_Unimplemented;
+    GnBufferD3D12* impl_buffer = GN_TO_D3D12(GnBuffer, buffer);
+    D3D12_RANGE range;
+
+    if (!impl_buffer->buffer)
+        return GnError_MemoryMapFailed;
+
+    if (memory_range) {
+        range.Begin = memory_range->offset;
+        range.End = range.Begin + memory_range->size;
+    }
+    else {
+        range.Begin = 0;
+        range.End = impl_buffer->desc.size;
+    }
+    
+    impl_buffer->buffer->Map(0, &range, mapped_memory);
+    return GnSuccess;
 }
 
 void GnDeviceD3D12::UnmapBuffer(GnBuffer buffer, const GnMemoryRange* memory_range) noexcept
 {
+    GnBufferD3D12* impl_buffer = GN_TO_D3D12(GnBuffer, buffer);
+    D3D12_RANGE range;
 
+    if (!impl_buffer->buffer)
+        return;
+
+    if (memory_range) {
+        range.Begin = memory_range->offset;
+        range.End = range.Begin + memory_range->size;
+    }
+    else {
+        range.Begin = 0;
+        range.End = impl_buffer->desc.size;
+    }
+
+    impl_buffer->buffer->Unmap(0, &range);
 }
 
 GnResult GnDeviceD3D12::WriteBufferRange(GnBuffer buffer, const GnMemoryRange* memory_range, const void* data) noexcept
@@ -1290,94 +1825,104 @@ GnResult GnQueueD3D12::PresentSwapchain(GnSwapchain swapchain) noexcept
 }
 
 // -- [GnCommandListD3D12] --
+void GnFlushGraphicsStateD3D12(GnCommandList command_list)
+{
+    GnCommandListD3D12* impl_cmd_list = GN_TO_D3D12(GnCommandList, command_list);
+    ID3D12GraphicsCommandList* d3d12_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->cmd_private_data;
+    GnCommandListState& state = impl_cmd_list->state;
+
+    if (state.update_flags.graphics_pipeline || impl_cmd_list->current_pipeline_type != GnPipelineType_Graphics) {
+        impl_cmd_list->current_pipeline_type = GnPipelineType_Graphics;
+        d3d12_cmd_list->SetPipelineState(GN_TO_D3D12(GnPipeline, state.graphics.pipeline)->pipeline_state);
+    }
+
+    if (state.update_flags.graphics_pipeline_layout)
+        d3d12_cmd_list->SetGraphicsRootSignature(GN_TO_D3D12(GnPipelineLayout, state.graphics.pipeline_layout)->root_signature);
+
+    if (state.update_flags.graphics_resource_binding) {
+
+    }
+
+    if (state.update_flags.graphics_shader_constants) {
+
+    }
+
+    if (state.update_flags.index_buffer) {
+        GnBufferD3D12* impl_index_buffer = GN_TO_D3D12(GnBuffer, state.index_buffer);
+        D3D12_INDEX_BUFFER_VIEW view;
+        view.BufferLocation = impl_index_buffer->buffer_va;
+        view.SizeInBytes = (UINT)impl_index_buffer->desc.size;
+        view.Format = DXGI_FORMAT_R32_UINT;
+
+        d3d12_cmd_list->IASetIndexBuffer(&view);
+    }
+
+    if (state.update_flags.vertex_buffers) {
+        D3D12_VERTEX_BUFFER_VIEW vtx_buffer_views[32];
+        const GnUpdateRange& update_range = state.vertex_buffer_upd_range;
+        uint32_t count = update_range.last - update_range.first;
+
+        for (uint32_t i = 0; i < count; i++) {
+            D3D12_VERTEX_BUFFER_VIEW& view = vtx_buffer_views[i];
+            GnBufferD3D12* impl_vtx_buffer = GN_TO_D3D12(GnBuffer, state.vertex_buffers[i]);
+
+            view.BufferLocation = impl_vtx_buffer->buffer_va;
+            view.SizeInBytes = (uint32_t)impl_vtx_buffer->desc.size;
+        }
+
+        d3d12_cmd_list->IASetVertexBuffers(update_range.first, count, vtx_buffer_views);
+        state.vertex_buffer_upd_range.Flush();
+    }
+
+    if (state.update_flags.blend_constants)
+        d3d12_cmd_list->OMSetBlendFactor(state.blend_constants);
+
+    if (state.update_flags.stencil_ref)
+        d3d12_cmd_list->OMSetStencilRef(state.stencil_ref);
+
+    if (state.update_flags.viewports) {
+        d3d12_cmd_list->RSSetViewports(state.viewport_upd_range.last, (D3D12_VIEWPORT*)state.viewports);
+        state.viewport_upd_range.Flush();
+    }
+
+    if (state.update_flags.scissors) {
+        D3D12_RECT rects[16];
+        uint32_t count = state.scissor_upd_range.last;
+
+        std::memcpy(rects, state.scissors, sizeof(D3D12_RECT) * count);
+
+        for (uint32_t i = 0; i < state.scissor_upd_range.last; i++) {
+            D3D12_RECT& rect = rects[i];
+
+            rect.right += rect.left;
+            rect.bottom += rect.top;
+        }
+
+        d3d12_cmd_list->RSSetScissorRects(state.scissor_upd_range.last, rects);
+        state.scissor_upd_range.Flush();
+    }
+
+    state.update_flags.u32 = 0;
+}
+
+void GnFlushComputeStateD3D12(GnCommandList command_list)
+{
+    GnCommandListD3D12* impl_cmd_list = GN_TO_D3D12(GnCommandList, command_list);
+    ID3D12GraphicsCommandList* d3d12_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->cmd_private_data;
+    GnCommandListState& state = impl_cmd_list->state;
+
+    if (state.update_flags.compute_pipeline || impl_cmd_list->current_pipeline_type != GnPipelineType_Compute) {
+        impl_cmd_list->current_pipeline_type = GnPipelineType_Compute;
+        d3d12_cmd_list->SetPipelineState(GN_TO_D3D12(GnPipeline, state.graphics.pipeline)->pipeline_state);
+    }
+}
 
 GnCommandListD3D12::GnCommandListD3D12(GnQueueType queue_type, ID3D12GraphicsCommandList* cmd_list) noexcept
 {
     cmd_private_data = (void*)cmd_list; // We use this to store ID3D12GraphicsCommandList to save space
 
-    flush_gfx_state_fn = [](GnCommandList command_list) noexcept {
-        GnCommandListD3D12* impl_cmd_list = GN_TO_D3D12(GnCommandList, command_list);
-        ID3D12GraphicsCommandList* d3d12_cmd_list = (ID3D12GraphicsCommandList*)impl_cmd_list->cmd_private_data;
-        GnCommandListState& state = impl_cmd_list->state;
-
-        if (state.update_flags.graphics_pipeline || impl_cmd_list->current_pipeline_type != GnPipelineType_Graphics) {
-            impl_cmd_list->current_pipeline_type = GnPipelineType_Graphics;
-            d3d12_cmd_list->SetPipelineState(GN_TO_D3D12(GnPipeline, state.graphics.pipeline)->pipeline_state);
-        }
-
-        if (state.update_flags.graphics_pipeline_layout) {
-            d3d12_cmd_list->SetGraphicsRootSignature(GN_TO_D3D12(GnPipelineLayout, state.graphics.pipeline_layout)->root_signature);
-        }
-
-        if (state.update_flags.graphics_resource_binding) {
-
-        }
-
-        if (state.update_flags.graphics_shader_constants) {
-
-        }
-
-        if (state.update_flags.index_buffer) {
-            GnBufferD3D12* impl_index_buffer = GN_TO_D3D12(GnBuffer, state.index_buffer);
-            D3D12_INDEX_BUFFER_VIEW view;
-            view.BufferLocation = impl_index_buffer->buffer_va;
-            view.SizeInBytes = (UINT)impl_index_buffer->desc.size;
-            view.Format = DXGI_FORMAT_R32_UINT;
-
-            d3d12_cmd_list->IASetIndexBuffer(&view);
-        }
-
-        if (state.update_flags.vertex_buffers) {
-            D3D12_VERTEX_BUFFER_VIEW vtx_buffer_views[32];
-            const GnUpdateRange& update_range = state.vertex_buffer_upd_range;
-            uint32_t count = update_range.last - update_range.first;
-
-            for (uint32_t i = 0; i < count; i++) {
-                D3D12_VERTEX_BUFFER_VIEW& view = vtx_buffer_views[i];
-                GnBufferD3D12* impl_vtx_buffer = GN_TO_D3D12(GnBuffer, state.vertex_buffers[i]);
-
-                view.BufferLocation = impl_vtx_buffer->buffer_va;
-                view.SizeInBytes = (uint32_t)impl_vtx_buffer->desc.size;
-            }
-
-            d3d12_cmd_list->IASetVertexBuffers(update_range.first, count, vtx_buffer_views);
-            state.vertex_buffer_upd_range.Flush();
-        }
-
-        if (state.update_flags.blend_constants)
-            d3d12_cmd_list->OMSetBlendFactor(state.blend_constants);
-
-        if (state.update_flags.stencil_ref)
-            d3d12_cmd_list->OMSetStencilRef(state.stencil_ref);
-
-        if (state.update_flags.viewports) {
-            d3d12_cmd_list->RSSetViewports(state.viewport_upd_range.last, (D3D12_VIEWPORT*)state.viewports);
-            state.viewport_upd_range.Flush();
-        }
-
-        if (state.update_flags.scissors) {
-            D3D12_RECT rects[16];
-            uint32_t count = state.scissor_upd_range.last;
-
-            std::memcpy(rects, state.scissors, sizeof(D3D12_RECT) * count);
-
-            for (uint32_t i = 0; i < state.scissor_upd_range.last; i++) {
-                D3D12_RECT& rect = rects[i];
-
-                rect.right += rect.left;
-                rect.bottom += rect.top;
-            }
-
-            d3d12_cmd_list->RSSetScissorRects(state.scissor_upd_range.last, rects);
-            state.scissor_upd_range.Flush();
-        }
-
-        state.update_flags.u32 = 0;
-    };
-
-    flush_compute_state_fn = [](GnCommandList command_list) noexcept {
-
-    };
+    flush_gfx_state_fn = &GnFlushGraphicsStateD3D12;
+    flush_compute_state_fn = &GnFlushComputeStateD3D12;
 }
 
 GnResult GnCommandListD3D12::Begin(const GnCommandListBeginDesc* desc) noexcept
@@ -1394,6 +1939,20 @@ void GnCommandListD3D12::EndRenderPass() noexcept
 }
 
 void GnCommandListD3D12::Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept
+{
+}
+
+void GnCommandListD3D12::CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size) noexcept
+{
+}
+
+void GnCommandListD3D12::CopyTexture(GnTexture src_texture,
+                                     GnOffset3 src_offset,
+                                     GnResourceAccessFlags src_texture_access,
+                                     GnTexture dst_texture,
+                                     GnOffset3 dst_offset,
+                                     GnResourceAccessFlags dst_texture_access,
+                                     GnExtent3 extent) noexcept
 {
 }
 

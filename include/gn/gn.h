@@ -235,9 +235,9 @@ typedef enum
     GnTextureFormatFeature_LinearFilterable         = 1 << 5,
     GnTextureFormatFeature_StorageRead              = 1 << 6,
     GnTextureFormatFeature_StorageWrite             = 1 << 7,
-    GnTextureFormatFeature_ColorAttachment          = 1 << 8,
+    GnTextureFormatFeature_ColorTarget          = 1 << 8,
     GnTextureFormatFeature_ColorAttachmentBlending  = 1 << 9,
-    GnTextureFormatFeature_DepthStencilAttachment   = 1 << 10,
+    GnTextureFormatFeature_DepthStencilTarget   = 1 << 10,
 } GnTextureFormatFeature;
 typedef uint32_t GnTextureFormatFeatureFlags;
 
@@ -296,6 +296,8 @@ typedef struct
     uint32_t max_storage_buffer_range;
     uint32_t max_shader_constant_size;
     uint32_t max_bound_pipeline_layout_slots;
+    uint32_t max_vertex_input_attributes;
+    uint32_t max_vertex_output_attributes;
     uint32_t max_per_stage_sampler_resources;
     uint32_t max_per_stage_uniform_buffer_resources;
     uint32_t max_per_stage_storage_buffer_resources;
@@ -374,8 +376,8 @@ typedef enum
     GnTextureUsage_BlitDst = 1 << 3,
     GnTextureUsage_Sampled = 1 << 4,
     GnTextureUsage_Storage = 1 << 5,
-    GnTextureUsage_ColorAttachment = 1 << 6,
-    GnTextureUsage_DepthStencilAttachment = 1 << 7,
+    GnTextureUsage_ColorTarget = 1 << 6,
+    GnTextureUsage_DepthStencilTarget = 1 << 7,
 } GnTextureUsage;
 typedef uint32_t GnTextureUsageFlags;
 
@@ -517,7 +519,8 @@ GnResult GnResetFence(GnFence fence);
 
 typedef enum
 {
-    GnMemoryUsage_AlwaysMapped  = 1 << 0
+    GnMemoryUsage_AlwaysMapped                  = 1 << 0,
+    GnMemoryUsage_MultisampledResourcePlacement = 1 << 1
 } GnMemoryUsage;
 typedef uint32_t GnMemoryUsageFlags;
 
@@ -533,13 +536,14 @@ void GnDestroyMemory(GnDevice device, GnMemory memory);
 
 typedef enum
 {
-    GnBufferUsage_CopySrc   = 1 << 0,
-    GnBufferUsage_CopyDst   = 1 << 1,
-    GnBufferUsage_Uniform   = 1 << 2,
-    GnBufferUsage_Index     = 1 << 3,
-    GnBufferUsage_Vertex    = 1 << 4,
-    GnBufferUsage_Storage   = 1 << 5,
-    GnBufferUsage_Indirect  = 1 << 6,
+    GnBufferUsage_CopySrc           = 1 << 0,
+    GnBufferUsage_CopyDst           = 1 << 1,
+    GnBufferUsage_Uniform           = 1 << 2,
+    GnBufferUsage_Index             = 1 << 3,
+    GnBufferUsage_Vertex            = 1 << 4,
+    GnBufferUsage_Storage           = 1 << 5,
+    GnBufferUsage_StorageReadOnly   = 1 << 6,
+    GnBufferUsage_Indirect          = 1 << 7,
 } GnBufferUsage;
 typedef uint32_t GnBufferUsageFlags;
 
@@ -741,10 +745,10 @@ typedef struct
 
 typedef struct
 {
-    uint32_t                        num_color_targets;
-    const GnRenderPassTargetReference*    color_targets;
-    const GnRenderPassTargetReference*    resolve_targets;
-    const GnRenderPassTargetReference*    depth_stencil_target;
+    uint32_t                            num_color_targets;
+    const GnRenderPassTargetReference*  color_targets;
+    const GnRenderPassTargetReference*  resolve_targets;
+    const GnRenderPassTargetReference*  depth_stencil_target;
 } GnSubpassDesc;
 
 typedef struct
@@ -821,8 +825,8 @@ typedef struct
 {
     uint32_t                        num_resources;
     const GnShaderResource*         resources;
-    uint32_t                        num_resource_tables;
-    const GnDescriptorTableLayout*  resource_tables;
+    uint32_t                        num_descriptor_tables;
+    const GnDescriptorTableLayout*  descriptor_tables;
     uint32_t                        num_constant_ranges;
     const GnShaderConstantRange*    constant_ranges;
 } GnPipelineLayoutDesc;
@@ -965,7 +969,7 @@ typedef struct
     uint32_t slot_binding;
     GnFormat format;
     uint32_t offset;
-} GnVertexAttributeDesc;
+} GnVertexInputAttributeDesc;
 
 typedef struct
 {
@@ -979,7 +983,7 @@ typedef struct
     uint32_t                        num_input_slots;
     const GnVertexInputSlotDesc*    input_slots;
     uint32_t                        num_attributes;
-    const GnVertexAttributeDesc*    attribute;
+    const GnVertexInputAttributeDesc*    attributes;
 } GnVertexInputStateDesc;
 
 typedef struct
@@ -1050,7 +1054,7 @@ typedef struct
 {
     GnBool                              independent_blend;
     uint32_t                            num_blend_states;
-    GnColorTargetBlendStateDesc*    blend_states;
+    const GnColorTargetBlendStateDesc*  blend_states;
 } GnBlendStateDesc;
 
 typedef struct
@@ -1080,7 +1084,7 @@ typedef struct
     union
     {
         GnShaderBytecode            shader;
-        GnVertexAttributeDesc       vertex_attribute;
+        GnVertexInputAttributeDesc       vertex_attribute;
         GnInputAssemblyStateDesc    input_assembly;
         GnRasterizationStateDesc    rasterization;
         GnDepthStencilStateDesc     depth_stencil;
@@ -1295,6 +1299,11 @@ typedef struct
 
 typedef struct
 {
+    uint32_t placeholder; // TODO
+} GnTextureSubresourceLayers;
+
+typedef struct
+{
     GnOffset3 src_offset;
     GnOffset3 dst_offset;
     GnExtent3 extent;
@@ -1377,7 +1386,7 @@ void GnCmdDispatch(GnCommandList command_list, uint32_t num_thread_group_x, uint
 void GnCmdDispatchIndirect(GnCommandList command_list, GnBuffer indirect_buffer, GnDeviceSize offset);
 void GnCmdCopyBuffer(GnCommandList command_list, GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size);
 void GnCmdCopyBufferRegions(GnCommandList command_list, GnBuffer src_buffer, GnBuffer dst_buffer, uint32_t num_regions, const GnBufferCopy* regions);
-void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access);
+void GnCmdCopyTexture(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnOffset3 src_offset, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access, GnOffset3 dst_offset, GnExtent3 extent);
 void GnCmdCopyTextureRegions(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access, uint32_t num_regions, const GnTextureCopy* regions);
 void GnCmdCopyBufferToTexture(GnCommandList command_list, GnBuffer src_buffer, GnTexture dst_texture, GnResourceAccessFlags dst_texture_access);
 void GnCmdCopyTextureToBuffer(GnCommandList command_list, GnTexture src_texture, GnResourceAccessFlags src_texture_access, GnBuffer dst_buffer);

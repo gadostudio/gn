@@ -461,9 +461,21 @@ struct GnCommandListVK : public GnCommandList_t
 
     GnResult Begin(const GnCommandListBeginDesc* desc) noexcept override;
     void BeginRenderPass(const GnRenderPassBeginDesc* desc) noexcept override;
+    
     void EndRenderPass() noexcept override;
+    
     void Barrier(uint32_t num_buffer_barriers, const GnBufferBarrier* buffer_barriers, uint32_t num_texture_barriers, const GnTextureBarrier* texture_barriers) noexcept override;
+
     void CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size) noexcept override;
+
+    void CopyTexture(GnTexture src_texture,
+                     GnOffset3 src_offset,
+                     GnResourceAccessFlags src_texture_access,
+                     GnTexture dst_texture,
+                     GnOffset3 dst_offset,
+                     GnResourceAccessFlags dst_texture_access,
+                     GnExtent3 extent) noexcept override;
+
     GnResult End() noexcept override;
 };
 
@@ -477,6 +489,7 @@ struct GnCommandPoolVK : public GnCommandPool_t
     GnCommandListVK*                command_list_pool = nullptr;
     GnVector<VkBufferMemoryBarrier> pending_buffer_barriers;
     GnVector<VkImageMemoryBarrier>  pending_image_barriers;
+    GnStackAllocator                valloc;
 
     // Descriptor stream to provide global resource descriptors.
     // Because Vulkan doesn't have "Root Descriptor" like in D3D12, we have to do it manually.
@@ -804,8 +817,8 @@ inline static VkImageUsageFlags GnConvertToVkImageUsageFlags(GnTextureUsageFlags
     if (GnContainsBit(usage, GnTextureUsage_CopyDst, GnTextureUsage_BlitDst)) ret |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (GnContainsBit(usage, GnTextureUsage_Sampled)) ret |= VK_IMAGE_USAGE_SAMPLED_BIT;
     if (GnContainsBit(usage, GnTextureUsage_Storage)) ret |= VK_IMAGE_USAGE_STORAGE_BIT;
-    if (GnContainsBit(usage, GnTextureUsage_ColorAttachment)) ret |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    if (GnContainsBit(usage, GnTextureUsage_DepthStencilAttachment)) ret |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (GnContainsBit(usage, GnTextureUsage_ColorTarget)) ret |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (GnContainsBit(usage, GnTextureUsage_DepthStencilTarget)) ret |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
     return ret;
 }
@@ -1517,8 +1530,9 @@ GnResult GnInstanceVK::CreateSurface(const GnSurfaceDesc* desc, GnSurface* surfa
     surface_info.hinstance = GetModuleHandle(nullptr);
     surface_info.hwnd = desc->hwnd;
 
-    if (GN_VULKAN_FAILED(fn.vkCreateWin32SurfaceKHR(instance, &surface_info, nullptr, &vk_surface)))
-        return GnError_InternalError;
+    GnResult result = GnConvertFromVkResult(fn.vkCreateWin32SurfaceKHR(instance, &surface_info, nullptr, &vk_surface));
+    if (GN_FAILED(result))
+        return result;
 #endif
 
     GnSurfaceVK* impl_surface = new(std::nothrow) GnSurfaceVK;
@@ -1700,8 +1714,8 @@ GnTextureFormatFeatureFlags GnAdapterVK::GetTextureFormatFeatureSupport(GnFormat
     if (GnContainsBit(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) ret |= GnTextureFormatFeature_Sampled;
     if (GnContainsBit(features, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) ret |= GnTextureFormatFeature_LinearFilterable;
     if (GnContainsBit(features, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) ret |= GnTextureFormatFeature_StorageRead | GnTextureFormatFeature_StorageWrite;
-    if (GnContainsBit(features, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_ColorAttachment;
-    if (GnContainsBit(features, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_DepthStencilAttachment;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_ColorTarget;
+    if (GnContainsBit(features, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) ret |= GnTextureFormatFeature_DepthStencilTarget;
 
     return ret;
 }
@@ -2310,6 +2324,7 @@ GnResult GnDeviceVK::CreateTexture(const GnTextureDesc* desc, GnTexture* texture
 
     impl_texture->image = image;
     impl_texture->desc = *desc;
+    impl_texture->swapchain_owned = false;
     impl_texture->memory_requirements.size = requirements.size;
     impl_texture->memory_requirements.alignment = requirements.alignment;
     impl_texture->memory_requirements.supported_memory_type_bits = requirements.memoryTypeBits;
@@ -2676,11 +2691,11 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
 {
     GnSmallVector<VkDescriptorSetLayout, 32> set_layouts;
 
-    if (!set_layouts.resize(desc->num_resource_tables))
+    if (!set_layouts.resize(desc->num_descriptor_tables))
         return GnError_OutOfHostMemory;
 
-    for (uint32_t i = 0; i < desc->num_resource_tables; i++)
-        set_layouts[i] = GN_TO_VULKAN(GnDescriptorTableLayout, desc->resource_tables[i])->set_layout;
+    for (uint32_t i = 0; i < desc->num_descriptor_tables; i++)
+        set_layouts[i] = GN_TO_VULKAN(GnDescriptorTableLayout, desc->descriptor_tables[i])->set_layout;
 
     GnSmallVector<VkPushConstantRange, 16> push_constant_ranges;
     VkShaderStageFlags push_constants_stage_flags = 0;
@@ -2774,7 +2789,7 @@ GnResult GnDeviceVK::CreatePipelineLayout(const GnPipelineLayoutDesc* desc, GnPi
     }
 
     impl_pipeline_layout->num_resources = desc->num_resources;
-    impl_pipeline_layout->num_resource_tables = desc->num_resource_tables;
+    impl_pipeline_layout->num_resource_tables = desc->num_descriptor_tables;
     impl_pipeline_layout->num_shader_constants = desc->num_constant_ranges;
     impl_pipeline_layout->pipeline_layout = layout;
     impl_pipeline_layout->global_resource_layout = global_resource_layout;
@@ -2804,8 +2819,19 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     VkAttachmentReference color_att_refs[32];
     VkAttachmentReference resolve_att_refs[32];
     VkAttachmentReference depth_stencil_att_ref;
+    uint32_t num_used_render_targets = 0;
 
     for (uint32_t i = 0; i < fragment->num_color_targets; i++) {
+        auto& color_att_ref = color_att_refs[i];
+        color_att_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        if (fragment->color_target_formats[i] == GnFormat_Unknown) {
+            color_att_ref.attachment = VK_ATTACHMENT_UNUSED;
+            continue;
+        }
+
+        color_att_ref.attachment = num_used_render_targets++;
+
         auto color_att = attachments.emplace_back_ptr();
         color_att->flags = 0;
         color_att->format = GnConvertToVkFormat(fragment->color_target_formats[i]);
@@ -2816,14 +2842,10 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
         color_att->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         color_att->initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color_att->finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        auto& color_att_ref = color_att_refs[i];
-        color_att_ref.attachment = i;
-        color_att_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
     
     if (has_depth_stencil) {
-        depth_stencil_att_ref.attachment = (uint32_t)attachments.size;
+        depth_stencil_att_ref.attachment = num_used_render_targets++;
         depth_stencil_att_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         auto ds_att = attachments.emplace_back_ptr();
@@ -2839,7 +2861,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     }
 
     if (fragment->resolve_target_mask != 0) {
-        uint32_t current_resolve_attachment = (uint32_t)attachments.size;
+        uint32_t current_resolve_attachment = num_used_render_targets;
         uint32_t resolve_mask = fragment->resolve_target_mask;
 
         for (uint32_t i = 0; i < fragment->num_color_targets; i++) {
@@ -2939,7 +2961,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     uint32_t num_input_slots = desc->vertex_input->num_input_slots;
     uint32_t num_attributes = desc->vertex_input->num_attributes;
     GnSmallVector<VkVertexInputBindingDescription, 32> vertex_bindings;
-    GnSmallVector<VkVertexInputAttributeDescription, 64> vertex_attributes;
+    GnSmallVector<VkVertexInputAttributeDescription, 32> vertex_attributes;
 
     if (!(vertex_bindings.resize(num_input_slots) || vertex_attributes.resize(num_attributes))) {
         fn.vkDestroyRenderPass(device, compatible_rp, nullptr);
@@ -2958,7 +2980,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
 
     for (uint32_t i = 0; i < num_attributes; i++) {
         VkVertexInputAttributeDescription& vk_attribute = vertex_attributes[i];
-        const GnVertexAttributeDesc& attribute = desc->vertex_input->attribute[i];
+        const GnVertexInputAttributeDesc& attribute = desc->vertex_input->attributes[i];
         vk_attribute.location = attribute.location;
         vk_attribute.binding = attribute.slot_binding;
         vk_attribute.format = GnConvertToVkFormat(attribute.format);
@@ -3122,7 +3144,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
 
     if (independent_blend) {
         for (uint32_t i = 0; i < num_blend_states; i++) {
-            GnColorTargetBlendStateDesc& target = desc->blend->blend_states[i];
+            const GnColorTargetBlendStateDesc& target = desc->blend->blend_states[i];
             VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
             vk_attachment.blendEnable = target.blend_enable;
             vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(target.src_color_blend_factor);
@@ -3136,7 +3158,7 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     }
     else {
         for (uint32_t i = 0; i < fragment->num_color_targets; i++) {
-            GnColorTargetBlendStateDesc& target = desc->blend->blend_states[0];
+            const GnColorTargetBlendStateDesc& target = desc->blend->blend_states[0];
             VkPipelineColorBlendAttachmentState& vk_attachment = vk_attachments[i];
             vk_attachment.blendEnable = target.blend_enable;
             vk_attachment.srcColorBlendFactor = GnConvertToVkBlendFactor(target.src_color_blend_factor);
@@ -3221,7 +3243,6 @@ GnResult GnDeviceVK::CreateGraphicsPipeline(const GnGraphicsPipelineDesc* desc, 
     impl_pipeline->type = GnPipelineType_Graphics;
     impl_pipeline->num_viewports = desc->num_viewports;
     impl_pipeline->pipeline = vk_pipeline;
-    //render_pass = compatible_rp;
 
     *pipeline = impl_pipeline;
     
@@ -3516,19 +3537,18 @@ void GnDeviceVK::DestroyCommandLists(GnCommandPool command_pool, uint32_t num_co
 
 void GnDeviceVK::GetBufferMemoryRequirements(GnBuffer buffer, GnMemoryRequirements* memory_requirements) noexcept
 {
-    VkMemoryRequirements requirements;
-    fn.vkGetBufferMemoryRequirements(device, GN_TO_VULKAN(GnBuffer, buffer)->buffer, &requirements);
-    memory_requirements->supported_memory_type_bits = requirements.memoryTypeBits;
-    memory_requirements->alignment = requirements.alignment;
-    memory_requirements->size = requirements.size;
+    *memory_requirements = buffer->memory_requirements;
 }
 
 GnResult GnDeviceVK::BindBufferMemory(GnBuffer buffer, GnMemory memory, GnDeviceSize aligned_offset) noexcept
 {
     GnBufferVK* impl_buffer = GN_TO_VULKAN(GnBuffer, buffer);
     GnMemoryVK* impl_memory = GN_TO_VULKAN(GnMemory, memory);
+    GnResult result = GnConvertFromVkResult(fn.vkBindBufferMemory(device, impl_buffer->buffer, impl_memory->memory, aligned_offset));
 
-    fn.vkBindBufferMemory(device, impl_buffer->buffer, impl_memory->memory, aligned_offset);
+    if (GN_FAILED(result))
+        return result;
+
     impl_buffer->memory = (GnMemoryVK*)memory;
     impl_buffer->aligned_offset = aligned_offset;
 
@@ -4945,6 +4965,35 @@ void GnCommandListVK::CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, G
                        GN_TO_VULKAN(GnBuffer, src_buffer)->buffer,
                        GN_TO_VULKAN(GnBuffer, dst_buffer)->buffer,
                        1, &buffer_copy);
+}
+
+void GnCommandListVK::CopyTexture(GnTexture src_texture,
+                                  GnOffset3 src_offset,
+                                  GnResourceAccessFlags src_texture_access,
+                                  GnTexture dst_texture,
+                                  GnOffset3 dst_offset,
+                                  GnResourceAccessFlags dst_texture_access,
+                                  GnExtent3 extent) noexcept
+{
+    VkImageCopy image_copy;
+    image_copy.srcSubresource = {};
+    image_copy.srcOffset.x = src_offset.x;
+    image_copy.srcOffset.y = src_offset.y;
+    image_copy.srcOffset.z = src_offset.z;
+    image_copy.dstSubresource = {};
+    image_copy.dstOffset.x = dst_offset.x;
+    image_copy.dstOffset.y = dst_offset.y;
+    image_copy.dstOffset.z = dst_offset.z;
+    image_copy.extent.width = extent.width;
+    image_copy.extent.height = extent.height;
+    image_copy.extent.depth = extent.depth;
+
+    fn.vkCmdCopyImage(static_cast<VkCommandBuffer>(cmd_private_data),
+                      GN_TO_VULKAN(GnTexture, src_texture)->image,
+                      GnGetImageLayoutFromAccessVK(src_texture_access),
+                      GN_TO_VULKAN(GnTexture, dst_texture)->image,
+                      GnGetImageLayoutFromAccessVK(dst_texture_access),
+                      1, &image_copy);
 }
 
 GnResult GnCommandListVK::End() noexcept

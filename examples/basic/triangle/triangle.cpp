@@ -43,11 +43,11 @@ struct Triangle : public GnExampleApp
         fs_bytecode.entry_point                     = "main";
 
         // For simplicity of this example, we define the vertices inside the vertex shader. We don't need to provide vertex input.
-        GnVertexInputStateDesc vertex_input{};
+        GnVertexInputAttributeDesc vertex_input{};
         vertex_input.num_input_slots                = 0;
         vertex_input.input_slots                    = nullptr;
         vertex_input.num_attributes                 = 0;
-        vertex_input.attribute                      = nullptr;
+        vertex_input.attributes                     = nullptr;
 
         // Since we are going to render a simple triangle on the screen,
         // we need to set the primitive topology to triangle list.

@@ -22,7 +22,6 @@ struct GnInstance_t
     GnAdapter               adapters = nullptr; // Linked-list
 
     virtual ~GnInstance_t() {}
-
     virtual GnResult CreateSurface(const GnSurfaceDesc* desc, GnSurface* surface) noexcept = 0;
 };
 
@@ -304,6 +303,14 @@ struct GnCommandList_t : public GnTrackedResource<GnCommandList_t>
                          const GnTextureBarrier* texture_barriers) noexcept = 0;
 
     virtual void CopyBuffer(GnBuffer src_buffer, GnDeviceSize src_offset, GnBuffer dst_buffer, GnDeviceSize dst_offset, GnDeviceSize size) noexcept = 0;
+
+    virtual void CopyTexture(GnTexture src_texture,
+                             GnOffset3 src_offset,
+                             GnResourceAccessFlags src_texture_access,
+                             GnTexture dst_texture,
+                             GnOffset3 dst_offset,
+                             GnResourceAccessFlags dst_texture_access,
+                             GnExtent3 extent) noexcept = 0;
 
     virtual GnResult End() noexcept = 0;
 };

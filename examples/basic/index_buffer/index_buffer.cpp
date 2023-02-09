@@ -83,7 +83,7 @@ struct VertexBuffer : public GnExampleApp
         fs_bytecode.bytecode = fragment_shader->data();
         fs_bytecode.entry_point = "main";
 
-        static const GnVertexAttributeDesc vertex_attributes[] = {
+        static const GnVertexInputAttributeDesc vertex_attributes[] = {
             { 0, 0, GnFormat_Float32x2, 0 },
             { 1, 0, GnFormat_RGBA8Unorm, offsetof(VertexAttrib, r) },
         };
@@ -97,7 +97,7 @@ struct VertexBuffer : public GnExampleApp
         vertex_input.num_input_slots = 1;
         vertex_input.input_slots = &input_slot;
         vertex_input.num_attributes = 2;
-        vertex_input.attribute = vertex_attributes;
+        vertex_input.attributes = vertex_attributes;
 
         GnInputAssemblyStateDesc input_assembly{};
         input_assembly.topology = GnPrimitiveTopology_TriangleList;

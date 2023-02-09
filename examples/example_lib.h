@@ -240,7 +240,7 @@ struct GnExampleApp : private GnExampleWindowWin32
 
         GnSwapchainDesc swapchain_desc{};
         swapchain_desc.surface = surface;
-        swapchain_desc.usage = GnTextureUsage_ColorAttachment;
+        swapchain_desc.usage = GnTextureUsage_ColorTarget;
         swapchain_desc.format = surface_format;
         swapchain_desc.width = window_width;
         swapchain_desc.height = window_height;
